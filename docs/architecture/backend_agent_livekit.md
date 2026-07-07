@@ -95,9 +95,14 @@ Do not hard-code Sarvam throughout business logic. Keep Sarvam in adapters.
 
 Provider behavior:
 
-- Primary MVP provider may be Sarvam for STT, LLM, and TTS after the streaming spike passes.
+- MVP provider choice is per leg, not global.
+- Sprint -1 provisional direction:
+  - Hindi STT may default to backend-local Vosk if targeted conversational validation remains acceptable.
+  - Sarvam remains a valid STT adapter and a likely default for languages not covered well by local STT.
+  - LLM and TTS may still default to Sarvam initially.
 - Interfaces must support multiple providers even if fallback providers are not enabled on day one.
 - Identify fallback candidates before beta: Google Cloud Speech-to-Text for Hindi STT and Azure Cognitive Services for Hindi TTS.
+- Provider selection must support language-based routing, for example Hindi STT using Vosk while another language uses Sarvam.
 - Add provider timeouts, retry limits, and circuit-breaker style error handling.
 - Log all provider fallback, retry, timeout, and rate-limit events.
 
@@ -112,7 +117,10 @@ LIVEKIT_URL
 LIVEKIT_API_KEY
 LIVEKIT_API_SECRET
 SARVAM_API_KEY
+VOSK_MODEL_PATH
+STT_PROVIDER
 LLM_PROVIDER
+TTS_PROVIDER
 TTS_MODEL
 STT_MODEL
 REDIS_URL
@@ -122,6 +130,12 @@ MAX_CONCURRENT_AGENTS
 MAX_AGENT_MEMORY_MB
 MAX_SESSION_SECONDS
 ```
+
+Configuration requirements:
+
+- Support global defaults per leg.
+- Support per-language overrides per leg.
+- Keep routing decisions in config, not scattered through business logic.
 
 Secrets must not be committed.
 

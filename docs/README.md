@@ -20,6 +20,7 @@ Use this map to avoid loading the entire master PRD for every task.
 ## Spike Outputs
 
 - `spikes/sarvam_streaming_validation.md`: create during Sprint -1.
+- `spikes/local_stt_benchmark.md`: create during Sprint -1.
 
 ## Privacy Outputs
 

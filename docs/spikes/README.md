@@ -5,6 +5,7 @@ Use this directory for validation work that informs architecture decisions.
 Expected Sprint -1 output:
 
 - `sarvam_streaming_validation.md`: empirical STT/TTS streaming results, latency observations, limitations, and recommendation.
+- `local_stt_benchmark.md`: local Hindi STT benchmark results versus Sarvam STT, including deployment-fit recommendation.
 
 Spike files should include:
 

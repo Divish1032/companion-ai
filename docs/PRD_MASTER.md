@@ -79,7 +79,7 @@ This is not an "AI girlfriend" product spec by default. It is a broader AI compa
 - Turn detection/endpointing beyond naive VAD.
 - Self-hosted LiveKit.
 - Server-generated room token.
-- Sarvam STT/TTS integration through backend adapters.
+- Configurable STT, LLM, and TTS integrations through backend adapters.
 - LLM integration through backend abstraction.
 - Latency metrics per conversation turn.
 - Safety pipeline with crisis detection and India-specific resources.
@@ -100,7 +100,8 @@ This is not an "AI girlfriend" product spec by default. It is a broader AI compa
 - Human handoff.
 - Admin dashboard.
 - Fine-tuning models.
-- Self-hosting ASR/LLM/TTS.
+- Self-hosting LLM/TTS.
+- Large-scale custom STT infrastructure beyond a simple backend-local prototype deployment.
 - Public App Store/Play Store production release.
 - End-to-end encryption beyond transport security.
 
@@ -114,7 +115,7 @@ This is not an "AI girlfriend" product spec by default. It is a broader AI compa
 - Viseme/blendshape streaming.
 - Public App Store/Play Store release hardening.
 - Offline fallback modes.
-- Model/provider routing by cost and language.
+- Model/provider routing by leg, cost, and language.
 
 ---
 
@@ -308,12 +309,27 @@ Initial estimated provider costs:
 - LLM: much cheaper than STT/TTS for normal short turns.
 - Infra: lower than STT/TTS at early scale, but not zero.
 
+Sprint -1 measured note:
+
+- A real Bulbul v3 usage example cost about INR 7 for about 2400 characters.
+- This is consistent with published pricing and confirms that long spoken responses can quickly dominate provider cost.
+
 Working cost assumption for planning:
 
 ```text
 Lean voice minute with short AI reply: INR 0.8 - INR 1.2
 Natural voice minute with Bulbul v3:   INR 1.2 - INR 1.8
 Managed/inefficient path:              INR 1.8 - INR 2.8+
+```
+
+Measured Bulbul v3 response-cost examples:
+
+```text
+200 chars reply:   about INR 0.6
+300 chars reply:   about INR 0.9
+600 chars reply:   about INR 1.8
+1200 chars reply:  about INR 3.6
+2400 chars reply:  about INR 7.2
 ```
 
 Cost controls:
@@ -329,6 +345,7 @@ Cost controls:
 - Log LLM input/output tokens and estimated LLM INR cost even if it is expected to be smaller than STT/TTS.
 - Add provider billing-unit counters as soon as STT/TTS are integrated.
 - Flag any measured cost that exceeds planning assumptions by more than 50%.
+- Cap assistant response length aggressively if Bulbul v3 remains the default voice.
 
 ### 5.3 Reliability
 
@@ -448,7 +465,9 @@ Prototype topology:
 Phone App
   -> LiveKit SFU on Ubuntu
   -> Realtime Agent joins same room
-  -> Sarvam APIs
+  -> STT provider selected by config
+  -> LLM provider selected by config
+  -> TTS provider selected by config
 ```
 
 #### Backend Services
@@ -484,7 +503,7 @@ Python 3.12 + asyncio for realtime-agent-service
 FastAPI for api-service
 uv for dependency management
 LiveKit Agents or LiveKit SDK where useful
-Custom Sarvam adapters
+Custom provider adapters
 ```
 
 Reasoning:
@@ -534,13 +553,14 @@ Do not require Postgres for the first working voice loop.
 Initial providers:
 
 ```text
-STT: Sarvam Saaras v3 streaming
+STT: backend-local Vosk for Hindi is provisionally acceptable after Sprint -1 benchmark; Sarvam Saaras v3 remains the API-backed STT adapter and fallback path
 TTS: Sarvam Bulbul v2/v3 streaming
 LLM: Sarvam-30B first, with provider abstraction
 ```
 
 Provider abstractions should allow:
 
+- Vosk for Hindi STT
 - Sarvam-30B
 - Sarvam-105B for quality tests
 - Google Cloud Speech-to-Text Hindi as an STT fallback candidate
@@ -548,19 +568,33 @@ Provider abstractions should allow:
 - OpenAI/Gemini/other later if needed
 - Local model later if economics justify it
 
+Provider-routing requirements:
+
+- Every pipeline leg must be independently swappable:
+  - STT
+  - LLM
+  - TTS
+- Routing must support global defaults plus per-language overrides.
+- Example intended flexibility:
+  - Hindi STT -> Vosk
+  - Telugu STT -> Sarvam
+  - Hindi TTS -> Sarvam Bulbul v2
+- Core turn logic, endpointing, lifecycle, and app event contracts must remain provider-agnostic.
+
 Pre-implementation provider gate:
 
 - Before Sprint 0 implementation proceeds beyond scaffolding, run a streaming validation spike.
 - Verify Sarvam STT emits useful partials during a 10-second Hindi/Hinglish audio stream.
 - Verify Sarvam TTS can produce incremental audio from chunked text quickly enough for the target pipeline.
+- Benchmark practical backend-local Hindi STT options against Sarvam STT.
 - If either API behaves like batch processing, update this PRD before building the voice pipeline.
 
 ---
 
 ## 16. Key Assumptions
 
-- Sarvam APIs are available and stable enough for MVP testing only after Sprint -1 validation proves required streaming behavior.
-- Sarvam STT quality for Hindi/Hinglish is acceptable after prompt/config tuning.
+- Sarvam APIs are available and stable enough for MVP testing after Sprint -1 validation proves required streaming behavior where Sarvam remains in use.
+- Backend-local Vosk may be acceptable for Hindi STT prototype use if targeted conversational validation remains acceptable.
 - TTS cost is the dominant provider cost.
 - Python backend overhead is not the main latency bottleneck.
 - Flutter + LiveKit is sufficient for low-latency audio UX on target Android phones and iPhones.
@@ -575,7 +609,8 @@ Pre-implementation provider gate:
 
 - Which exact Sarvam TTS model should be default: Bulbul v2 for cost or v3 for quality?
 - Does Sarvam streaming TTS support the exact chunking behavior we need? This must be answered in Sprint -1.
-- Does Sarvam STT provide stable partials for Hinglish under noisy mobile audio? This must be answered in Sprint -1.
+- Is Vosk good enough on natural Hinglish and pause-heavy conversational Hindi to become the prototype STT default?
+- For non-Hindi languages such as Telugu, should STT route to Sarvam while Hindi routes to Vosk?
 - Should first LLM be Sarvam-30B or another low-latency model with better Hindi conversation quality?
 - What is the best initial region for Ubuntu deployment based on target users?
 - Should chat history be local only, or also synced by anonymous device ID after MVP?
@@ -616,15 +651,35 @@ Reason:
 
 VAD detects speech presence but does not understand whether the user is done.
 
-### TDR-004: Use API-Based AI Models for MVP
+### TDR-004: Keep Providers Swappable By Leg
 
 Decision:
 
-Do not self-host STT/LLM/TTS in MVP.
+Keep STT, LLM, and TTS independently swappable through stable interfaces and config-driven routing.
 
 Reason:
 
-Quality, latency, and time-to-market matter more initially. Self-hosting models adds GPU cost and engineering complexity before validating demand.
+Provider choice may differ by language, cost, quality, and deployment constraints. The architecture must allow Hindi STT to use one provider while another language or pipeline leg uses another.
+
+### TDR-004A: Do Not Self-Host LLM/TTS In MVP
+
+Decision:
+
+Do not self-host LLM or TTS in MVP.
+
+Reason:
+
+Quality, latency, and time-to-market matter more initially. Self-hosting those legs adds substantial infrastructure and model-serving complexity before validating demand.
+
+### TDR-004B: STT May Be API-Based Or Backend-Local
+
+Decision:
+
+Allow STT to be either API-based or backend-local, as long as it stays behind `STTProvider` and is selected by config.
+
+Reason:
+
+Sprint -1 evidence shows local Hindi STT is worth pursuing for cost control, but only as a swappable backend leg rather than a hard-coded architecture commitment.
 
 ### TDR-005: Store Chat History Locally
 
@@ -660,11 +715,21 @@ Prompt-only safety is not enough for a human-facing companion product. Crisis co
 
 Decision:
 
-Sarvam STT/TTS streaming behavior must be empirically validated in Sprint -1.
+Sarvam STT/TTS behavior and at least one practical local Hindi STT option must be empirically validated in Sprint -1.
 
 Reason:
 
-The architecture depends on true partial STT and incremental/low-latency TTS. If provider APIs are effectively batch-mode, the pipeline must be redesigned before implementation continues.
+The architecture depends on low-latency STT and incremental/low-latency TTS. If provider APIs are effectively batch-mode, or if local STT is not good enough for Hindi, the pipeline and cost strategy must be redesigned before implementation continues.
+
+### TDR-008A: Sprint -1 Exit Status
+
+Decision:
+
+Treat Sprint -1 as passed for progression into Sprint 0, with a small number of explicit provisional decisions still under observation.
+
+Reason:
+
+The main architecture-killer unknowns were resolved strongly enough to proceed. Remaining questions such as final Vosk suitability for Hinglish are narrower product-quality and routing decisions, not blockers to repository scaffolding and baseline implementation.
 
 ---
 
@@ -822,18 +887,29 @@ Risk:
 
 Hindi/Hinglish transcription may fail on noisy Tier 2/3 mobile audio or dialect-heavy speech.
 
+Sprint -1 evidence:
+
+- Sarvam STT shows the strongest proven streaming behavior so far.
+- Vosk looks promising for Hindi-only local prototype use.
+- The tested Whisper `base` configurations were not strong enough to replace Sarvam STT for this use case.
+
 Mitigation:
 
 - Build a representative audio test set early.
 - Track empty transcript rate.
 - Track manual user feedback on transcript quality.
 - Keep STT provider pluggable.
+- Validate Vosk specifically on Hinglish and pause-heavy conversational speech before making it the default Hindi STT path.
 
 ### 23.2 TTS Cost Risk
 
 Risk:
 
 TTS dominates unit economics and can make subscription pricing unprofitable.
+
+Sprint -1 evidence:
+
+- Bulbul v3 costing about INR 7 for about 2400 characters is consistent with list pricing and is expensive enough to make long companion responses unsafe for MVP margins.
 
 Mitigation:
 
@@ -905,7 +981,21 @@ Mitigation:
 
 - Run Sprint -1 streaming validation before pipeline implementation.
 - Keep provider interfaces independent of Sarvam.
+- Keep provider routing configurable by leg and language.
 - Identify STT/TTS fallback candidates before beta.
+
+### 23.7A Local STT Coverage Risk
+
+Risk:
+
+A local Hindi STT engine may reduce cost but may not generalize cleanly to Hinglish or to later Indian languages such as Telugu, Marathi, Bengali, or Tamil.
+
+Mitigation:
+
+- Treat local STT as language-specific, not automatically universal.
+- Keep Sarvam STT and other providers available behind the same interface.
+- Route providers by leg and language through config.
+- Do not couple endpointing or app contracts to one STT adapter.
 
 ### 23.8 Abuse and Prompt-Injection Risk
 

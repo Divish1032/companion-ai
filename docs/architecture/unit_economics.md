@@ -13,6 +13,11 @@ Initial estimated provider costs:
 - LLM: expected to be smaller than STT/TTS, but must still be measured.
 - Infra: lower than STT/TTS at early scale, but not zero.
 
+Sprint -1 measured note:
+
+- A real Bulbul v3 usage example observed about INR 7 for about 2400 characters.
+- That measured result is consistent with the published Bulbul v3 rate and confirms that long spoken replies can dominate per-turn cost very quickly.
+
 Working cost assumption for planning:
 
 ```text
@@ -20,6 +25,22 @@ Lean voice minute with short AI reply: INR 0.8 - INR 1.2
 Natural voice minute with Bulbul v3:   INR 1.2 - INR 1.8
 Managed/inefficient path:              INR 1.8 - INR 2.8+
 ```
+
+Measured TTS cost examples at Bulbul v3 pricing:
+
+```text
+200 chars reply:   about INR 0.6
+300 chars reply:   about INR 0.9
+600 chars reply:   about INR 1.8
+1200 chars reply:  about INR 3.6
+2400 chars reply:  about INR 7.2
+```
+
+Interpretation:
+
+- Bulbul v3 is acceptable only if assistant replies stay short.
+- If average spoken replies drift into 1000 to 2500 characters, TTS alone will likely break MVP unit-economics targets.
+- Cost control must focus on response length first, not only provider choice.
 
 ## Required Cost Metrics
 
@@ -45,6 +66,9 @@ Managed/inefficient path:              INR 1.8 - INR 2.8+
 - Log LLM input/output tokens and estimated LLM INR cost.
 - Add provider billing-unit counters as soon as STT/TTS are integrated.
 - Flag any measured cost that exceeds planning assumptions by more than 50%.
+- Cap default assistant reply length aggressively when using Bulbul v3.
+- Compare Bulbul v2 versus Bulbul v3 on actual user-perceived quality before making v3 the default.
+- Prefer short filler audio plus concise spoken answers over long narrated paragraphs.
 
 ## Pricing Position
 
@@ -76,3 +100,9 @@ Avoid unlimited or high daily caps until:
 - Retention is proven.
 - Power-user behavior is understood.
 - Real measured cost per minute is known across normal, noisy, retry-heavy, and power-user sessions.
+
+Current recommendation:
+
+- Do not assume Bulbul v3 is a safe default for MVP economics.
+- Treat Bulbul v3 as quality-first and cost-sensitive.
+- Require measured average TTS characters per turn before pricing decisions.

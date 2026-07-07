@@ -18,9 +18,11 @@ Tasks:
 
 - Validate Sarvam STT true streaming with Hindi/Hinglish sample audio and record whether partials arrive during speech.
 - Validate Sarvam TTS streaming/chunked behavior and record time to first audio for short Hindi chunks.
+- Benchmark practical local Hindi STT candidates against Sarvam STT.
 - Lock the revised latency budget and filler-audio requirement.
 - Lock endpointing state-machine defaults in config.
 - Lock agent lifecycle: one room-specific agent task/process per active LiveKit room.
+- Lock provider-by-leg interfaces and config-driven routing so STT, LLM, and TTS can be switched independently.
 - Lock iOS `AVAudioSession` initial category/mode/options.
 - Add initial crisis/safety resource list and crisis-detection phrase list.
 - Add DPDP/privacy consent copy draft and provider-disclosure placeholder.
@@ -29,6 +31,7 @@ Tasks:
 Deliverables:
 
 - `docs/spikes/sarvam_streaming_validation.md`
+- `docs/spikes/local_stt_benchmark.md`
 - `docs/architecture/endpointing.md`
 - `docs/architecture/agent_lifecycle.md`
 - `docs/privacy/dpdp_mvp_notes.md`
@@ -36,8 +39,29 @@ Deliverables:
 Acceptance:
 
 - Sarvam streaming behavior is known and documented.
+- Local Hindi STT options are compared strongly enough to guide the prototype default.
 - If Sarvam STT/TTS does not support needed streaming behavior, this PRD is updated before Sprint 0 implementation continues.
 - Agent lifecycle and endpointing defaults are no longer open choices.
+- Provider routing by leg is no longer an open architecture choice.
+
+Sprint -1 exit summary:
+
+- Passed:
+  - Sarvam STT and TTS behavior were validated strongly enough to remove the original architecture-killer unknown.
+  - Endpointing defaults, agent lifecycle, and privacy notes are locked in docs.
+  - Provider-by-leg and per-language routing are now explicit architecture requirements.
+- Provisional:
+  - Hindi STT may default to backend-local Vosk for the prototype.
+  - Sarvam STT remains the API-backed STT adapter and safer fallback path.
+  - Sarvam TTS should prefer the official SDK path first.
+- Still open but no longer blocking Sprint 0:
+  - Final Hindi-default decision for Vosk on natural Hinglish and pause-heavy conversational audio.
+  - Broader multi-language STT strategy beyond Hindi.
+
+Sprint 0 readiness:
+
+- Sprint -1 is complete enough to start Sprint 0.
+- Remaining uncertainties are documented and narrowed; they are no longer architecture blockers.
 
 ### Sprint 0: Repo and Architecture Foundation
 
@@ -216,16 +240,16 @@ Acceptance:
 - Barge-in during fake AI speech cancels speaking state.
 - Forced endpoint prevents runaway utterances.
 
-### Sprint 5: Sarvam STT Integration
+### Sprint 5: STT Integration
 
 Goal:
 
-Stream user audio to Sarvam STT and receive partial/final transcripts.
+Stream user audio to the selected STT provider and receive partial/final transcripts.
 
 Tasks:
 
 - Implement `STTProvider` interface.
-- Implement Sarvam STT adapter.
+- Implement the selected first STT adapter.
 - Convert audio frames to required format.
 - Emit partial transcript events.
 - Emit final transcript events.
@@ -233,7 +257,7 @@ Tasks:
 - Implement low-confidence/empty transcript repeat flow.
 - Add STT failure handling.
 - Add STT billing-unit/cost counters.
-- Scaffold fallback STT provider interface/config.
+- Scaffold additional STT provider interface/config.
 
 Deliverables:
 
