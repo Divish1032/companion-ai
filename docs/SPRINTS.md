@@ -94,6 +94,24 @@ Acceptance:
 - `make dev` or documented equivalent starts local stack.
 - `make check` or documented equivalent passes.
 
+Sprint 0 exit summary:
+
+- Passed:
+  - Monorepo structure exists with `apps/mobile`, `services/api`, `services/realtime-agent`, `infra`, and `config`.
+  - Flutter app scaffold opens directly to a voice-only placeholder shell with no text input.
+  - API and realtime-agent placeholders expose health endpoints.
+  - Provider routing is config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`.
+  - Docker Compose starts Redis and the placeholder services.
+  - Root `make check` passes.
+- Still open but intentionally deferred:
+  - Real LiveKit, microphone, VAD, STT, LLM, and TTS pipeline implementation.
+  - Production deployment to Ubuntu/Oracle Cloud.
+
+Sprint 1 readiness:
+
+- Sprint 0 is complete enough to start Sprint 1.
+- Continue local development first; backend migration to Ubuntu can happen after the MVP sprints are ready.
+
 ### Sprint 1: Flutter Voice Chat Shell
 
 Goal:

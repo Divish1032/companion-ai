@@ -22,6 +22,12 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
 4. Verify the acceptance criteria for that sprint.
 5. Update docs when a validation spike changes an assumption.
 
+## Current Project Status
+
+- Sprint -1 validation gates are complete enough to proceed.
+- Sprint 0 repo and architecture foundation is complete.
+- The next active sprint is Sprint 1: Flutter Voice Chat Shell, unless the user explicitly redirects.
+
 ## Sprint Reading Guide
 
 - Sprint -1: `SPRINTS.md`, `architecture/voice_pipeline.md`, `architecture/backend_agent_livekit.md`, `architecture/safety_privacy.md`

@@ -4,9 +4,9 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 0 repo and architecture foundation.
+Active phase: Sprint 1 Flutter voice chat shell.
 
-Sprint -1 validation gates are complete enough to proceed. Sprint 0 is scaffold only: no auth, no text input, no video/avatar, and no real voice pipeline implementation.
+Sprint -1 validation gates and Sprint 0 monorepo scaffolding are complete. Sprint 1 should build the mobile voice-chat shell only: no backend voice pipeline, no auth, no text input, and no video/avatar.
 
 ## Repo Layout
 
@@ -54,7 +54,7 @@ Health endpoints when `make dev` is running:
 
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Sprint 0 includes only interfaces and routing scaffolding; real STT, LLM, and TTS adapters are later-sprint work.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. The repo includes only interfaces and routing scaffolding; real STT, LLM, and TTS adapters are later-sprint work.
 
 ## Git Hooks
 
