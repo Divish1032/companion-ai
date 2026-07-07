@@ -71,6 +71,14 @@ class AppDatabase extends _$AppDatabase {
     )..orderBy([(message) => OrderingTerm.asc(message.createdAt)])).get();
   }
 
+  Future<List<ChatMessage>> readRecentTranscriptContext({required int limit}) {
+    return (select(chatMessages)
+          ..orderBy([(message) => OrderingTerm.desc(message.createdAt)])
+          ..limit(limit))
+        .get()
+        .then((messages) => messages.reversed.toList());
+  }
+
   Future<void> upsertSession(ChatSessionsCompanion session) {
     return into(chatSessions).insertOnConflictUpdate(session);
   }

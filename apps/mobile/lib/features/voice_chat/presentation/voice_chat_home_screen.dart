@@ -115,10 +115,13 @@ class _SessionStatusCard extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              state.phase == VoiceSessionPhase.permissionDenied
+              state.phase == VoiceSessionPhase.permissionDenied ||
+                      state.phase == VoiceSessionPhase.error
                   ? Icons.mic_off_outlined
                   : Icons.graphic_eq,
-              color: state.phase == VoiceSessionPhase.permissionDenied
+              color:
+                  state.phase == VoiceSessionPhase.permissionDenied ||
+                      state.phase == VoiceSessionPhase.error
                   ? theme.colorScheme.error
                   : theme.colorScheme.primary,
             ),
@@ -131,7 +134,7 @@ class _SessionStatusCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     state.errorMessage ??
-                        'Mock conversation mode. No backend voice pipeline yet.',
+                        'LiveKit transport only. Voice intelligence arrives in later sprints.',
                     style: theme.textTheme.bodySmall,
                   ),
                   const SizedBox(height: 4),
@@ -160,7 +163,7 @@ class _ChatHistoryList extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'Start a mock voice session to see local transcript history.',
+            'Start a voice session to see local transcript history.',
             textAlign: TextAlign.center,
           ),
         ),
@@ -249,7 +252,7 @@ class _VoiceControls extends ConsumerWidget {
           OutlinedButton.icon(
             onPressed: state.isBusy ? null : controller.addMockExchange,
             icon: const Icon(Icons.hearing),
-            label: const Text('Add mock voice turn'),
+            label: const Text('Simulate transcript turn'),
           ),
         const SizedBox(height: 10),
         FilledButton.icon(
@@ -268,7 +271,7 @@ class _VoiceControls extends ConsumerWidget {
                 },
           icon: Icon(state.isSessionActive ? Icons.stop : Icons.mic),
           label: Text(
-            state.isSessionActive ? 'End session' : 'Start mock session',
+            state.isSessionActive ? 'End session' : 'Start voice session',
           ),
         ),
       ],

@@ -12,17 +12,33 @@ services:
       timeout: 3s
       retries: 5
 
+  livekit:
+    image: livekit/livekit-server:v1.9
+    command: ["--dev", "--bind", "0.0.0.0"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
   api:
     build:
       context: ..
       dockerfile: services/api/Dockerfile
     env_file:
       - ../services/api/.env.example
+    environment:
+      API_LIVEKIT_URL: ${API_LIVEKIT_URL:-ws://localhost:7880}
+      API_LIVEKIT_API_KEY: ${API_LIVEKIT_API_KEY:-devkey}
+      API_LIVEKIT_API_SECRET: ${API_LIVEKIT_API_SECRET:-secret}
     ports:
       - "8000:8000"
+    volumes:
+      - api-data:/data
     depends_on:
       redis:
         condition: service_healthy
+      livekit:
+        condition: service_started
 
   realtime-agent:
     build:
@@ -38,3 +54,4 @@ services:
 
 volumes:
   redis-data:
+  api-data:

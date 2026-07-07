@@ -2,15 +2,34 @@
 
 Flutter shell for the Companion AI voice-only MVP.
 
-## Sprint 1 Scope
+## Sprint 2 Scope
 
 - Opens directly to `VoiceChatHomeScreen`.
 - Uses Riverpod for app/session state.
 - Uses local Drift/SQLite transcript storage.
 - Generates an anonymous device ID in platform secure storage.
 - Requests microphone permission after first-session privacy consent.
-- Runs mock conversation mode only; LiveKit/STT/LLM/TTS/VAD are not implemented in Sprint 1.
+- Creates an anonymous API session and joins a local self-hosted LiveKit room.
+- Publishes microphone audio through LiveKit/native WebRTC.
+- Sends bounded recent local transcript context when a voice session starts.
+- Adds reliable and lossy LiveKit data-channel abstractions with sequence dedupe.
+- STT/LLM/TTS/VAD and backend voice intelligence are not implemented in Sprint 2.
 - Provides clear history and a bad-transcript re-speak affordance.
+
+## Local LiveKit Run
+
+Start the local stack from the repo root:
+
+```bash
+make dev
+```
+
+Run the app with the API base URL if the default `http://localhost:8000` is not
+reachable from the device. Android emulators usually need:
+
+```bash
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
 
 ## Local Storage Encryption Plan
 

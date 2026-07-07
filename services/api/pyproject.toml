@@ -5,6 +5,7 @@ description = "Companion AI API service scaffold."
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi>=0.116.0",
+    "livekit-api>=1.0.0",
     "pydantic-settings>=2.10.0",
     "uvicorn[standard]>=0.35.0",
 ]

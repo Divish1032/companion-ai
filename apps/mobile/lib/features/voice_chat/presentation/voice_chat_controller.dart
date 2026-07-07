@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/audio/audio_session_service.dart';
@@ -5,6 +7,9 @@ import '../../../core/identity/anonymous_device_id.dart';
 import '../../../core/permissions/microphone_permission_service.dart';
 import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
+import '../../livekit_session/data/livekit_connection_service.dart';
+import '../../livekit_session/data/session_api_client.dart';
+import '../../livekit_session/domain/livekit_data_event.dart';
 import '../data/mock_conversation_service.dart';
 import '../domain/voice_session_state.dart';
 
@@ -22,8 +27,21 @@ final voiceChatControllerProvider =
     );
 
 class VoiceChatController extends Notifier<VoiceChatState> {
+  StreamSubscription<LiveKitConnectionStatus>? _connectionSubscription;
+  StreamSubscription<LiveKitDataEvent>? _eventSubscription;
+  String? _activeDeviceId;
+  final _sequencer = LiveKitEventSequencer();
+
   @override
-  VoiceChatState build() => const VoiceChatState.initial();
+  VoiceChatState build() {
+    final liveKitService = ref.read(liveKitConnectionServiceProvider);
+    ref.onDispose(() {
+      _connectionSubscription?.cancel();
+      _eventSubscription?.cancel();
+      liveKitService.disconnect();
+    });
+    return const VoiceChatState.initial();
+  }
 
   Future<StartSessionResult> startSession() async {
     if (state.isBusy) {
@@ -45,7 +63,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         return StartSessionResult.needsConsent;
       }
 
-      await ref.read(anonymousDeviceIdProvider.future);
+      final deviceId = await ref.read(anonymousDeviceIdProvider.future);
       final permission = await ref
           .read(microphonePermissionServiceProvider)
           .request();
@@ -62,20 +80,46 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       }
 
       await ref.read(audioSessionServiceProvider).configureForVoiceCompanion();
-      final sessionId = await ref
-          .read(mockConversationServiceProvider)
-          .startSession();
+      state = state.copyWith(phase: VoiceSessionPhase.connecting);
+
+      final apiClient = ref.read(sessionApiClientProvider);
+      final session = await apiClient.createSession(deviceId: deviceId);
+      final token = await apiClient.mintToken(
+        deviceId: deviceId,
+        sessionId: session.sessionId,
+      );
+      final liveKitService = ref.read(liveKitConnectionServiceProvider);
+      final handle = await liveKitService.connect(
+        session: session,
+        token: token,
+      );
+
+      await _connectionSubscription?.cancel();
+      _connectionSubscription = handle.connectionUpdates.listen(
+        _applyConnectionStatus,
+      );
+      await _eventSubscription?.cancel();
+      _eventSubscription = handle.events.listen(_applyLiveKitEvent);
+      await liveKitService.sendReliable(
+        _sequencer.next(
+          type: 'client_session_started',
+          sessionId: session.sessionId,
+          payload: {'room_name': session.roomName},
+        ),
+      );
+
+      _activeDeviceId = deviceId;
       state = state.copyWith(
         isBusy: false,
         phase: VoiceSessionPhase.listening,
-        activeSessionId: sessionId,
+        activeSessionId: session.sessionId,
       );
       return StartSessionResult.started;
     } catch (error) {
       state = state.copyWith(
         isBusy: false,
-        phase: VoiceSessionPhase.idle,
-        errorMessage: 'Could not start mock voice session.',
+        phase: VoiceSessionPhase.error,
+        errorMessage: _startErrorMessage(error),
       );
       return StartSessionResult.failed;
     }
@@ -88,6 +132,17 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   }
 
   Future<void> endSession() async {
+    final sessionId = state.activeSessionId;
+    final deviceId = _activeDeviceId;
+    if (sessionId != null && deviceId != null) {
+      await ref
+          .read(sessionApiClientProvider)
+          .endSession(deviceId: deviceId, sessionId: sessionId);
+    }
+    await _connectionSubscription?.cancel();
+    await _eventSubscription?.cancel();
+    await ref.read(liveKitConnectionServiceProvider).disconnect();
+    _activeDeviceId = null;
     state = state.copyWith(
       phase: VoiceSessionPhase.ended,
       isBusy: false,
@@ -117,6 +172,62 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   Future<void> clearHistory() async {
     await ref.read(appDatabaseProvider).clearHistory();
     state = const VoiceChatState.initial();
+  }
+
+  void _applyConnectionStatus(LiveKitConnectionStatus status) {
+    if (!state.isSessionActive &&
+        status != LiveKitConnectionStatus.failed &&
+        status != LiveKitConnectionStatus.connected) {
+      return;
+    }
+
+    switch (status) {
+      case LiveKitConnectionStatus.connected:
+        state = state.copyWith(
+          phase: VoiceSessionPhase.listening,
+          isBusy: false,
+          clearError: true,
+        );
+      case LiveKitConnectionStatus.reconnecting:
+      case LiveKitConnectionStatus.connecting:
+        state = state.copyWith(phase: VoiceSessionPhase.reconnecting);
+      case LiveKitConnectionStatus.failed:
+        state = state.copyWith(
+          phase: VoiceSessionPhase.error,
+          isBusy: false,
+          errorMessage: 'LiveKit connection failed. Please try again.',
+        );
+      case LiveKitConnectionStatus.disconnected:
+        if (state.isSessionActive) {
+          state = state.copyWith(phase: VoiceSessionPhase.ended);
+        }
+    }
+  }
+
+  void _applyLiveKitEvent(LiveKitDataEvent event) {
+    if (event.type == 'session_state') {
+      final incoming = event.payload['state'];
+      if (incoming == 'thinking') {
+        state = state.copyWith(phase: VoiceSessionPhase.thinking);
+      } else if (incoming == 'speaking') {
+        state = state.copyWith(phase: VoiceSessionPhase.speaking);
+      } else if (incoming == 'listening') {
+        state = state.copyWith(phase: VoiceSessionPhase.listening);
+      }
+    } else if (event.type == 'error') {
+      state = state.copyWith(
+        phase: VoiceSessionPhase.error,
+        errorMessage:
+            (event.payload['message'] as String?) ?? 'Voice session error.',
+      );
+    }
+  }
+
+  String _startErrorMessage(Object error) {
+    if (error is SessionApiException && error.statusCode == 409) {
+      return 'This device already has an active voice session.';
+    }
+    return 'Could not start LiveKit voice session.';
   }
 }
 

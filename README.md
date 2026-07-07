@@ -4,16 +4,16 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 1 Flutter voice chat shell.
+Active phase: Sprint 2 LiveKit self-hosted local integration.
 
-Sprint -1 validation gates and Sprint 0 monorepo scaffolding are complete. Sprint 1 should build the mobile voice-chat shell only: no backend voice pipeline, no auth, no text input, and no video/avatar.
+Sprint -1 validation gates, Sprint 0 monorepo scaffolding, and Sprint 1 Flutter voice chat shell are complete. Sprint 2 connects the app to local self-hosted LiveKit only: no STT, LLM, TTS, VAD, auth, text input, or video/avatar.
 
 ## Repo Layout
 
 - `apps/mobile`: Flutter Android/iOS app shell.
 - `services/api`: FastAPI service for future room/session/config endpoints.
 - `services/realtime-agent`: FastAPI placeholder plus STT/LLM/TTS provider interfaces and routing config.
-- `infra/docker-compose.yml`: Redis plus placeholder services for local development.
+- `infra/docker-compose.yml`: Redis with persistence, local LiveKit, and placeholder services for local development.
 - `config/personas/hindi_companion_v1.toml`: Hindi companion persona and provider routing.
 - `config/safety/crisis_placeholder.toml`: placeholder crisis phrase/resource config.
 - `docs`: product, sprint, architecture, privacy, and spike docs.
@@ -41,7 +41,7 @@ Do not commit real secrets or provider API keys.
 ## Commands
 
 ```bash
-make dev      # start Redis and placeholder services
+make dev      # start Redis, LiveKit, API, and realtime-agent placeholders
 make check    # docs, scaffold, Python, and Flutter checks
 make mobile   # run the Flutter app
 make logs     # follow Docker Compose logs
@@ -51,6 +51,21 @@ Health endpoints when `make dev` is running:
 
 - API: `http://localhost:8000/health`
 - Realtime agent: `http://localhost:8001/health`
+- LiveKit: `ws://localhost:7880`
+
+Local LiveKit runs in development mode with the documented dev credentials:
+
+- API key: `devkey`
+- API secret: `secret`
+
+These are for local development only. Replace them through environment variables before any shared deployment.
+
+For Android emulator networking, run the app with the host API URL:
+
+```bash
+cd apps/mobile
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
 
 ## Provider Routing
 

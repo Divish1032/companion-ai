@@ -8,5 +8,11 @@ class Settings(BaseSettings):
     livekit_url: str = "ws://livekit:7880"
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
+    durable_store_path: str = "/tmp/companion_api_sessions.sqlite"
+    livekit_token_ttl_seconds: int = 600
+    max_session_seconds: int = 1200
+    max_recent_context_messages: int = 12
+    session_create_limit_per_day: int = 50
+    token_mint_limit_per_session: int = 20
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="API_")

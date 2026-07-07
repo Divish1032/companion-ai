@@ -1,10 +1,13 @@
 enum VoiceSessionPhase {
   idle,
   requestingPermission,
+  connecting,
+  reconnecting,
   listening,
   thinking,
   speaking,
   permissionDenied,
+  error,
   ended,
 }
 
@@ -13,10 +16,13 @@ extension VoiceSessionPhaseLabel on VoiceSessionPhase {
     return switch (this) {
       VoiceSessionPhase.idle => 'Ready',
       VoiceSessionPhase.requestingPermission => 'Checking microphone',
-      VoiceSessionPhase.listening => 'Listening in mock mode',
+      VoiceSessionPhase.connecting => 'Connecting to LiveKit',
+      VoiceSessionPhase.reconnecting => 'Reconnecting',
+      VoiceSessionPhase.listening => 'Listening',
       VoiceSessionPhase.thinking => 'Thinking',
       VoiceSessionPhase.speaking => 'Speaking',
       VoiceSessionPhase.permissionDenied => 'Microphone permission needed',
+      VoiceSessionPhase.error => 'Connection problem',
       VoiceSessionPhase.ended => 'Session ended',
     };
   }
@@ -47,7 +53,8 @@ class VoiceChatState {
   bool get isSessionActive =>
       phase == VoiceSessionPhase.listening ||
       phase == VoiceSessionPhase.thinking ||
-      phase == VoiceSessionPhase.speaking;
+      phase == VoiceSessionPhase.speaking ||
+      phase == VoiceSessionPhase.reconnecting;
 
   VoiceChatState copyWith({
     VoiceSessionPhase? phase,

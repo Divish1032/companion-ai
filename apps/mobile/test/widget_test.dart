@@ -1,65 +1,109 @@
+import 'dart:async';
+
 import 'package:companion_mobile/app.dart';
 import 'package:companion_mobile/core/audio/audio_session_service.dart';
 import 'package:companion_mobile/core/identity/anonymous_device_id.dart';
 import 'package:companion_mobile/core/permissions/microphone_permission_service.dart';
 import 'package:companion_mobile/core/privacy/consent_store.dart';
 import 'package:companion_mobile/features/chat_history/data/app_database.dart';
+import 'package:companion_mobile/features/livekit_session/data/livekit_connection_service.dart';
+import 'package:companion_mobile/features/livekit_session/data/session_api_client.dart';
+import 'package:companion_mobile/features/livekit_session/domain/livekit_data_event.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('mock voice session persists, re-speaks, and clears history', (
+  testWidgets(
+    'voice session connects, persists simulated turns, and clears history',
+    (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+
+      await tester.pumpWidget(_testApp(database));
+
+      expect(find.text('Ready'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+
+      await tester.tap(find.text('Start voice session'));
+      await tester.pumpAndSettle();
+      expect(find.text('Microphone and AI processing'), findsOneWidget);
+
+      await tester.tap(find.text('Agree'));
+      await tester.pumpAndSettle();
+      expect(find.text('Listening'), findsOneWidget);
+
+      await tester.tap(find.text('Simulate transcript turn'));
+      await tester.pumpAndSettle();
+      expect(find.text('Aaj mood thoda off hai.'), findsOneWidget);
+      expect(find.text('Bad transcript? Re-speak'), findsOneWidget);
+
+      await tester.tap(find.text('Bad transcript? Re-speak'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('re-spoken clearly'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(_testApp(database));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('re-spoken clearly'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Clear'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('re-spoken clearly'), findsNothing);
+      expect(
+        find.text('Start a voice session to see local transcript history.'),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
+  testWidgets('voice session surfaces reconnect and error states', (
     tester,
   ) async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());
+    final liveKit = _FakeLiveKitConnectionService();
     addTearDown(database.close);
 
-    await tester.pumpWidget(_testApp(database));
+    await tester.pumpWidget(_testApp(database, liveKit: liveKit));
 
-    expect(find.text('Ready'), findsOneWidget);
-    expect(find.byType(TextField), findsNothing);
-
-    await tester.tap(find.text('Start mock session'));
+    await tester.tap(find.text('Start voice session'));
     await tester.pumpAndSettle();
-    expect(find.text('Microphone and AI processing'), findsOneWidget);
-
     await tester.tap(find.text('Agree'));
     await tester.pumpAndSettle();
-    expect(find.text('Listening in mock mode'), findsOneWidget);
-    expect(find.textContaining('Namaste.'), findsOneWidget);
+    expect(find.text('Listening'), findsOneWidget);
 
-    await tester.tap(find.text('Add mock voice turn'));
+    liveKit.emitStatus(LiveKitConnectionStatus.reconnecting);
     await tester.pumpAndSettle();
-    expect(find.text('Aaj mood thoda off hai.'), findsOneWidget);
-    expect(find.text('Bad transcript? Re-speak'), findsOneWidget);
+    expect(find.text('Reconnecting'), findsOneWidget);
 
-    await tester.tap(find.text('Bad transcript? Re-speak'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('re-spoken clearly'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpWidget(_testApp(database));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('re-spoken clearly'), findsOneWidget);
-
-    await tester.tap(find.byIcon(Icons.delete_outline));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Clear'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('re-spoken clearly'), findsNothing);
-    expect(
-      find.text('Start a mock voice session to see local transcript history.'),
-      findsOneWidget,
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'error',
+        sequence: 1,
+        sessionId: 'session_test',
+        timestampMs: 1,
+        payload: {'message': 'Simulated LiveKit error.'},
+      ),
     );
+    await tester.pumpAndSettle();
+    expect(find.text('Connection problem'), findsOneWidget);
+    expect(find.text('Simulated LiveKit error.'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 1));
   });
 }
 
-Widget _testApp(AppDatabase database) {
+Widget _testApp(
+  AppDatabase database, {
+  _FakeLiveKitConnectionService? liveKit,
+}) {
   return ProviderScope(
     overrides: [
       appDatabaseProvider.overrideWith((ref) => database),
@@ -70,6 +114,10 @@ Widget _testApp(AppDatabase database) {
       ),
       audioSessionServiceProvider.overrideWith(
         (ref) => _NoopAudioSessionService(),
+      ),
+      sessionApiClientProvider.overrideWith((ref) => _FakeSessionApiClient()),
+      liveKitConnectionServiceProvider.overrideWith(
+        (ref) => liveKit ?? _FakeLiveKitConnectionService(),
       ),
     ],
     child: const CompanionApp(),
@@ -99,4 +147,78 @@ class _GrantedMicrophonePermissionService
 class _NoopAudioSessionService extends AudioSessionService {
   @override
   Future<void> configureForVoiceCompanion() async {}
+}
+
+class _FakeSessionApiClient implements SessionApiClient {
+  @override
+  Future<LiveKitSessionInfo> createSession({required String deviceId}) async {
+    return const LiveKitSessionInfo(
+      sessionId: 'session_test',
+      roomName: 'companion_session_test',
+      liveKitUrl: 'ws://localhost:7880',
+      expiresAtMs: 1,
+    );
+  }
+
+  @override
+  Future<void> endSession({
+    required String deviceId,
+    required String sessionId,
+  }) async {}
+
+  @override
+  Future<LiveKitTokenInfo> mintToken({
+    required String deviceId,
+    required String sessionId,
+  }) async {
+    return const LiveKitTokenInfo(
+      token: 'token',
+      liveKitUrl: 'ws://localhost:7880',
+      roomName: 'companion_session_test',
+      expiresInSeconds: 600,
+    );
+  }
+}
+
+class _FakeLiveKitConnectionService extends LiveKitConnectionService {
+  final _connections = StreamController<LiveKitConnectionStatus>.broadcast();
+  final _events = StreamController<LiveKitDataEvent>.broadcast();
+
+  @override
+  Stream<LiveKitConnectionStatus> get connectionUpdates => _connections.stream;
+
+  @override
+  Stream<LiveKitDataEvent> get events => _events.stream;
+
+  @override
+  Future<LiveKitSessionHandle> connect({
+    required LiveKitSessionInfo session,
+    required LiveKitTokenInfo token,
+  }) async {
+    _connections.add(LiveKitConnectionStatus.connected);
+    return LiveKitSessionHandle(
+      session: session,
+      connectionUpdates: connectionUpdates,
+      events: events,
+    );
+  }
+
+  @override
+  Future<void> sendReliable(LiveKitDataEvent event) async {}
+
+  @override
+  Future<void> sendLossy(LiveKitDataEvent event) async {}
+
+  @override
+  Future<void> disconnect() async {
+    _connections.add(LiveKitConnectionStatus.disconnected);
+  }
+
+  void emitStatus(LiveKitConnectionStatus status) {
+    _connections.add(status);
+  }
+
+  void emitEvent(LiveKitDataEvent event) {
+    _events.add(event);
+  }
 }
