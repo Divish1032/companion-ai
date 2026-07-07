@@ -1,17 +1,30 @@
 # companion_mobile
 
-A new Flutter project.
+Flutter shell for the Companion AI voice-only MVP.
 
-## Getting Started
+## Sprint 1 Scope
 
-This project is a starting point for a Flutter application.
+- Opens directly to `VoiceChatHomeScreen`.
+- Uses Riverpod for app/session state.
+- Uses local Drift/SQLite transcript storage.
+- Generates an anonymous device ID in platform secure storage.
+- Requests microphone permission after first-session privacy consent.
+- Runs mock conversation mode only; LiveKit/STT/LLM/TTS/VAD are not implemented in Sprint 1.
+- Provides clear history and a bad-transcript re-speak affordance.
 
-A few resources to get you started if this is your first Flutter project:
+## Local Storage Encryption Plan
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Sprint 1 creates the Drift schema and migration hook but does not enable encrypted
+SQLite. Before real-user field testing, transcript storage must either be moved
+to SQLCipher or equivalent encrypted SQLite with the key stored in platform
+secure storage, or testing must be restricted to non-sensitive scripted
+conversations. This app does not claim field-test storage readiness yet.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Barge-In Mute/Duck Benchmark
+
+The local mute/duck path cannot be meaningfully benchmarked in Sprint 1 without a
+real playback path and a device/emulator run that exercises Flutter/plugin/native
+timing. The baseline `audio_session` configuration is present. Re-run the
+benchmark after Sprint 2/3 audio playback exists, measuring command issue time,
+native/plugin acknowledgement time, and audible mute/duck completion on Android
+and iOS hardware.
