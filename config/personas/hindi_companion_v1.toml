@@ -1,0 +1,18 @@
+[persona]
+id = "hindi_companion_v1"
+display_name = "Hindi Companion"
+language = "hi-IN"
+voice_style = "warm, concise, respectful"
+
+[providers.default]
+stt = "sarvam"
+llm = "sarvam"
+tts = "sarvam"
+
+[providers.languages."hi-IN"]
+stt = "vosk"
+llm = "sarvam"
+tts = "sarvam"
+
+[safety]
+config_path = "config/safety/crisis_placeholder.toml"

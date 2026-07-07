@@ -1,0 +1,16 @@
+[safety]
+enabled = true
+mode = "placeholder"
+
+[[crisis_resources]]
+country = "IN"
+name = "KIRAN mental health helpline"
+phone = "1800-599-0019"
+
+[[crisis_phrases]]
+language = "hi-IN"
+phrase = "main apni jaan dena chahta hoon"
+
+[[crisis_phrases]]
+language = "hi-IN"
+phrase = "mujhe khud ko nuksan pahunchana hai"

@@ -1,0 +1,15 @@
+.git
+.dart_tool
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+build
+coverage
+logs
+tmp
+*.pyc
+*.log
+.env
+.env.*
+!.env.example

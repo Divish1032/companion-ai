@@ -1,0 +1,1 @@
+"""Companion AI API service."""
