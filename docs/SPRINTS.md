@@ -361,6 +361,85 @@ Acceptance:
 - TTS latency metrics logged.
 - TTS cost metrics logged.
 
+### Sprint 7.5: Conversation Memory and Context Quality
+
+Goal:
+
+Make the companion remember useful context from the same session and previous local
+sessions without polluting LLM prompts with bad STT, duplicate fragments, stale
+assistant text, or unsafe inferred facts.
+
+Tasks:
+
+- Create a dedicated prompt/context builder for LLM calls.
+- Represent context as structured messages and memory blocks, not ad hoc strings.
+- Keep the latest user transcript as the highest-priority prompt input.
+- Keep a bounded same-session working context of recent complete turns.
+- Add a local previous-session memory summary that stays on device.
+- Add a tiny local stable-facts store for explicit, useful facts such as preferred name,
+  language style, and repeated safe preferences.
+- Store memory provenance and quality metadata: source turn IDs, role, transcript status,
+  STT confidence when available, created/updated timestamps, last-used timestamp, and
+  confidence/importance score.
+- Add memory admission rules so low-confidence, empty, repeat-requested, replaced,
+  duplicate, or obviously fragmented STT turns do not enter LLM context.
+- Add memory update rules: reinforce explicitly repeated facts, decay stale low-importance
+  facts, and never infer sensitive or enduring emotional facts from one ambiguous turn.
+- Add confidence/status metadata to transcript context sent from mobile to backend.
+- Ensure only complete turns are eligible for memory: final user transcript plus final
+  assistant transcript.
+- Deduplicate repeated transcript fragments and repeated assistant replies before prompt
+  assembly.
+- Add a local retrieval/ranking step for memory selection using recency, relevance to the
+  latest user turn, importance, and quality score. Keep it deterministic/simple for MVP;
+  do not add an external vector database.
+- Add correction handling so "Bad transcript? Re-speak" replacement removes or supersedes
+  the noisy old turn from future context.
+- Add memory source labels in prompt assembly, such as `latest_user`, `recent_turns`,
+  `session_summary`, and `stable_facts`.
+- Add strict prompt instructions that memory is fallible and the latest user message is
+  authoritative.
+- Add sensitive-memory guardrails: avoid storing crisis/self-harm events, medical/legal/
+  financial claims, sexual content, or dependency phrases as stable facts; keep them only
+  as short-lived safety context when needed.
+- Keep all memory local-only for MVP; do not add cloud memory, auth, user accounts, vector
+  databases, or raw audio storage.
+- Ensure clear-history deletes local transcript history, session summaries, and stable
+  facts.
+- Add redacted diagnostics for prompt assembly: counts, roles, statuses, and character
+  budgets, without logging full transcript text by default.
+- Add tests for role correctness, noisy-STT exclusion, deduplication, replacement,
+  clear-history erasure, and bounded prompt size.
+- Add a small memory evaluation fixture with scripted Hindi/Hinglish turns that checks:
+  same-session recall, previous-session recall, refusal to recall noisy STT, refusal to
+  over-personalize from one turn, and no repetition from stale context.
+- Validate on Android with at least one same-session memory recall and one previous-session
+  memory recall.
+
+Deliverables:
+
+- LLM prompt context is precise, bounded, inspectable, and local-memory backed.
+- Assistant can naturally remember a small number of useful facts without repeating noisy
+  or stale transcript fragments.
+
+Acceptance:
+
+- Assistant can refer to a clear fact from earlier in the same session.
+- Assistant can refer to one explicit stable fact from a previous local session.
+- Low-confidence, empty, repeated, replaced, and repeat-requested transcripts are excluded
+  from future LLM context.
+- Assistant messages are never sent as user messages.
+- Prompt context remains bounded by documented message and character limits.
+- Prompt assembly chooses memory by documented priority: latest user turn first, then
+  high-quality relevant memory, then recent complete turns, with stale/noisy memory omitted.
+- Memory records include provenance and quality metadata sufficient to debug why a memory
+  was included or excluded without logging full transcript text.
+- Sensitive or safety-related events are not promoted into stable facts.
+- Clear history removes transcript history and all local memory artifacts.
+- No raw audio, cloud transcript storage, auth, text input, video/avatar, or vector DB is
+  introduced.
+- Android validation shows memory recall works without obvious repetition from noisy STT.
+
 ### Sprint 8: End-to-End Latency and Cost Instrumentation
 
 Goal:
