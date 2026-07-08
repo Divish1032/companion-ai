@@ -17,7 +17,7 @@ agent_assigner = AgentAssigner(settings)
 
 class RecentTranscriptItem(BaseModel):
     turn_id: str = Field(min_length=1, max_length=128)
-    role: str = Field(pattern="^(user|ai)$")
+    role: str = Field(pattern="^(user|ai|assistant)$")
     text: str = Field(min_length=1, max_length=1000)
     created_at_ms: int
 

@@ -21,12 +21,14 @@ from app.providers import (
     LLMProvider,
     PersonaLLMProvider,
     ProviderRouting,
+    SarvamBulbulTTSProvider,
     SarvamChatLLMProvider,
     SarvamSTTProvider,
     STTProvider,
+    TTSProvider,
     VoskSTTProvider,
 )
-from app.providers.interfaces import LLMMessage, LLMToken, TranscriptEvent
+from app.providers.interfaces import LLMMessage, LLMToken, TTSAudioFrame, TranscriptEvent
 from app.providers.mock import MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
 
@@ -48,6 +50,8 @@ class AgentTransport(Protocol):
     async def publish_reliable(self, payload: bytes, topic: str = "critical") -> None: ...
     async def publish_lossy(self, payload: bytes, topic: str = "diagnostic") -> None: ...
     async def publish_placeholder_audio(self, duration_ms: int) -> None: ...
+    async def publish_audio_frame(self, frame: CanonicalAudioFrame) -> None: ...
+    async def stop_audio(self, *, fade_out_ms: int) -> None: ...
     async def wait_for_client_activity(
         self, timeout_seconds: float
     ) -> str | CanonicalAudioFrame | None: ...
@@ -61,9 +65,12 @@ class LiveKitAgentTransport:
         self.room: rtc.Room | None = None
         self._activity_queue: asyncio.Queue[str | CanonicalAudioFrame] = asyncio.Queue()
         self._audio_source: rtc.AudioSource | None = None
+        self._audio_source_sample_rate = 16000
+        self._audio_source_num_channels = 1
         self._audio_track_published = False
         self._seen_user_audio = False
         self._audio_tasks: set[asyncio.Task[None]] = set()
+        self._audio_publish_lock = asyncio.Lock()
 
     def _bind_room_handlers(self, room: rtc.Room) -> None:
 
@@ -134,6 +141,8 @@ class LiveKitAgentTransport:
 
         if self._audio_source is None:
             self._audio_source = rtc.AudioSource(sample_rate=16000, num_channels=1)
+            self._audio_source_sample_rate = 16000
+            self._audio_source_num_channels = 1
         if not self._audio_track_published:
             track = rtc.LocalAudioTrack.create_audio_track("fake-ai-audio", self._audio_source)
             await self.room.local_participant.publish_track(track)
@@ -141,6 +150,51 @@ class LiveKitAgentTransport:
 
         for frame in _placeholder_pcm_frames(duration_ms=duration_ms):
             await self._audio_source.capture_frame(frame)
+
+    async def publish_audio_frame(self, frame: CanonicalAudioFrame) -> None:
+        async with self._audio_publish_lock:
+            if self.room is None:
+                raise AgentAssignmentError("LiveKit room is not connected.")
+            if self._audio_source is None:
+                self._audio_source = rtc.AudioSource(
+                    sample_rate=frame.sample_rate,
+                    num_channels=frame.num_channels,
+                )
+                self._audio_source_sample_rate = frame.sample_rate
+                self._audio_source_num_channels = frame.num_channels
+            if not self._audio_track_published:
+                track = rtc.LocalAudioTrack.create_audio_track("ai-audio", self._audio_source)
+                await self.room.local_participant.publish_track(track)
+                self._audio_track_published = True
+            await self._audio_source.capture_frame(
+                rtc.AudioFrame(
+                    data=frame.pcm16,
+                    sample_rate=frame.sample_rate,
+                    num_channels=frame.num_channels,
+                    samples_per_channel=max(len(frame.pcm16) // (2 * frame.num_channels), 1),
+                )
+            )
+
+    async def stop_audio(self, *, fade_out_ms: int) -> None:
+        async with self._audio_publish_lock:
+            if self._audio_source is None:
+                return
+            sample_rate = self._audio_source_sample_rate
+            num_channels = self._audio_source_num_channels
+            samples = max(round(sample_rate * fade_out_ms / 1000), 1)
+            try:
+                await self._audio_source.capture_frame(
+                    rtc.AudioFrame(
+                        data=b"\x00\x00" * samples * num_channels,
+                        sample_rate=sample_rate,
+                        num_channels=num_channels,
+                        samples_per_channel=samples,
+                    )
+                )
+            except Exception:
+                self._audio_source = None
+                self._audio_track_published = False
+                return
 
     async def wait_for_client_activity(
         self, timeout_seconds: float
@@ -201,6 +255,14 @@ class MemoryAgentTransport:
         if self.audio_publish_delay_seconds > 0:
             await asyncio.sleep(self.audio_publish_delay_seconds)
 
+    async def publish_audio_frame(self, frame: CanonicalAudioFrame) -> None:
+        self.audio_publications += 1
+        if self.audio_publish_delay_seconds > 0:
+            await asyncio.sleep(self.audio_publish_delay_seconds)
+
+    async def stop_audio(self, *, fade_out_ms: int) -> None:
+        self.audio_publications += 1
+
     async def wait_for_client_activity(
         self, timeout_seconds: float
     ) -> str | CanonicalAudioFrame | None:
@@ -222,7 +284,7 @@ class RealtimeAgentSession:
         transport: AgentTransport,
         stt_provider: STTProvider | None = None,
         llm_provider: LLMProvider | None = None,
-        tts_provider: MockTTSProvider | None = None,
+        tts_provider: TTSProvider | None = None,
         safety_classifier: SafetyClassifier | None = None,
     ) -> None:
         self.assignment = assignment
@@ -230,7 +292,7 @@ class RealtimeAgentSession:
         self.transport = transport
         self.stt_provider = stt_provider or create_stt_provider(settings)
         self.llm_provider = llm_provider or create_llm_provider(settings)
-        self.tts_provider = tts_provider or MockTTSProvider()
+        self.tts_provider = tts_provider or create_tts_provider(settings)
         self.safety_classifier = safety_classifier or SafetyClassifier()
         self.persona = load_persona_settings(settings)
         self._conversation_history = self._initial_conversation_history()
@@ -270,6 +332,7 @@ class RealtimeAgentSession:
         if self._current_turn is None or self._current_turn.done():
             return False
         self._current_turn.cancel()
+        self._assistant_speaking = False
         return True
 
     async def close_stt_streams(self) -> None:
@@ -304,7 +367,11 @@ class RealtimeAgentSession:
                 self.cancel_current_turn()
                 await self._emit_state("listening", turn_id=None)
                 continue
-            if self._current_turn is None or self._current_turn.done():
+            if "client_session_started" in activity:
+                continue
+            if "client_fake_turn" in activity and (
+                self._current_turn is None or self._current_turn.done()
+            ):
                 self._current_turn = asyncio.create_task(self._run_fake_turn())
             _ = now_ms
 
@@ -385,8 +452,10 @@ class RealtimeAgentSession:
             if self._assistant_speaking or (
                 self._current_turn is not None and not self._current_turn.done()
             ):
+                stage = "during_speaking" if self._assistant_speaking else "before_tts"
                 cancelled = self.cancel_current_turn()
-                await self._emit_barge_in(event, cancelled=cancelled)
+                await self.transport.stop_audio(fade_out_ms=60)
+                await self._emit_barge_in(event, cancelled=cancelled, stage=stage)
             await self._emit_endpoint_event(event)
             await self._emit_state("user_speaking", turn_id=event.turn_id)
             return
@@ -409,14 +478,31 @@ class RealtimeAgentSession:
             self.sequencer.encode(event_type=event.type, turn_id=event.turn_id, payload=payload)
         )
 
-    async def _emit_barge_in(self, event: EndpointEvent, *, cancelled: bool) -> None:
+    async def _emit_barge_in(
+        self,
+        event: EndpointEvent,
+        *,
+        cancelled: bool,
+        stage: str,
+    ) -> None:
         payload = {
-            "stage": "during_speaking" if self._assistant_speaking else "before_tts",
+            "stage": stage,
             "cancelled": cancelled,
             "elapsed_ms": event.elapsed_ms,
         }
         await self.transport.publish_reliable(
             self.sequencer.encode(event_type="barge_in", turn_id=event.turn_id, payload=payload)
+        )
+        print(
+            "barge_in",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": event.turn_id,
+                "stage": stage,
+                "cancelled": cancelled,
+                "elapsed_ms": event.elapsed_ms,
+            },
+            flush=True,
         )
 
     def _record_stt_audio(self, frame: CanonicalAudioFrame) -> None:
@@ -512,6 +598,7 @@ class RealtimeAgentSession:
             await self._emit_transcript_repeat(turn_id, reason=repeat_reason, metrics=metrics)
             return
 
+        self.cancel_current_turn()
         self._current_turn = asyncio.create_task(
             self._respond_to_final_transcript(turn_id, event.text)
         )
@@ -566,6 +653,7 @@ class RealtimeAgentSession:
             token=last_token,
         )
         self._remember_turn(user_text, text)
+        await self._speak_text(turn_id, text)
         await self._emit_state("listening", turn_id=turn_id)
 
     async def _stream_llm_response(
@@ -662,6 +750,72 @@ class RealtimeAgentSession:
                 event_type="assistant_transcript_final",
                 turn_id=turn_id,
                 payload=payload,
+            )
+        )
+
+    async def _speak_text(self, turn_id: str, text: str) -> None:
+        await self._emit_state("speaking", turn_id=turn_id)
+        started = _monotonic_ms()
+        first_audio_ms: int | None = None
+        totals = {
+            "chars": 0,
+            "audio_ms": 0,
+            "billed_units": 0.0,
+            "cost_units": 0.0,
+        }
+        provider = selected_tts_provider_name(self.settings)
+        model = self.settings.tts_model
+        try:
+            async for tts_frame in self.tts_provider.synthesize(text, self.settings.language):
+                if first_audio_ms is None:
+                    first_audio_ms = _monotonic_ms() - started
+                _add_tts_totals(totals, tts_frame)
+                provider = tts_frame.provider or provider
+                model = tts_frame.model or model
+                await self.transport.publish_audio_frame(tts_frame.frame)
+        except asyncio.CancelledError:
+            await self.transport.stop_audio(fade_out_ms=60)
+            raise
+        except Exception as error:
+            await self._emit_tts_error(turn_id, str(error))
+            print(
+                "tts_error",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "provider": provider,
+                    "message": str(error),
+                },
+                flush=True,
+            )
+            return
+
+        latency_ms = _monotonic_ms() - started
+        metrics = {
+            "provider": provider,
+            "model": model,
+            "latency_ms": latency_ms,
+            "first_audio_ms": first_audio_ms or latency_ms,
+            **totals,
+        }
+        await self._emit_tts_metrics(turn_id, metrics)
+        print(
+            "tts_final",
+            {"session_id": self.assignment.session_id, "turn_id": turn_id, **metrics},
+            flush=True,
+        )
+
+    async def _emit_tts_metrics(self, turn_id: str, metrics: dict[str, object]) -> None:
+        await self.transport.publish_reliable(
+            self.sequencer.encode(event_type="tts_metrics", turn_id=turn_id, payload=metrics)
+        )
+
+    async def _emit_tts_error(self, turn_id: str, message: str) -> None:
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="tts_error",
+                turn_id=turn_id,
+                payload={"message": message, "provider": selected_tts_provider_name(self.settings)},
             )
         )
 
@@ -808,6 +962,26 @@ def create_llm_provider(settings: Settings) -> LLMProvider:
         return _UnavailableLLMProvider(provider_name=provider_name, error=error)
 
 
+def create_tts_provider(settings: Settings) -> TTSProvider:
+    provider_name = selected_tts_provider_name(settings)
+    try:
+        if provider_name == "mock":
+            return MockTTSProvider()
+        if provider_name == "sarvam":
+            return SarvamBulbulTTSProvider(
+                api_key=settings.sarvam_api_key,
+                model=settings.tts_model,
+                base_url=settings.sarvam_tts_base_url,
+                speaker=settings.tts_speaker,
+                sample_rate=settings.tts_sample_rate,
+                timeout_seconds=settings.tts_timeout_seconds,
+                price_per_10k_chars=settings.tts_price_per_10k_chars,
+            )
+        raise AgentAssignmentError(f"Unsupported TTS provider: {provider_name}")
+    except Exception as error:
+        return _UnavailableTTSProvider(provider_name=provider_name, error=error)
+
+
 def selected_llm_provider_name(settings: Settings) -> str:
     if settings.llm_provider:
         return settings.llm_provider
@@ -826,6 +1000,16 @@ def selected_stt_provider_name(settings: Settings) -> str:
         return routing.for_language(settings.language).stt
     except Exception:
         return "vosk"
+
+
+def selected_tts_provider_name(settings: Settings) -> str:
+    if settings.tts_provider:
+        return settings.tts_provider
+    try:
+        routing = ProviderRouting.from_dict(_load_persona_config(settings))
+        return routing.for_language(settings.language).tts
+    except Exception:
+        return "mock"
 
 
 def _load_persona_config(settings: Settings) -> dict[str, object]:
@@ -852,6 +1036,13 @@ def _stt_metrics_payload(event: TranscriptEvent) -> dict[str, object]:
         "billed_units": event.billed_units,
         "cost_units": event.cost_units,
     }
+
+
+def _add_tts_totals(totals: dict[str, float], frame: TTSAudioFrame) -> None:
+    totals["chars"] += frame.chars
+    totals["audio_ms"] += frame.audio_ms
+    totals["billed_units"] += frame.billed_units
+    totals["cost_units"] += frame.cost_units
 
 
 def _clip_response_text(text: str, *, max_chars: int) -> tuple[str, bool]:
@@ -899,6 +1090,16 @@ class _UnavailableLLMProvider(LLMProvider):
         max_output_chars: int,
     ) -> AsyncIterator[LLMToken]:
         raise RuntimeError(f"{self.provider_name} LLM unavailable: {self.error}")
+        yield  # pragma: no cover
+
+
+class _UnavailableTTSProvider(TTSProvider):
+    def __init__(self, *, provider_name: str, error: Exception) -> None:
+        self.provider_name = provider_name
+        self.error = error
+
+    async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
+        raise RuntimeError(f"{self.provider_name} TTS unavailable: {self.error}")
         yield  # pragma: no cover
 
 
@@ -960,3 +1161,9 @@ def _wall_clock_ms() -> int:
     import time
 
     return int(time.time() * 1000)
+
+
+def _monotonic_ms() -> int:
+    import time
+
+    return round(time.perf_counter() * 1000)

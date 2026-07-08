@@ -10,7 +10,15 @@ from app.lifecycle import (
     RealtimeAgentSession,
     _wait_until_started,
 )
-from app.providers.interfaces import LLMMessage, LLMProvider, LLMToken, STTProvider, TranscriptEvent
+from app.providers.interfaces import (
+    LLMMessage,
+    LLMProvider,
+    LLMToken,
+    STTProvider,
+    TTSAudioFrame,
+    TTSProvider,
+    TranscriptEvent,
+)
 from app.providers.mock import MockSTTProvider
 
 
@@ -25,7 +33,7 @@ def test_agent_emits_state_sequence_and_filler_before_fake_audio() -> None:
     async def scenario() -> None:
         task = asyncio.create_task(session.run())
         await session.started.wait()
-        await transport.activity.put("client_session_started")
+        await transport.activity.put("client_fake_turn")
         await _wait_for_events(transport, minimum=6)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -55,7 +63,7 @@ def test_cancellation_primitive_cancels_current_turn() -> None:
     async def scenario() -> bool:
         task = asyncio.create_task(session.run())
         await session.started.wait()
-        await transport.activity.put("client_session_started")
+        await transport.activity.put("client_fake_turn")
         await _wait_for_state(transport, "thinking")
         cancelled = session.cancel_current_turn()
         task.cancel()
@@ -85,7 +93,7 @@ def test_safety_override_runs_before_fake_audio() -> None:
     async def scenario() -> None:
         task = asyncio.create_task(session.run())
         await session.started.wait()
-        await transport.activity.put("client_session_started")
+        await transport.activity.put("client_fake_turn")
         await _wait_for_events(transport, minimum=4)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -110,7 +118,7 @@ def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
     async def scenario() -> None:
         task = asyncio.create_task(session.run())
         await session.started.wait()
-        await transport.activity.put("client_session_started")
+        await transport.activity.put("client_fake_turn")
         await _wait_for_state(transport, "speaking")
         for _ in range(8):
             await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
@@ -124,7 +132,12 @@ def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
     asyncio.run(scenario())
 
     events = [_decode(event) for event in transport.events]
-    assert any(event["type"] == "barge_in" and event.get("cancelled") is True for event in events)
+    assert any(
+        event["type"] == "barge_in"
+        and event.get("cancelled") is True
+        and event.get("stage") == "during_speaking"
+        for event in events
+    )
     assert any(event["type"] == "endpoint_commit" for event in events)
     assert any(
         event["type"] == "session_state" and event.get("state") == "listening" for event in events
@@ -197,6 +210,40 @@ def test_final_transcript_streams_assistant_response() -> None:
     assert assistant["provider"] == "persona_local"
     assert assistant["status"] == "final"
     assert assistant["cost_units"] == 0
+
+
+def test_final_transcript_synthesizes_tts_audio_and_metrics() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("namaste"),
+        tts_provider=StaticTTSProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "tts_metrics")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    metrics = next(event for event in events if event["type"] == "tts_metrics")
+
+    assert transport.audio_publications == 2
+    assert metrics["provider"] == "test-tts"
+    assert metrics["chars"] > 0
+    assert metrics["billed_units"] > 0
+    assert metrics["cost_units"] > 0
+    assert metrics["first_audio_ms"] >= 0
 
 
 def test_llm_error_produces_graceful_fallback() -> None:
@@ -290,6 +337,42 @@ def test_crisis_final_transcript_uses_safety_response_without_llm() -> None:
     assert transport.audio_publications == 0
 
 
+def test_barge_in_stops_tts_audio_with_fade_path() -> None:
+    transport = MemoryAgentTransport(audio_publish_delay_seconds=1)
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("namaste"),
+        tts_provider=SlowTTSProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_state(transport, "speaking")
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        await _wait_for_event_type(transport, "barge_in")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assert any(
+        event["type"] == "barge_in"
+        and event.get("cancelled") is True
+        and event.get("stage") == "during_speaking"
+        for event in events
+    )
+    assert transport.audio_publications >= 1
+
+
 def test_llm_context_preserves_assistant_roles_and_updates_in_session_history() -> None:
     llm = RecordingLLMProvider()
     session = RealtimeAgentSession(
@@ -367,6 +450,50 @@ def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
     )
 
 
+def test_new_final_transcript_cancels_overlapping_response_task() -> None:
+    transport = MemoryAgentTransport(audio_publish_delay_seconds=1)
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        tts_provider=SlowTTSProvider(),
+    )
+
+    async def scenario() -> bool:
+        await session._handle_final_transcript(
+            "session_test:turn:0001",
+            TranscriptEvent(
+                text="pehla turn",
+                is_final=True,
+                confidence=0.99,
+                provider="test-static",
+                model="test",
+            ),
+        )
+        await _wait_for_state(transport, "speaking")
+        first_task = session._current_turn
+        assert first_task is not None
+
+        await session._handle_final_transcript(
+            "session_test:turn:0002",
+            TranscriptEvent(
+                text="dusra turn",
+                is_final=True,
+                confidence=0.99,
+                provider="test-static",
+                model="test",
+            ),
+        )
+        await asyncio.sleep(0)
+        second_task = session._current_turn
+        assert second_task is not None
+        second_task.cancel()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        return first_task.cancelled() and second_task is not first_task
+
+    assert asyncio.run(scenario()) is True
+
+
 def test_wait_until_started_does_not_cancel_agent_task() -> None:
     async def scenario() -> bool:
         started = asyncio.Event()
@@ -401,6 +528,7 @@ def _settings(**overrides: object) -> Settings:
         enable_livekit_rtc=False,
         max_idle_seconds=1,
         fake_audio_ms=20,
+        tts_provider="mock",
         **overrides,
     )
 
@@ -527,3 +655,35 @@ class RecordingLLMProvider(LLMProvider):
     ):
         self.calls.append(messages)
         yield LLMToken(text="recorded reply", provider="test-recording", model="test")
+
+
+class StaticTTSProvider(TTSProvider):
+    async def synthesize(self, text: str, language: str):  # noqa: ANN001
+        for _ in range(2):
+            yield TTSAudioFrame(
+                frame=pcm_sine_frame(duration_ms=20, sample_rate=16000),
+                provider="test-tts",
+                model="test",
+                text=text,
+                latency_ms=5,
+                audio_ms=20,
+                chars=len(text),
+                billed_units=float(len(text)),
+                cost_units=len(text) * 0.003,
+            )
+
+
+class SlowTTSProvider(TTSProvider):
+    async def synthesize(self, text: str, language: str):  # noqa: ANN001
+        yield TTSAudioFrame(
+            frame=pcm_sine_frame(duration_ms=20, sample_rate=16000),
+            provider="test-tts",
+            model="test",
+            text=text,
+            latency_ms=5,
+            audio_ms=20,
+            chars=len(text),
+            billed_units=float(len(text)),
+            cost_units=len(text) * 0.003,
+        )
+        await asyncio.sleep(5)

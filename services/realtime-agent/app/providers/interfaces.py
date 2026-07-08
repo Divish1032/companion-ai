@@ -35,6 +35,19 @@ class LLMToken:
     cost_units: float = 0
 
 
+@dataclass(frozen=True)
+class TTSAudioFrame:
+    frame: CanonicalAudioFrame
+    provider: str = ""
+    model: str = ""
+    text: str = ""
+    latency_ms: int = 0
+    audio_ms: int = 0
+    chars: int = 0
+    billed_units: float = 0
+    cost_units: float = 0
+
+
 class STTProvider(ABC):
     @abstractmethod
     async def stream(
@@ -70,5 +83,5 @@ class LLMProvider(ABC):
 
 class TTSProvider(ABC):
     @abstractmethod
-    async def synthesize(self, text: str, language: str) -> AsyncIterator[bytes]:
+    async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
         raise NotImplementedError

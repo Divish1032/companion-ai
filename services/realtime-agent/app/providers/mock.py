@@ -9,6 +9,7 @@ from app.providers.interfaces import (
     LLMProvider,
     LLMToken,
     STTProvider,
+    TTSAudioFrame,
     TTSProvider,
     TranscriptEvent,
 )
@@ -63,8 +64,21 @@ class MockLLMProvider(LLMProvider):
 
 
 class MockTTSProvider(TTSProvider):
-    async def synthesize(self, text: str, language: str) -> AsyncIterator[bytes]:
-        # Placeholder bytes exercise the pipeline contract. LiveKit publication
-        # is handled by the transport adapter as generated PCM, not real TTS.
+    async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
+        # Placeholder frame exercises the provider contract without storing or
+        # decoding raw user audio.
         await asyncio.sleep(0)
-        yield text.encode("utf-8")
+        yield TTSAudioFrame(
+            frame=CanonicalAudioFrame(
+                pcm16=b"\x00\x00" * 320,
+                sample_rate=16000,
+                num_channels=1,
+                duration_ms=20,
+            ),
+            provider="mock",
+            model="mock",
+            text=text,
+            audio_ms=20,
+            chars=len(text),
+            billed_units=len(text),
+        )

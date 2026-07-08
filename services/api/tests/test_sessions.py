@@ -23,7 +23,7 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
             "recent_transcript_context": [
                 _context_item("turn_1", "first"),
                 _context_item("turn_2", "second"),
-                _context_item("turn_3", "third"),
+                _context_item("turn_3", "third", role="assistant"),
             ],
         },
     )
@@ -154,10 +154,10 @@ def _client(
     return client, store
 
 
-def _context_item(turn_id: str, text: str) -> dict[str, object]:
+def _context_item(turn_id: str, text: str, *, role: str = "user") -> dict[str, object]:
     return {
         "turn_id": turn_id,
-        "role": "user",
+        "role": role,
         "text": text,
         "created_at_ms": 1,
     }

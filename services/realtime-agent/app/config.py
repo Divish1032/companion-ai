@@ -31,11 +31,18 @@ class Settings(BaseSettings):
     stt_min_confidence: float = 0.35
     llm_provider: str = ""
     llm_model: str = "sarvam-30b"
+    tts_provider: str = ""
+    tts_model: str = "bulbul:v3"
+    tts_speaker: str = "shubh"
+    tts_sample_rate: int = 24000
+    tts_timeout_seconds: float = 12.0
+    tts_price_per_10k_chars: float = 30.0
     sarvam_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("AGENT_SARVAM_API_KEY", "SARVAM_API_KEY"),
     )
     sarvam_base_url: str = "https://api.sarvam.ai/v1"
+    sarvam_tts_base_url: str = "https://api.sarvam.ai"
     llm_timeout_seconds: float = 12.0
     vad_provider: str = "silero"
     vad_start_threshold: float = 0.55
