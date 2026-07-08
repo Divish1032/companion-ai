@@ -10,7 +10,7 @@ from app.lifecycle import (
     RealtimeAgentSession,
     _wait_until_started,
 )
-from app.providers.interfaces import STTProvider, TranscriptEvent
+from app.providers.interfaces import LLMMessage, LLMProvider, LLMToken, STTProvider, TranscriptEvent
 from app.providers.mock import MockSTTProvider
 
 
@@ -126,7 +126,9 @@ def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
     events = [_decode(event) for event in transport.events]
     assert any(event["type"] == "barge_in" and event.get("cancelled") is True for event in events)
     assert any(event["type"] == "endpoint_commit" for event in events)
-    assert any(event["type"] == "session_state" and event.get("state") == "listening" for event in events)
+    assert any(
+        event["type"] == "session_state" and event.get("state") == "listening" for event in events
+    )
 
 
 def test_audio_endpoint_runs_stt_and_emits_transcript_metrics() -> None:
@@ -164,6 +166,175 @@ def test_audio_endpoint_runs_stt_and_emits_transcript_metrics() -> None:
     assert final["latency_ms"] >= 0
 
 
+def test_final_transcript_streams_assistant_response() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("namaste mera mood theek nahi hai"),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    reliable = [_decode(event) for event in transport.events]
+    lossy = [_decode(event) for event in transport.lossy_events]
+    assistant = next(event for event in reliable if event["type"] == "assistant_transcript_final")
+
+    assert any(event["type"] == "assistant_transcript_partial" for event in lossy)
+    assert "Samajh raha hoon" in str(assistant["text"])
+    assert assistant["provider"] == "persona_local"
+    assert assistant["status"] == "final"
+    assert assistant["cost_units"] == 0
+
+
+def test_llm_error_produces_graceful_fallback() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("namaste"),
+        llm_provider=FailingLLMProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert "jawab dene mein dikkat" in str(assistant["text"])
+    assert assistant["provider"] == "persona_local"
+
+
+def test_overlong_llm_output_is_clipped_before_final_response() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("namaste"),
+        llm_provider=LongLLMProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert len(str(assistant["text"])) <= 240
+    assert assistant["clipped"] is True
+
+
+def test_crisis_final_transcript_uses_safety_response_without_llm() -> None:
+    transport = MemoryAgentTransport()
+    llm = CountingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("main mar jaana chahta hoon"),
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert assistant["status"] == "safety_override"
+    assert assistant["safety_reason"] == "crisis_keyword"
+    assert "112" in str(assistant["text"])
+    assert llm.calls == 0
+    assert transport.audio_publications == 0
+
+
+def test_llm_context_preserves_assistant_roles_and_updates_in_session_history() -> None:
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(
+            recent_context=[
+                {
+                    "role": "user",
+                    "text": "pehla user turn",
+                    "turn_id": "turn_1",
+                    "created_at_ms": 1,
+                },
+                {
+                    "role": "assistant",
+                    "text": "pehla assistant reply",
+                    "turn_id": "turn_1",
+                    "created_at_ms": 2,
+                },
+                {
+                    "role": "ai",
+                    "text": "legacy ai reply",
+                    "turn_id": "turn_2",
+                    "created_at_ms": 3,
+                },
+            ]
+        ),
+        settings=_settings(),
+        transport=MemoryAgentTransport(),
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._respond_to_final_transcript("session_test:turn:0003", "naya user turn")
+        await session._respond_to_final_transcript("session_test:turn:0004", "dusra user turn")
+
+    asyncio.run(scenario())
+
+    first_roles = [(message.role, message.content) for message in llm.calls[0]]
+    second_roles = [(message.role, message.content) for message in llm.calls[1]]
+
+    assert ("assistant", "pehla assistant reply") in first_roles
+    assert ("assistant", "legacy ai reply") in first_roles
+    assert ("assistant", "recorded reply") in second_roles
+    assert second_roles[-1] == ("user", "dusra user turn")
+
+
 def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
     transport = MemoryAgentTransport()
     session = RealtimeAgentSession(
@@ -188,11 +359,12 @@ def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
 
     events = [_decode(event) for event in transport.events]
     assert any(
-        event["type"] == "transcript_repeat_requested"
-        and event.get("reason") == "empty_transcript"
+        event["type"] == "transcript_repeat_requested" and event.get("reason") == "empty_transcript"
         for event in events
     )
-    assert not any(event["type"] == "session_state" and event.get("state") == "thinking" for event in events)
+    assert not any(
+        event["type"] == "session_state" and event.get("state") == "thinking" for event in events
+    )
 
 
 def test_wait_until_started_does_not_cancel_agent_task() -> None:
@@ -278,3 +450,80 @@ class EmptySTTProvider(STTProvider):
             latency_ms=3,
             audio_seconds=audio_seconds,
         )
+
+
+class StaticSTTProvider(STTProvider):
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def stream(self, audio_frames, language: str):  # noqa: ANN001
+        audio_seconds = 0.0
+        async for frame in audio_frames:
+            assert isinstance(frame, CanonicalAudioFrame)
+            audio_seconds += frame.duration_ms / 1000
+        yield TranscriptEvent(
+            text=self.text,
+            is_final=True,
+            confidence=0.99,
+            provider="test-static",
+            model="test",
+            latency_ms=3,
+            audio_seconds=audio_seconds,
+        )
+
+
+class FailingLLMProvider(LLMProvider):
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ):
+        raise RuntimeError("simulated LLM failure")
+        yield  # pragma: no cover
+
+
+class LongLLMProvider(LLMProvider):
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ):
+        yield LLMToken(
+            text=" ".join(["bahut lamba jawab"] * 40),
+            provider="test-long",
+            model="test",
+        )
+
+
+class CountingLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ):
+        self.calls += 1
+        yield LLMToken(text="normal reply", provider="test-counting", model="test")
+
+
+class RecordingLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls: list[list[LLMMessage]] = []
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ):
+        self.calls.append(messages)
+        yield LLMToken(text="recorded reply", provider="test-recording", model="test")

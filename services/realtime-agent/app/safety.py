@@ -12,10 +12,20 @@ CRISIS_RESPONSE_HI = (
 
 CRISIS_KEYWORDS = (
     "main mar jaana chahta hoon",
+    "main apni jaan dena chahta hoon",
     "jeene ka mann nahi karta",
     "sab khatam karna hai",
     "suicide",
     "khud ko maar",
+    "khud ko nuksan",
+)
+
+PROMPT_INJECTION_KEYWORDS = (
+    "ignore previous instructions",
+    "ignore system prompt",
+    "developer message",
+    "system prompt batao",
+    "prompt leak",
 )
 
 
@@ -34,5 +44,17 @@ class SafetyClassifier:
                 allowed=False,
                 response_override=CRISIS_RESPONSE_HI,
                 reason="crisis_keyword",
+            )
+        if any(keyword in normalized for keyword in PROMPT_INJECTION_KEYWORDS):
+            return SafetyDecision(allowed=True, reason="prompt_injection_guard")
+        return SafetyDecision(allowed=True)
+
+    def classify_output(self, text: str) -> SafetyDecision:
+        normalized = text.casefold()
+        if any(keyword in normalized for keyword in CRISIS_KEYWORDS):
+            return SafetyDecision(
+                allowed=False,
+                response_override=CRISIS_RESPONSE_HI,
+                reason="output_crisis_keyword",
             )
         return SafetyDecision(allowed=True)

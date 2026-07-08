@@ -140,8 +140,7 @@ def _run_sample(
 
 def _speech(duration_ms: int):
     return [
-        pcm_sine_frame(duration_ms=30, amplitude=5000)
-        for _ in range(max(duration_ms // 30, 1))
+        pcm_sine_frame(duration_ms=30, amplitude=5000) for _ in range(max(duration_ms // 30, 1))
     ]
 
 

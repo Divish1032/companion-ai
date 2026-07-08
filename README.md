@@ -4,9 +4,9 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 5 STT integration complete.
+Active phase: Sprint 6 LLM integration and persona complete.
 
-Sprint -1 through Sprint 5 are complete and green. Sprint 5 streams endpointed user audio into the configured STT provider, defaults Hindi STT routing to backend-local Vosk, emits partial/final transcript events, and persists final user transcripts locally on device. Real LLM, real TTS, auth, text input, and video/avatar remain out of scope.
+Sprint -1 through Sprint 6 are complete and green. Sprint 6 turns final user transcripts into concise Hindi/Hinglish assistant text responses through the LLM provider interface, emits assistant transcript partial/final events, and applies crisis safety overrides before any playback path. Real TTS, auth, text input, and video/avatar remain out of scope.
 
 ## Repo Layout
 
@@ -89,11 +89,13 @@ The filler-audio path is represented by reliable `filler_audio` start/stop event
 
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT routes to `vosk` for Sprint 5, while Sarvam STT remains scaffolded as a future/fallback API-backed adapter path.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT routes to `vosk`, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Sarvam STT/LLM remain behind provider interfaces for configured API-backed use.
 
 For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/` and set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If the model path is absent, the agent still starts and emits an `stt_error` event on speech instead of fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
 
 Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi transcript for "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai" with Vosk metrics logged by realtime-agent.
+
+Sprint 6 assistant text responses use the persona prompt, short history window, and response length limits in `config/personas/hindi_companion_v1.toml`. To use Sarvam chat completions, set `AGENT_LLM_PROVIDER=sarvam` and provide `AGENT_SARVAM_API_KEY` or root `SARVAM_API_KEY`; without a working provider the turn emits the configured graceful fallback response. The Sarvam-30B adapter was live-key smoke tested through `/v1/chat/completions`; it disables reasoning for short voice-turn responses so assistant content is returned within the small token cap.
 
 ## Git Hooks
 

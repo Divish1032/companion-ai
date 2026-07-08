@@ -4,7 +4,14 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from app.audio_pipeline import CanonicalAudioFrame
-from app.providers.interfaces import LLMProvider, STTProvider, TTSProvider, TranscriptEvent
+from app.providers.interfaces import (
+    LLMMessage,
+    LLMProvider,
+    LLMToken,
+    STTProvider,
+    TTSProvider,
+    TranscriptEvent,
+)
 
 
 class MockSTTProvider(STTProvider):
@@ -40,6 +47,16 @@ class MockSTTProvider(STTProvider):
 
 
 class MockLLMProvider(LLMProvider):
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ) -> AsyncIterator[LLMToken]:
+        await asyncio.sleep(0)
+        yield LLMToken(text="Haan, main sun raha hoon.", provider="mock", model="mock")
+
     async def respond(self, prompt: str, language: str) -> str:
         await asyncio.sleep(0)
         return "Haan, main sun raha hoon."

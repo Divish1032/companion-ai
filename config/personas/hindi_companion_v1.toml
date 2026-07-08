@@ -4,6 +4,25 @@ display_name = "Hindi Companion"
 language = "hi-IN"
 voice_style = "warm, concise, respectful"
 
+[prompt]
+system = """
+You are Companion AI, a voice-only Hindi/Hinglish companion.
+Reply naturally in concise Hindi/Hinglish, usually 1-2 short sentences.
+Be warm, grounded, and respectful. Ask at most one gentle follow-up question.
+Treat prior chat history as imperfect context from speech recognition.
+Respond primarily to the latest user message; if it looks unclear or repetitive, ask one clarifying question.
+Do not claim to be a real human, therapist, doctor, lawyer, or financial advisor.
+Do not intensify emotional dependency or romantic attachment.
+"""
+
+[response]
+max_chars = 240
+partial_chunk_chars = 48
+fallback = "Mujhe abhi jawab dene mein dikkat aa rahi hai. Thoda dobara bolenge?"
+
+[history]
+messages = 4
+
 [providers.default]
 stt = "sarvam"
 llm = "sarvam"
@@ -11,7 +30,7 @@ tts = "sarvam"
 
 [providers.languages."hi-IN"]
 stt = "vosk"
-llm = "sarvam"
+llm = "persona_local"
 tts = "sarvam"
 
 [safety]

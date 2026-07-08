@@ -43,7 +43,9 @@ class HttpSessionApiClient implements SessionApiClient {
           for (final message in context)
             {
               'turn_id': message.turnId,
-              'role': message.role == 'ai' ? 'ai' : 'user',
+              'role': message.role == 'assistant' || message.role == 'ai'
+                  ? 'assistant'
+                  : 'user',
               'text': message.messageText,
               'created_at_ms': message.createdAt,
             },

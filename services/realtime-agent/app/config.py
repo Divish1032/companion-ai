@@ -1,7 +1,9 @@
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.audio_pipeline import VadConfig
@@ -27,6 +29,14 @@ class Settings(BaseSettings):
     stt_model: str = "vosk-model-small-hi-0.22"
     vosk_model_path: str = ""
     stt_min_confidence: float = 0.35
+    llm_provider: str = ""
+    llm_model: str = "sarvam-30b"
+    sarvam_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_SARVAM_API_KEY", "SARVAM_API_KEY"),
+    )
+    sarvam_base_url: str = "https://api.sarvam.ai/v1"
+    llm_timeout_seconds: float = 12.0
     vad_provider: str = "silero"
     vad_start_threshold: float = 0.55
     vad_end_threshold: float = 0.35
@@ -53,6 +63,15 @@ class Settings(BaseSettings):
         )
 
 
+@dataclass(frozen=True)
+class PersonaSettings:
+    system_prompt: str
+    fallback_response: str
+    max_output_chars: int
+    partial_chunk_chars: int
+    history_messages: int
+
+
 def _repo_root() -> Path:
     for parent in Path(__file__).resolve().parents:
         if (parent / "config" / "personas").is_dir():
@@ -72,3 +91,26 @@ def load_provider_routing() -> ProviderRouting:
         path = _repo_root() / path
 
     return ProviderRouting.from_dict(load_toml(path))
+
+
+def load_persona_settings(settings: Settings) -> PersonaSettings:
+    data = _load_persona_config(settings)
+    prompt = data.get("prompt", {})
+    response = data.get("response", {})
+    history = data.get("history", {})
+    return PersonaSettings(
+        system_prompt=str(prompt.get("system", "")).strip(),
+        fallback_response=str(
+            response.get("fallback", "Mujhe abhi jawab dene mein dikkat aa rahi hai.")
+        ).strip(),
+        max_output_chars=int(response.get("max_chars", 240)),
+        partial_chunk_chars=int(response.get("partial_chunk_chars", 48)),
+        history_messages=int(history.get("messages", 4)),
+    )
+
+
+def _load_persona_config(settings: Settings) -> dict[str, Any]:
+    path = Path(settings.persona_config)
+    if not path.is_absolute():
+        path = _repo_root() / path
+    return load_toml(path)

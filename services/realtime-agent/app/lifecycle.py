@@ -15,11 +15,19 @@ from app.audio_pipeline import (
     EndpointingStateMachine,
     create_vad_provider,
 )
-from app.config import Settings
+from app.config import Settings, load_persona_settings
 from app.events import EventSequencer, TurnIdFactory
-from app.providers import ProviderRouting, SarvamSTTProvider, STTProvider, VoskSTTProvider
-from app.providers.interfaces import TranscriptEvent
-from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
+from app.providers import (
+    LLMProvider,
+    PersonaLLMProvider,
+    ProviderRouting,
+    SarvamChatLLMProvider,
+    SarvamSTTProvider,
+    STTProvider,
+    VoskSTTProvider,
+)
+from app.providers.interfaces import LLMMessage, LLMToken, TranscriptEvent
+from app.providers.mock import MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
 
 
@@ -213,7 +221,7 @@ class RealtimeAgentSession:
         settings: Settings,
         transport: AgentTransport,
         stt_provider: STTProvider | None = None,
-        llm_provider: MockLLMProvider | None = None,
+        llm_provider: LLMProvider | None = None,
         tts_provider: MockTTSProvider | None = None,
         safety_classifier: SafetyClassifier | None = None,
     ) -> None:
@@ -221,9 +229,11 @@ class RealtimeAgentSession:
         self.settings = settings
         self.transport = transport
         self.stt_provider = stt_provider or create_stt_provider(settings)
-        self.llm_provider = llm_provider or MockLLMProvider()
+        self.llm_provider = llm_provider or create_llm_provider(settings)
         self.tts_provider = tts_provider or MockTTSProvider()
         self.safety_classifier = safety_classifier or SafetyClassifier()
+        self.persona = load_persona_settings(settings)
+        self._conversation_history = self._initial_conversation_history()
         self.sequencer = EventSequencer(assignment.session_id)
         self.turn_ids = TurnIdFactory(assignment.session_id)
         self._stt_streams: dict[str, _STTTurnStream] = {}
@@ -502,8 +512,158 @@ class RealtimeAgentSession:
             await self._emit_transcript_repeat(turn_id, reason=repeat_reason, metrics=metrics)
             return
 
-        # Sprint 6 owns LLM/TTS response generation. Sprint 5 stops after final user transcript.
+        self._current_turn = asyncio.create_task(
+            self._respond_to_final_transcript(turn_id, event.text)
+        )
+
+    async def _respond_to_final_transcript(self, turn_id: str, user_text: str) -> None:
+        await self._emit_state("thinking", turn_id=turn_id)
+        decision = self.safety_classifier.classify_input(user_text)
+        if decision.response_override is not None:
+            await self._emit_assistant_final(
+                turn_id,
+                decision.response_override,
+                status="safety_override",
+                safety_reason=decision.reason,
+                clipped=False,
+                token=None,
+            )
+            self._remember_turn(user_text, decision.response_override)
+            await self._emit_state("listening", turn_id=turn_id, safety_reason=decision.reason)
+            return
+
+        try:
+            text, clipped, last_token = await self._stream_llm_response(turn_id, user_text)
+        except Exception as error:
+            text = self.persona.fallback_response
+            clipped = False
+            last_token = LLMToken(
+                text="",
+                provider=selected_llm_provider_name(self.settings),
+                model=self.settings.llm_model,
+            )
+            print(
+                "llm_error",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "provider": last_token.provider,
+                    "message": str(error),
+                },
+                flush=True,
+            )
+
+        output_decision = self.safety_classifier.classify_output(text)
+        if output_decision.response_override is not None:
+            text = output_decision.response_override
+            clipped = False
+        await self._emit_assistant_final(
+            turn_id,
+            text,
+            status="final",
+            safety_reason=output_decision.reason or decision.reason,
+            clipped=clipped,
+            token=last_token,
+        )
+        self._remember_turn(user_text, text)
         await self._emit_state("listening", turn_id=turn_id)
+
+    async def _stream_llm_response(
+        self,
+        turn_id: str,
+        user_text: str,
+    ) -> tuple[str, bool, LLMToken | None]:
+        messages = self._llm_messages(user_text)
+        chunks: list[str] = []
+        last_token: LLMToken | None = None
+        async for token in self.llm_provider.stream(
+            messages,
+            self.settings.language,
+            max_output_chars=self.persona.max_output_chars,
+        ):
+            chunks.append(token.text)
+            last_token = token
+            partial = "".join(chunks).strip()
+            if partial:
+                await self._emit_assistant_partial(turn_id, partial, token)
+        text = "".join(chunks).strip()
+        clipped_text, clipped = _clip_response_text(text, max_chars=self.persona.max_output_chars)
+        return clipped_text, clipped, last_token
+
+    def _llm_messages(self, user_text: str) -> list[LLMMessage]:
+        messages = [LLMMessage(role="system", content=self.persona.system_prompt)]
+        messages.extend(self._conversation_history[-self.persona.history_messages :])
+        messages.append(LLMMessage(role="user", content=user_text))
+        return messages
+
+    def _initial_conversation_history(self) -> list[LLMMessage]:
+        history: list[LLMMessage] = []
+        for item in self.assignment.recent_context:
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            history.append(LLMMessage(role=_llm_role(item.get("role")), content=text))
+        return history[-self.persona.history_messages :]
+
+    def _remember_turn(self, user_text: str, assistant_text: str) -> None:
+        self._conversation_history.extend(
+            [
+                LLMMessage(role="user", content=user_text),
+                LLMMessage(role="assistant", content=assistant_text),
+            ]
+        )
+        self._conversation_history = self._conversation_history[-self.persona.history_messages :]
+
+    async def _emit_assistant_partial(
+        self,
+        turn_id: str,
+        text: str,
+        token: LLMToken,
+    ) -> None:
+        await self.transport.publish_lossy(
+            self.sequencer.encode(
+                event_type="assistant_transcript_partial",
+                turn_id=turn_id,
+                payload={
+                    "text": text,
+                    "language": self.settings.language,
+                    "provider": token.provider,
+                    "model": token.model,
+                    "latency_ms": token.latency_ms,
+                },
+            )
+        )
+
+    async def _emit_assistant_final(
+        self,
+        turn_id: str,
+        text: str,
+        *,
+        status: str,
+        safety_reason: str | None,
+        clipped: bool,
+        token: LLMToken | None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "text": text,
+            "status": status,
+            "language": self.settings.language,
+            "provider": token.provider if token is not None else "safety",
+            "model": token.model if token is not None else "crisis_override",
+            "latency_ms": token.latency_ms if token is not None else 0,
+            "billed_units": token.billed_units if token is not None else 0,
+            "cost_units": token.cost_units if token is not None else 0,
+            "clipped": clipped,
+        }
+        if safety_reason is not None:
+            payload["safety_reason"] = safety_reason
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="assistant_transcript_final",
+                turn_id=turn_id,
+                payload=payload,
+            )
+        )
 
     async def _emit_transcript_repeat(
         self,
@@ -631,6 +791,33 @@ def create_stt_provider(settings: Settings) -> STTProvider:
         return _UnavailableSTTProvider(provider_name=provider_name, error=error)
 
 
+def create_llm_provider(settings: Settings) -> LLMProvider:
+    provider_name = selected_llm_provider_name(settings)
+    try:
+        if provider_name in {"persona_local", "mock"}:
+            return PersonaLLMProvider()
+        if provider_name == "sarvam":
+            return SarvamChatLLMProvider(
+                api_key=settings.sarvam_api_key,
+                model=settings.llm_model,
+                base_url=settings.sarvam_base_url,
+                timeout_seconds=settings.llm_timeout_seconds,
+            )
+        raise AgentAssignmentError(f"Unsupported LLM provider: {provider_name}")
+    except Exception as error:
+        return _UnavailableLLMProvider(provider_name=provider_name, error=error)
+
+
+def selected_llm_provider_name(settings: Settings) -> str:
+    if settings.llm_provider:
+        return settings.llm_provider
+    try:
+        routing = ProviderRouting.from_dict(_load_persona_config(settings))
+        return routing.for_language(settings.language).llm
+    except Exception:
+        return "persona_local"
+
+
 def selected_stt_provider_name(settings: Settings) -> str:
     if settings.stt_provider:
         return settings.stt_provider
@@ -667,6 +854,22 @@ def _stt_metrics_payload(event: TranscriptEvent) -> dict[str, object]:
     }
 
 
+def _clip_response_text(text: str, *, max_chars: int) -> tuple[str, bool]:
+    if len(text) <= max_chars:
+        return text, False
+    boundary = max(text.rfind(marker, 0, max_chars) for marker in (".", "?", "!", "।"))
+    if boundary < max_chars // 2:
+        boundary = text.rfind(" ", 0, max_chars)
+    if boundary <= 0:
+        boundary = max_chars
+    return text[:boundary].strip(), True
+
+
+def _llm_role(value: object) -> str:
+    role = str(value or "").strip().casefold()
+    return "assistant" if role in {"assistant", "ai"} else "user"
+
+
 class _UnavailableSTTProvider(STTProvider):
     def __init__(self, *, provider_name: str, error: Exception) -> None:
         self.provider_name = provider_name
@@ -680,6 +883,22 @@ class _UnavailableSTTProvider(STTProvider):
         async for _frame in audio_frames:
             break
         raise RuntimeError(f"{self.provider_name} STT unavailable: {self.error}")
+        yield  # pragma: no cover
+
+
+class _UnavailableLLMProvider(LLMProvider):
+    def __init__(self, *, provider_name: str, error: Exception) -> None:
+        self.provider_name = provider_name
+        self.error = error
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ) -> AsyncIterator[LLMToken]:
+        raise RuntimeError(f"{self.provider_name} LLM unavailable: {self.error}")
         yield  # pragma: no cover
 
 

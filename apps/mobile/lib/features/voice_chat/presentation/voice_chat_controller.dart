@@ -259,6 +259,22 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         isBusy: false,
         clearPartialTranscript: true,
       );
+    } else if (event.type == 'assistant_transcript_partial') {
+      final text = (event.payload['text'] as String?)?.trim();
+      if (text != null && text.isNotEmpty) {
+        state = state.copyWith(
+          phase: VoiceSessionPhase.thinking,
+          partialTranscript: text,
+          isBusy: false,
+        );
+      }
+    } else if (event.type == 'assistant_transcript_final') {
+      await _persistAssistantTranscript(event);
+      state = state.copyWith(
+        phase: VoiceSessionPhase.listening,
+        isBusy: false,
+        clearPartialTranscript: true,
+      );
     } else if (event.type == 'transcript_repeat_requested') {
       state = state.copyWith(
         phase: VoiceSessionPhase.listening,
@@ -325,6 +341,45 @@ class VoiceChatController extends Notifier<VoiceChatState> {
                 'audio_seconds': event.payload['audio_seconds'],
                 'billed_units': event.payload['billed_units'],
                 'cost_units': event.payload['cost_units'],
+              }),
+            ),
+          ),
+        );
+  }
+
+  Future<void> _persistAssistantTranscript(LiveKitDataEvent event) async {
+    final text = (event.payload['text'] as String?)?.trim();
+    if (text == null || text.isEmpty) {
+      return;
+    }
+
+    final turnId = event.turnId ?? '${event.sessionId}:turn:${event.sequence}';
+    final createdAt = event.timestampMs > 0
+        ? event.timestampMs
+        : DateTime.now().millisecondsSinceEpoch;
+    final language = (event.payload['language'] as String?) ?? 'hi-IN';
+
+    await ref
+        .read(appDatabaseProvider)
+        .upsertMessage(
+          ChatMessagesCompanion.insert(
+            id: 'msg_${event.sessionId}_${turnId}_assistant',
+            sessionId: event.sessionId,
+            turnId: turnId,
+            role: 'assistant',
+            messageText: text,
+            status: (event.payload['status'] as String?) ?? 'final',
+            language: language,
+            createdAt: createdAt,
+            latencyJson: Value(
+              jsonEncode({
+                'provider': event.payload['provider'],
+                'model': event.payload['model'],
+                'latency_ms': event.payload['latency_ms'],
+                'billed_units': event.payload['billed_units'],
+                'cost_units': event.payload['cost_units'],
+                'clipped': event.payload['clipped'],
+                'safety_reason': event.payload['safety_reason'],
               }),
             ),
           ),

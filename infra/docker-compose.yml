@@ -47,6 +47,7 @@ services:
       dockerfile: services/realtime-agent/Dockerfile
     env_file:
       - ../services/realtime-agent/.env.example
+      - ../.env
     environment:
       AGENT_LIVEKIT_URL: ws://livekit:7880
       AGENT_LIVEKIT_API_KEY: ${AGENT_LIVEKIT_API_KEY:-devkey}

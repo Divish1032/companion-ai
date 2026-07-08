@@ -134,10 +134,34 @@ void main() {
 
     liveKit.emitEvent(
       const LiveKitDataEvent(
-        type: 'error',
+        type: 'assistant_transcript_final',
         sequence: 5,
         sessionId: 'session_test',
         timestampMs: 5,
+        turnId: 'session_test:turn:0001',
+        payload: {
+          'text': 'Haan, main sun raha hoon.',
+          'status': 'final',
+          'language': 'hi-IN',
+          'provider': 'persona_local',
+          'model': 'hindi_companion_rules_v1',
+          'latency_ms': 7,
+          'billed_units': 0,
+          'cost_units': 0,
+          'clipped': false,
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Haan, main sun raha hoon.'), findsOneWidget);
+    expect(find.text('Listening'), findsOneWidget);
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'error',
+        sequence: 6,
+        sessionId: 'session_test',
+        timestampMs: 6,
         payload: {'message': 'Simulated LiveKit error.'},
       ),
     );
