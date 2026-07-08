@@ -208,11 +208,20 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     if (event.type == 'session_state') {
       final incoming = event.payload['state'];
       if (incoming == 'thinking') {
-        state = state.copyWith(phase: VoiceSessionPhase.thinking);
+        state = state.copyWith(
+          phase: VoiceSessionPhase.thinking,
+          isBusy: false,
+        );
       } else if (incoming == 'speaking') {
-        state = state.copyWith(phase: VoiceSessionPhase.speaking);
+        state = state.copyWith(
+          phase: VoiceSessionPhase.speaking,
+          isBusy: false,
+        );
       } else if (incoming == 'listening') {
-        state = state.copyWith(phase: VoiceSessionPhase.listening);
+        state = state.copyWith(
+          phase: VoiceSessionPhase.listening,
+          isBusy: false,
+        );
       }
     } else if (event.type == 'error') {
       state = state.copyWith(
@@ -226,6 +235,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   String _startErrorMessage(Object error) {
     if (error is SessionApiException && error.statusCode == 409) {
       return 'This device already has an active voice session.';
+    }
+    if (error is SessionApiException && error.statusCode == 503) {
+      return 'AI voice agent could not start. Please try again.';
     }
     return 'Could not start LiveKit voice session.';
   }

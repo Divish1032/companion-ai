@@ -30,6 +30,7 @@ services:
       API_LIVEKIT_URL: ${API_LIVEKIT_URL:-ws://localhost:7880}
       API_LIVEKIT_API_KEY: ${API_LIVEKIT_API_KEY:-devkey}
       API_LIVEKIT_API_SECRET: ${API_LIVEKIT_API_SECRET:-secret}
+      API_AGENT_ASSIGNMENT_URL: http://realtime-agent:8001/v1/agent/assign
     ports:
       - "8000:8000"
     volumes:
@@ -46,11 +47,17 @@ services:
       dockerfile: services/realtime-agent/Dockerfile
     env_file:
       - ../services/realtime-agent/.env.example
+    environment:
+      AGENT_LIVEKIT_URL: ws://livekit:7880
+      AGENT_LIVEKIT_API_KEY: ${AGENT_LIVEKIT_API_KEY:-devkey}
+      AGENT_LIVEKIT_API_SECRET: ${AGENT_LIVEKIT_API_SECRET:-secret}
     ports:
       - "8001:8001"
     depends_on:
       redis:
         condition: service_healthy
+      livekit:
+        condition: service_started
 
 volumes:
   redis-data:

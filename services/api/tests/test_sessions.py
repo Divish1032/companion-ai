@@ -4,11 +4,13 @@ from fastapi.testclient import TestClient
 from livekit import api
 
 from app import main
+from app.agent_assignment import AgentAssignmentFailed
 from app.session_store import SessionStore
 
 
 def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> None:
-    client, store = _client(tmp_path)
+    assigner = _FakeAgentAssigner()
+    client, store = _client(tmp_path, assigner=assigner)
     main.settings.livekit_api_key = "devkey"
     main.settings.livekit_api_secret = "secret"
     main.settings.livekit_url = "ws://localhost:7880"
@@ -36,6 +38,7 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
     assert "first" not in session.recent_context_json
     assert "second" in session.recent_context_json
     assert "third" in session.recent_context_json
+    assert assigner.assigned_session_ids == [body["session_id"]]
 
     token_response = client.post(
         "/v1/livekit/token",
@@ -116,9 +119,33 @@ def test_session_counter_is_durable(tmp_path: Path) -> None:
         raise AssertionError("expected persisted active session to block duplicate")
 
 
-def _client(tmp_path: Path) -> tuple[TestClient, SessionStore]:
+def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -> None:
+    client, store = _client(tmp_path, assigner=_FailingAgentAssigner())
+
+    response = client.post("/v1/session", json={"device_id": "anon_test_device"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "agent_assignment_failed"
+    active = store.get_active_session(
+        session_id="missing_after_failure",
+        device_id="anon_test_device",
+    )
+    assert active is None
+
+    retry = client.post("/v1/session", json={"device_id": "anon_test_device"})
+    assert retry.status_code == 503
+
+
+def _client(
+    tmp_path: Path,
+    *,
+    assigner: object | None = None,
+) -> tuple[TestClient, SessionStore]:
     store = SessionStore(str(tmp_path / "sessions.sqlite"))
     main.app.dependency_overrides[main.get_store] = lambda: store
+    main.app.dependency_overrides[main.get_agent_assigner] = (
+        lambda: assigner or _FakeAgentAssigner()
+    )
     main.settings.max_recent_context_messages = 12
     main.settings.session_create_limit_per_day = 50
     main.settings.token_mint_limit_per_session = 20
@@ -134,3 +161,16 @@ def _context_item(turn_id: str, text: str) -> dict[str, object]:
         "text": text,
         "created_at_ms": 1,
     }
+
+
+class _FakeAgentAssigner:
+    def __init__(self) -> None:
+        self.assigned_session_ids: list[str] = []
+
+    async def assign(self, *, session) -> None:  # noqa: ANN001
+        self.assigned_session_ids.append(session.session_id)
+
+
+class _FailingAgentAssigner:
+    async def assign(self, *, session) -> None:  # noqa: ANN001
+        raise AgentAssignmentFailed("boom")

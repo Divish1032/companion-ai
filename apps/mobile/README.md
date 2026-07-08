@@ -2,7 +2,7 @@
 
 Flutter shell for the Companion AI voice-only MVP.
 
-## Sprint 2 Scope
+## Sprint 3 Scope
 
 - Opens directly to `VoiceChatHomeScreen`.
 - Uses Riverpod for app/session state.
@@ -13,8 +13,10 @@ Flutter shell for the Companion AI voice-only MVP.
 - Publishes microphone audio through LiveKit/native WebRTC.
 - Sends bounded recent local transcript context when a voice session starts.
 - Adds reliable and lossy LiveKit data-channel abstractions with sequence dedupe.
-- STT/LLM/TTS/VAD and backend voice intelligence are not implemented in Sprint 2.
+- Consumes realtime-agent `session_state` and `error` data-channel events.
+- STT/LLM/TTS/VAD and real backend voice intelligence are not implemented in Sprint 3.
 - Provides clear history and a bad-transcript re-speak affordance.
+- Keeps the transcript simulation helper clearly labelled as dev-only.
 
 ## Local LiveKit Run
 

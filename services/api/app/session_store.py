@@ -18,6 +18,12 @@ class SessionRecord:
     status: str
     recent_context_json: str
 
+    def recent_context(self) -> list[dict[str, object]]:
+        data = json.loads(self.recent_context_json)
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
 
 class SessionStore:
     def __init__(self, path: str) -> None:

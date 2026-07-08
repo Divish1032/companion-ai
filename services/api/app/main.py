@@ -5,12 +5,14 @@ from fastapi import Depends, FastAPI, HTTPException
 from livekit import api
 from pydantic import BaseModel, Field
 
+from app.agent_assignment import AgentAssigner, AgentAssignmentFailed
 from app.config import Settings
 from app.session_store import ActiveSessionExists, RateLimitExceeded, SessionStore
 
 settings = Settings()
 app = FastAPI(title="Companion AI API", version="0.1.0")
 store = SessionStore(settings.durable_store_path)
+agent_assigner = AgentAssigner(settings)
 
 
 class RecentTranscriptItem(BaseModel):
@@ -53,6 +55,10 @@ def get_store() -> SessionStore:
     return store
 
 
+def get_agent_assigner() -> AgentAssigner:
+    return agent_assigner
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": settings.service_name}
@@ -70,6 +76,7 @@ async def config() -> dict[str, str]:
 async def create_session(
     request: CreateSessionRequest,
     session_store: Annotated[SessionStore, Depends(get_store)],
+    assigner: Annotated[AgentAssigner, Depends(get_agent_assigner)],
 ) -> CreateSessionResponse:
     bounded_context = [
         item.model_dump()
@@ -93,6 +100,18 @@ async def create_session(
         ) from error
     except RateLimitExceeded as error:
         raise HTTPException(status_code=429, detail={"code": "rate_limited"}) from error
+
+    try:
+        await assigner.assign(session=session)
+    except AgentAssignmentFailed as error:
+        session_store.end_session(
+            session_id=session.session_id,
+            device_id=request.device_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "agent_assignment_failed"},
+        ) from error
 
     return CreateSessionResponse(
         session_id=session.session_id,

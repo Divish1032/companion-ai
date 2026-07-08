@@ -248,11 +248,11 @@ class _VoiceControls extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (state.isSessionActive)
+        if (state.isSessionActive && state.mockModeEnabled)
           OutlinedButton.icon(
             onPressed: state.isBusy ? null : controller.addMockExchange,
             icon: const Icon(Icons.hearing),
-            label: const Text('Simulate transcript turn'),
+            label: const Text('Dev: simulate transcript turn'),
           ),
         const SizedBox(height: 10),
         FilledButton.icon(

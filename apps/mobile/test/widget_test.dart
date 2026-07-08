@@ -34,7 +34,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Listening'), findsOneWidget);
 
-      await tester.tap(find.text('Simulate transcript turn'));
+      await tester.tap(find.text('Dev: simulate transcript turn'));
       await tester.pumpAndSettle();
       expect(find.text('Aaj mood thoda off hai.'), findsOneWidget);
       expect(find.text('Bad transcript? Re-speak'), findsOneWidget);
@@ -84,10 +84,36 @@ void main() {
 
     liveKit.emitEvent(
       const LiveKitDataEvent(
-        type: 'error',
+        type: 'session_state',
         sequence: 1,
         sessionId: 'session_test',
         timestampMs: 1,
+        turnId: 'session_test:turn:0001',
+        payload: {'state': 'thinking'},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Thinking'), findsOneWidget);
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'session_state',
+        sequence: 2,
+        sessionId: 'session_test',
+        timestampMs: 2,
+        turnId: 'session_test:turn:0001',
+        payload: {'state': 'speaking'},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Speaking'), findsOneWidget);
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'error',
+        sequence: 3,
+        sessionId: 'session_test',
+        timestampMs: 3,
         payload: {'message': 'Simulated LiveKit error.'},
       ),
     );

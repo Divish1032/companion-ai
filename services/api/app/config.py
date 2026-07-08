@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     livekit_url: str = "ws://livekit:7880"
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
+    agent_assignment_url: str = "http://realtime-agent:8001/v1/agent/assign"
+    agent_assignment_timeout_seconds: float = 5.0
     durable_store_path: str = "/tmp/companion_api_sessions.sqlite"
     livekit_token_ttl_seconds: int = 600
     max_session_seconds: int = 1200

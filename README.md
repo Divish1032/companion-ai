@@ -4,15 +4,15 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 2 LiveKit self-hosted local integration.
+Active phase: Sprint 3 realtime agent skeleton.
 
-Sprint -1 validation gates, Sprint 0 monorepo scaffolding, and Sprint 1 Flutter voice chat shell are complete. Sprint 2 connects the app to local self-hosted LiveKit only: no STT, LLM, TTS, VAD, auth, text input, or video/avatar.
+Sprint -1 validation gates and Sprints 0-2 are complete. Sprint 3 adds a room-specific realtime-agent skeleton that joins LiveKit, subscribes to user audio, emits reliable session-state events, and uses mocked providers only. Real STT, LLM, TTS, VAD, auth, text input, and video/avatar remain out of scope.
 
 ## Repo Layout
 
 - `apps/mobile`: Flutter Android/iOS app shell.
 - `services/api`: FastAPI service for future room/session/config endpoints.
-- `services/realtime-agent`: FastAPI placeholder plus STT/LLM/TTS provider interfaces and routing config.
+- `services/realtime-agent`: FastAPI agent supervisor plus STT/LLM/TTS provider interfaces, mocked providers, safety stub, and LiveKit RTC skeleton.
 - `infra/docker-compose.yml`: Redis with persistence, local LiveKit, and placeholder services for local development.
 - `config/personas/hindi_companion_v1.toml`: Hindi companion persona and provider routing.
 - `config/safety/crisis_placeholder.toml`: placeholder crisis phrase/resource config.
@@ -41,7 +41,7 @@ Do not commit real secrets or provider API keys.
 ## Commands
 
 ```bash
-make dev      # start Redis, LiveKit, API, and realtime-agent placeholders
+make dev      # start Redis, LiveKit, API, and realtime-agent skeleton
 make check    # docs, scaffold, Python, and Flutter checks
 make mobile   # run the Flutter app
 make logs     # follow Docker Compose logs
@@ -67,9 +67,15 @@ cd apps/mobile
 flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 ```
 
+## Realtime Agent Skeleton
+
+During local Docker runs, the API calls `API_AGENT_ASSIGNMENT_URL` before returning a successful session. The realtime-agent joins the same room as `agent_<session_id>`, emits reliable `session_state` events (`listening`, `thinking`, `speaking`, `error`), and publishes generated placeholder audio for fake pipeline testing when supported by LiveKit RTC.
+
+The filler-audio path is represented by reliable `filler_audio` start/stop events and a static-clip interface point. Real Hindi/Hinglish acknowledgment clips are deferred because no licensed/generated static audio assets are committed yet.
+
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. The repo includes only interfaces and routing scaffolding; real STT, LLM, and TTS adapters are later-sprint work.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Sprint 3 includes mocked provider implementations only; real STT, LLM, and TTS adapters are later-sprint work.
 
 ## Git Hooks
 
