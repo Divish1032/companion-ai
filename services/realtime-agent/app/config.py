@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.audio_pipeline import VadConfig
 from app.providers import ProviderRouting
 
 
@@ -21,8 +22,30 @@ class Settings(BaseSettings):
     enable_livekit_rtc: bool = True
     enable_fake_audio: bool = True
     fake_audio_ms: int = 550
+    vad_provider: str = "silero"
+    vad_start_threshold: float = 0.55
+    vad_end_threshold: float = 0.35
+    vad_barge_in_threshold: float = 0.65
+    vad_min_confirmed_speech_ms: int = 200
+    vad_pre_speech_buffer_ms: int = 240
+    vad_endpoint_silence_ms: int = 600
+    vad_continuation_silence_ms: int = 1100
+    vad_forced_endpoint_ms: int = 9000
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="AGENT_")
+
+    def vad_config(self) -> VadConfig:
+        return VadConfig(
+            provider=self.vad_provider,
+            start_threshold=self.vad_start_threshold,
+            end_threshold=self.vad_end_threshold,
+            barge_in_threshold=self.vad_barge_in_threshold,
+            min_confirmed_speech_ms=self.vad_min_confirmed_speech_ms,
+            pre_speech_buffer_ms=self.vad_pre_speech_buffer_ms,
+            endpoint_silence_ms=self.vad_endpoint_silence_ms,
+            continuation_silence_ms=self.vad_continuation_silence_ms,
+            forced_endpoint_ms=self.vad_forced_endpoint_ms,
+        )
 
 
 def _repo_root() -> Path:

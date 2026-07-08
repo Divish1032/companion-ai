@@ -3,6 +3,7 @@ import json
 import time
 
 from app.config import Settings
+from app.audio_pipeline import pcm_silence_frame, pcm_sine_frame
 from app.lifecycle import (
     AgentAssignment,
     MemoryAgentTransport,
@@ -95,6 +96,36 @@ def test_safety_override_runs_before_fake_audio() -> None:
     assert transport.audio_publications == 1
 
 
+def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
+    transport = MemoryAgentTransport(audio_publish_delay_seconds=1)
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        await transport.activity.put("client_session_started")
+        await _wait_for_state(transport, "speaking")
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(20):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "barge_in")
+        await _wait_for_event_type(transport, "endpoint_commit")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assert any(event["type"] == "barge_in" and event.get("cancelled") is True for event in events)
+    assert any(event["type"] == "endpoint_commit" for event in events)
+    assert any(event["type"] == "session_state" and event.get("state") == "listening" for event in events)
+
+
 def test_wait_until_started_does_not_cancel_agent_task() -> None:
     async def scenario() -> bool:
         started = asyncio.Event()
@@ -122,13 +153,14 @@ def _assignment(*, recent_context: list[dict[str, object]]) -> AgentAssignment:
     )
 
 
-def _settings() -> Settings:
+def _settings(**overrides: object) -> Settings:
     return Settings(
         livekit_api_key="devkey",
         livekit_api_secret="secret",
         enable_livekit_rtc=False,
         max_idle_seconds=1,
         fake_audio_ms=20,
+        **overrides,
     )
 
 
@@ -146,6 +178,14 @@ async def _wait_for_state(transport: MemoryAgentTransport, state: str) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"expected state {state}")
+
+
+async def _wait_for_event_type(transport: MemoryAgentTransport, event_type: str) -> None:
+    for _ in range(50):
+        if any(_decode(event).get("type") == event_type for event in transport.events):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expected event type {event_type}")
 
 
 def _decode(data: bytes) -> dict[str, object]:

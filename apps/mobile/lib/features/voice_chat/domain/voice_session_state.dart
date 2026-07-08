@@ -4,6 +4,7 @@ enum VoiceSessionPhase {
   connecting,
   reconnecting,
   listening,
+  userSpeaking,
   thinking,
   speaking,
   permissionDenied,
@@ -19,6 +20,7 @@ extension VoiceSessionPhaseLabel on VoiceSessionPhase {
       VoiceSessionPhase.connecting => 'Connecting to LiveKit',
       VoiceSessionPhase.reconnecting => 'Reconnecting',
       VoiceSessionPhase.listening => 'Listening',
+      VoiceSessionPhase.userSpeaking => 'You are speaking',
       VoiceSessionPhase.thinking => 'Thinking',
       VoiceSessionPhase.speaking => 'Speaking',
       VoiceSessionPhase.permissionDenied => 'Microphone permission needed',
@@ -52,6 +54,7 @@ class VoiceChatState {
 
   bool get isSessionActive =>
       phase == VoiceSessionPhase.listening ||
+      phase == VoiceSessionPhase.userSpeaking ||
       phase == VoiceSessionPhase.thinking ||
       phase == VoiceSessionPhase.speaking ||
       phase == VoiceSessionPhase.reconnecting;

@@ -97,10 +97,34 @@ void main() {
 
     liveKit.emitEvent(
       const LiveKitDataEvent(
-        type: 'session_state',
+        type: 'speech_start',
         sequence: 2,
         sessionId: 'session_test',
         timestampMs: 2,
+        turnId: 'session_test:turn:0001',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('You are speaking'), findsOneWidget);
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'speech_end',
+        sequence: 3,
+        sessionId: 'session_test',
+        timestampMs: 3,
+        turnId: 'session_test:turn:0001',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Listening'), findsOneWidget);
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'session_state',
+        sequence: 4,
+        sessionId: 'session_test',
+        timestampMs: 4,
         turnId: 'session_test:turn:0001',
         payload: {'state': 'speaking'},
       ),
@@ -111,9 +135,9 @@ void main() {
     liveKit.emitEvent(
       const LiveKitDataEvent(
         type: 'error',
-        sequence: 3,
+        sequence: 5,
         sessionId: 'session_test',
-        timestampMs: 3,
+        timestampMs: 5,
         payload: {'message': 'Simulated LiveKit error.'},
       ),
     );

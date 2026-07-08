@@ -8,6 +8,12 @@ from typing import Protocol
 
 from livekit import api, rtc
 
+from app.audio_pipeline import (
+    CanonicalAudioFrame,
+    EndpointEvent,
+    EndpointingStateMachine,
+    create_vad_provider,
+)
 from app.config import Settings
 from app.events import EventSequencer, TurnIdFactory
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
@@ -30,7 +36,9 @@ class AgentTransport(Protocol):
     async def connect(self) -> None: ...
     async def publish_reliable(self, payload: bytes, topic: str = "critical") -> None: ...
     async def publish_placeholder_audio(self, duration_ms: int) -> None: ...
-    async def wait_for_client_activity(self, timeout_seconds: float) -> str | None: ...
+    async def wait_for_client_activity(
+        self, timeout_seconds: float
+    ) -> str | CanonicalAudioFrame | None: ...
     async def disconnect(self) -> None: ...
 
 
@@ -39,10 +47,11 @@ class LiveKitAgentTransport:
         self.assignment = assignment
         self.settings = settings
         self.room: rtc.Room | None = None
-        self._activity_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._activity_queue: asyncio.Queue[str | CanonicalAudioFrame] = asyncio.Queue()
         self._audio_source: rtc.AudioSource | None = None
         self._audio_track_published = False
         self._seen_user_audio = False
+        self._audio_tasks: set[asyncio.Task[None]] = set()
 
     def _bind_room_handlers(self, room: rtc.Room) -> None:
 
@@ -50,6 +59,9 @@ class LiveKitAgentTransport:
         def on_track_subscribed(track, publication, participant) -> None:  # noqa: ANN001
             if getattr(track, "kind", None) == rtc.TrackKind.KIND_AUDIO:
                 self._seen_user_audio = True
+                task = asyncio.create_task(self._consume_audio_track(track))
+                self._audio_tasks.add(task)
+                task.add_done_callback(self._audio_tasks.discard)
 
         @room.on("data_received")
         def on_data_received(data_packet) -> None:  # noqa: ANN001
@@ -113,25 +125,49 @@ class LiveKitAgentTransport:
         for frame in _placeholder_pcm_frames(duration_ms=duration_ms):
             await self._audio_source.capture_frame(frame)
 
-    async def wait_for_client_activity(self, timeout_seconds: float) -> str | None:
+    async def wait_for_client_activity(
+        self, timeout_seconds: float
+    ) -> str | CanonicalAudioFrame | None:
         try:
             return await asyncio.wait_for(self._activity_queue.get(), timeout_seconds)
         except TimeoutError:
             return None
 
     async def disconnect(self) -> None:
+        for task in self._audio_tasks:
+            task.cancel()
+        if self._audio_tasks:
+            await asyncio.gather(*self._audio_tasks, return_exceptions=True)
+            self._audio_tasks.clear()
         if self.room is not None:
             await self.room.disconnect()
             self.room = None
 
+    async def _consume_audio_track(self, track) -> None:  # noqa: ANN001
+        stream = rtc.AudioStream.from_track(
+            track=track,
+            sample_rate=16000,
+            num_channels=1,
+            frame_size_ms=30,
+        )
+        try:
+            async for event in stream:
+                frame = getattr(event, "frame", event)
+                canonical = _canonical_frame_from_livekit(frame)
+                if canonical is not None:
+                    self._activity_queue.put_nowait(canonical)
+        finally:
+            await stream.aclose()
+
 
 class MemoryAgentTransport:
-    def __init__(self) -> None:
+    def __init__(self, *, audio_publish_delay_seconds: float = 0) -> None:
         self.events: list[bytes] = []
         self.audio_publications = 0
         self.connected = False
         self.disconnected = False
-        self.activity: asyncio.Queue[str] = asyncio.Queue()
+        self.activity: asyncio.Queue[str | CanonicalAudioFrame] = asyncio.Queue()
+        self.audio_publish_delay_seconds = audio_publish_delay_seconds
 
     async def connect(self) -> None:
         self.connected = True
@@ -141,8 +177,12 @@ class MemoryAgentTransport:
 
     async def publish_placeholder_audio(self, duration_ms: int) -> None:
         self.audio_publications += 1
+        if self.audio_publish_delay_seconds > 0:
+            await asyncio.sleep(self.audio_publish_delay_seconds)
 
-    async def wait_for_client_activity(self, timeout_seconds: float) -> str | None:
+    async def wait_for_client_activity(
+        self, timeout_seconds: float
+    ) -> str | CanonicalAudioFrame | None:
         try:
             return await asyncio.wait_for(self.activity.get(), timeout_seconds)
         except TimeoutError:
@@ -173,9 +213,17 @@ class RealtimeAgentSession:
         self.safety_classifier = safety_classifier or SafetyClassifier()
         self.sequencer = EventSequencer(assignment.session_id)
         self.turn_ids = TurnIdFactory(assignment.session_id)
+        self._stt_forwarded_audio_ms = 0
+        self.endpointing = EndpointingStateMachine(
+            config=settings.vad_config(),
+            vad_provider=create_vad_provider(settings.vad_config()),
+            turn_id_factory=self.turn_ids.next,
+            stt_audio_sink=self._record_stt_audio,
+        )
         self._current_turn: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
         self.started = asyncio.Event()
+        self._assistant_speaking = False
 
     async def run(self) -> None:
         try:
@@ -210,6 +258,9 @@ class RealtimeAgentSession:
             activity = await self.transport.wait_for_client_activity(timeout)
             if activity is None:
                 return
+            if isinstance(activity, CanonicalAudioFrame):
+                await self._handle_audio_frame(activity)
+                continue
             if activity == "client_left":
                 return
             if "client_cancel_turn" in activity:
@@ -261,6 +312,7 @@ class RealtimeAgentSession:
         }
         if safety_reason is not None:
             payload["safety_reason"] = safety_reason
+        self._assistant_speaking = state == "speaking"
         await self.transport.publish_reliable(
             self.sequencer.encode(event_type="session_state", turn_id=turn_id, payload=payload)
         )
@@ -281,6 +333,50 @@ class RealtimeAgentSession:
                 payload={"message": message, "source": "realtime_agent"},
             )
         )
+
+    async def _handle_audio_frame(self, frame: CanonicalAudioFrame) -> None:
+        for event in self.endpointing.process_frame(frame):
+            await self._handle_endpoint_event(event)
+
+    async def _handle_endpoint_event(self, event: EndpointEvent) -> None:
+        if event.type == "speech_start":
+            if self._assistant_speaking or (
+                self._current_turn is not None and not self._current_turn.done()
+            ):
+                cancelled = self.cancel_current_turn()
+                await self._emit_barge_in(event, cancelled=cancelled)
+            await self._emit_endpoint_event(event)
+            await self._emit_state("user_speaking", turn_id=event.turn_id)
+            return
+
+        await self._emit_endpoint_event(event)
+        if event.type == "speech_end":
+            await self._emit_state("listening", turn_id=event.turn_id)
+
+    async def _emit_endpoint_event(self, event: EndpointEvent) -> None:
+        payload = {
+            "elapsed_ms": event.elapsed_ms,
+            "reason": event.reason,
+            "pre_speech_ms": event.pre_speech_ms,
+            "forwarded_audio_ms": event.forwarded_audio_ms,
+            "vad_provider": self.settings.vad_config().provider,
+        }
+        await self.transport.publish_reliable(
+            self.sequencer.encode(event_type=event.type, turn_id=event.turn_id, payload=payload)
+        )
+
+    async def _emit_barge_in(self, event: EndpointEvent, *, cancelled: bool) -> None:
+        payload = {
+            "stage": "during_speaking" if self._assistant_speaking else "before_tts",
+            "cancelled": cancelled,
+            "elapsed_ms": event.elapsed_ms,
+        }
+        await self.transport.publish_reliable(
+            self.sequencer.encode(event_type="barge_in", turn_id=event.turn_id, payload=payload)
+        )
+
+    def _record_stt_audio(self, frame: CanonicalAudioFrame) -> None:
+        self._stt_forwarded_audio_ms += frame.duration_ms
 
 
 class AgentSupervisor:
@@ -367,6 +463,22 @@ def _placeholder_pcm_frames(*, duration_ms: int) -> list[rtc.AudioFrame]:
             )
         )
     return frames
+
+
+def _canonical_frame_from_livekit(frame: rtc.AudioFrame) -> CanonicalAudioFrame | None:
+    sample_rate = int(getattr(frame, "sample_rate", 0) or 0)
+    num_channels = int(getattr(frame, "num_channels", 0) or 0)
+    samples_per_channel = int(getattr(frame, "samples_per_channel", 0) or 0)
+    data = bytes(getattr(frame, "data", b""))
+    if sample_rate <= 0 or num_channels <= 0 or samples_per_channel <= 0:
+        return None
+    duration_ms = max(round(samples_per_channel / sample_rate * 1000), 1)
+    return CanonicalAudioFrame(
+        pcm16=data,
+        sample_rate=sample_rate,
+        num_channels=num_channels,
+        duration_ms=duration_ms,
+    )
 
 
 def _wall_clock_ms() -> int:

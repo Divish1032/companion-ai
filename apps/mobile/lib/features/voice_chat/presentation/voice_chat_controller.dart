@@ -212,6 +212,11 @@ class VoiceChatController extends Notifier<VoiceChatState> {
           phase: VoiceSessionPhase.thinking,
           isBusy: false,
         );
+      } else if (incoming == 'user_speaking') {
+        state = state.copyWith(
+          phase: VoiceSessionPhase.userSpeaking,
+          isBusy: false,
+        );
       } else if (incoming == 'speaking') {
         state = state.copyWith(
           phase: VoiceSessionPhase.speaking,
@@ -223,6 +228,18 @@ class VoiceChatController extends Notifier<VoiceChatState> {
           isBusy: false,
         );
       }
+    } else if (event.type == 'speech_start') {
+      state = state.copyWith(
+        phase: VoiceSessionPhase.userSpeaking,
+        isBusy: false,
+      );
+    } else if (event.type == 'speech_end') {
+      state = state.copyWith(phase: VoiceSessionPhase.listening, isBusy: false);
+    } else if (event.type == 'barge_in') {
+      state = state.copyWith(
+        phase: VoiceSessionPhase.userSpeaking,
+        isBusy: false,
+      );
     } else if (event.type == 'error') {
       state = state.copyWith(
         phase: VoiceSessionPhase.error,
