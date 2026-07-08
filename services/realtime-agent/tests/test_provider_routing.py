@@ -1,5 +1,6 @@
 from app.providers import ProviderRouting
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
+from app.audio_pipeline import pcm_sine_frame
 
 
 def test_provider_routing_supports_language_override() -> None:
@@ -31,18 +32,19 @@ def test_provider_routing_supports_language_override() -> None:
 
 async def _empty_audio():
     if False:
-        yield b""
+        yield pcm_sine_frame(duration_ms=30)
 
 
 def test_mock_providers_are_available_for_skeleton() -> None:
     import asyncio
 
     async def scenario() -> None:
-        stt = await MockSTTProvider().transcribe(_empty_audio(), "hi-IN")
-        llm = await MockLLMProvider().respond(stt, "hi-IN")
+        stt_events = [event async for event in MockSTTProvider().stream(_empty_audio(), "hi-IN")]
+        llm = await MockLLMProvider().respond(stt_events[-1].text, "hi-IN")
         chunks = [chunk async for chunk in MockTTSProvider().synthesize(llm, "hi-IN")]
 
-        assert stt == "mock user audio"
+        assert stt_events[-1].text == "mock user audio"
+        assert stt_events[-1].is_final is True
         assert "sun raha" in llm
         assert chunks
 

@@ -25,8 +25,9 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
 ## Current Project Status
 
 - Sprint -1 validation gates are complete enough to proceed.
-- Sprint 0 repo and architecture foundation is complete.
-- The next active sprint is Sprint 1: Flutter Voice Chat Shell, unless the user explicitly redirects.
+- Sprints 0 through 5 are complete and green.
+- Sprint 5 phone validation passed on Android over Wi-Fi with backend-local Vosk Hindi STT.
+- The next active sprint is Sprint 6: LLM Integration and Persona, unless the user explicitly redirects.
 
 ## Sprint Reading Guide
 

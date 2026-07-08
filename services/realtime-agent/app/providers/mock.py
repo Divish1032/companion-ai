@@ -3,14 +3,40 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from app.providers.interfaces import LLMProvider, STTProvider, TTSProvider
+from app.audio_pipeline import CanonicalAudioFrame
+from app.providers.interfaces import LLMProvider, STTProvider, TTSProvider, TranscriptEvent
 
 
 class MockSTTProvider(STTProvider):
-    async def transcribe(self, audio_chunks: AsyncIterator[bytes], language: str) -> str:
-        async for _chunk in audio_chunks:
-            break
-        return "mock user audio"
+    async def stream(
+        self,
+        audio_frames: AsyncIterator[CanonicalAudioFrame],
+        language: str,
+    ) -> AsyncIterator[TranscriptEvent]:
+        audio_seconds = 0.0
+        async for frame in audio_frames:
+            audio_seconds += frame.duration_ms / 1000
+            if audio_seconds > 0:
+                yield TranscriptEvent(
+                    text="mock user",
+                    is_final=False,
+                    confidence=0.99,
+                    provider="mock",
+                    model="mock",
+                    audio_seconds=audio_seconds,
+                )
+                break
+        async for frame in audio_frames:
+            audio_seconds += frame.duration_ms / 1000
+        yield TranscriptEvent(
+            text="mock user audio",
+            is_final=True,
+            confidence=0.99,
+            provider="mock",
+            model="mock",
+            latency_ms=0,
+            audio_seconds=audio_seconds,
+        )
 
 
 class MockLLMProvider(LLMProvider):

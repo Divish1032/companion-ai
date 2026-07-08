@@ -3,13 +3,15 @@ import json
 import time
 
 from app.config import Settings
-from app.audio_pipeline import pcm_silence_frame, pcm_sine_frame
+from app.audio_pipeline import CanonicalAudioFrame, pcm_silence_frame, pcm_sine_frame
 from app.lifecycle import (
     AgentAssignment,
     MemoryAgentTransport,
     RealtimeAgentSession,
     _wait_until_started,
 )
+from app.providers.interfaces import STTProvider, TranscriptEvent
+from app.providers.mock import MockSTTProvider
 
 
 def test_agent_emits_state_sequence_and_filler_before_fake_audio() -> None:
@@ -102,6 +104,7 @@ def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
         assignment=_assignment(recent_context=[]),
         settings=_settings(vad_provider="energy"),
         transport=transport,
+        stt_provider=MockSTTProvider(),
     )
 
     async def scenario() -> None:
@@ -124,6 +127,72 @@ def test_barge_in_during_fake_ai_speech_cancels_speaking_state() -> None:
     assert any(event["type"] == "barge_in" and event.get("cancelled") is True for event in events)
     assert any(event["type"] == "endpoint_commit" for event in events)
     assert any(event["type"] == "session_state" and event.get("state") == "listening" for event in events)
+
+
+def test_audio_endpoint_runs_stt_and_emits_transcript_metrics() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=MockSTTProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    reliable = [_decode(event) for event in transport.events]
+    lossy = [_decode(event) for event in transport.lossy_events]
+    final = next(event for event in reliable if event["type"] == "transcript_final")
+
+    assert any(event["type"] == "transcript_partial" for event in lossy)
+    assert final["text"] == "mock user audio"
+    assert final["status"] == "final"
+    assert final["audio_seconds"] > 0
+    assert final["billed_units"] == 0
+    assert final["cost_units"] == 0
+    assert final["latency_ms"] >= 0
+
+
+def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=EmptySTTProvider(),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "transcript_repeat_requested")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assert any(
+        event["type"] == "transcript_repeat_requested"
+        and event.get("reason") == "empty_transcript"
+        for event in events
+    )
+    assert not any(event["type"] == "session_state" and event.get("state") == "thinking" for event in events)
 
 
 def test_wait_until_started_does_not_cancel_agent_task() -> None:
@@ -192,3 +261,20 @@ def _decode(data: bytes) -> dict[str, object]:
     decoded = json.loads(data.decode("utf-8"))
     assert isinstance(decoded, dict)
     return decoded
+
+
+class EmptySTTProvider(STTProvider):
+    async def stream(self, audio_frames, language: str):  # noqa: ANN001
+        audio_seconds = 0.0
+        async for frame in audio_frames:
+            assert isinstance(frame, CanonicalAudioFrame)
+            audio_seconds += frame.duration_ms / 1000
+        yield TranscriptEvent(
+            text="",
+            is_final=True,
+            confidence=None,
+            provider="test-empty",
+            model="test",
+            latency_ms=3,
+            audio_seconds=audio_seconds,
+        )

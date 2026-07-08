@@ -134,7 +134,9 @@ class _SessionStatusCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     state.errorMessage ??
-                        'LiveKit transport only. Voice intelligence arrives in later sprints.',
+                        (state.partialTranscript == null
+                            ? 'Listening for Hindi/Hinglish voice.'
+                            : 'Heard: ${state.partialTranscript}'),
                     style: theme.textTheme.bodySmall,
                   ),
                   const SizedBox(height: 4),

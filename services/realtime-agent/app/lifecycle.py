@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -16,6 +17,8 @@ from app.audio_pipeline import (
 )
 from app.config import Settings
 from app.events import EventSequencer, TurnIdFactory
+from app.providers import ProviderRouting, SarvamSTTProvider, STTProvider, VoskSTTProvider
+from app.providers.interfaces import TranscriptEvent
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
 
@@ -35,6 +38,7 @@ class AgentAssignment:
 class AgentTransport(Protocol):
     async def connect(self) -> None: ...
     async def publish_reliable(self, payload: bytes, topic: str = "critical") -> None: ...
+    async def publish_lossy(self, payload: bytes, topic: str = "diagnostic") -> None: ...
     async def publish_placeholder_audio(self, duration_ms: int) -> None: ...
     async def wait_for_client_activity(
         self, timeout_seconds: float
@@ -109,6 +113,11 @@ class LiveKitAgentTransport:
             raise AgentAssignmentError("LiveKit room is not connected.")
         await self.room.local_participant.publish_data(payload, reliable=True, topic=topic)
 
+    async def publish_lossy(self, payload: bytes, topic: str = "diagnostic") -> None:
+        if self.room is None:
+            raise AgentAssignmentError("LiveKit room is not connected.")
+        await self.room.local_participant.publish_data(payload, reliable=False, topic=topic)
+
     async def publish_placeholder_audio(self, duration_ms: int) -> None:
         if not self.settings.enable_fake_audio:
             return
@@ -163,6 +172,7 @@ class LiveKitAgentTransport:
 class MemoryAgentTransport:
     def __init__(self, *, audio_publish_delay_seconds: float = 0) -> None:
         self.events: list[bytes] = []
+        self.lossy_events: list[bytes] = []
         self.audio_publications = 0
         self.connected = False
         self.disconnected = False
@@ -174,6 +184,9 @@ class MemoryAgentTransport:
 
     async def publish_reliable(self, payload: bytes, topic: str = "critical") -> None:
         self.events.append(payload)
+
+    async def publish_lossy(self, payload: bytes, topic: str = "diagnostic") -> None:
+        self.lossy_events.append(payload)
 
     async def publish_placeholder_audio(self, duration_ms: int) -> None:
         self.audio_publications += 1
@@ -199,7 +212,7 @@ class RealtimeAgentSession:
         assignment: AgentAssignment,
         settings: Settings,
         transport: AgentTransport,
-        stt_provider: MockSTTProvider | None = None,
+        stt_provider: STTProvider | None = None,
         llm_provider: MockLLMProvider | None = None,
         tts_provider: MockTTSProvider | None = None,
         safety_classifier: SafetyClassifier | None = None,
@@ -207,13 +220,14 @@ class RealtimeAgentSession:
         self.assignment = assignment
         self.settings = settings
         self.transport = transport
-        self.stt_provider = stt_provider or MockSTTProvider()
+        self.stt_provider = stt_provider or create_stt_provider(settings)
         self.llm_provider = llm_provider or MockLLMProvider()
         self.tts_provider = tts_provider or MockTTSProvider()
         self.safety_classifier = safety_classifier or SafetyClassifier()
         self.sequencer = EventSequencer(assignment.session_id)
         self.turn_ids = TurnIdFactory(assignment.session_id)
-        self._stt_forwarded_audio_ms = 0
+        self._stt_streams: dict[str, _STTTurnStream] = {}
+        self._latest_partial_transcript: dict[str, str] = {}
         self.endpointing = EndpointingStateMachine(
             config=settings.vad_config(),
             vad_provider=create_vad_provider(settings.vad_config()),
@@ -239,6 +253,7 @@ class RealtimeAgentSession:
             raise
         finally:
             self.cancel_current_turn()
+            await self.close_stt_streams()
             await self.transport.disconnect()
 
     def cancel_current_turn(self) -> bool:
@@ -246,6 +261,18 @@ class RealtimeAgentSession:
             return False
         self._current_turn.cancel()
         return True
+
+    async def close_stt_streams(self) -> None:
+        tasks = []
+        for stream in self._stt_streams.values():
+            stream.close()
+            if stream.task is not None and not stream.task.done():
+                stream.task.cancel()
+                tasks.append(stream.task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._stt_streams.clear()
+        self._latest_partial_transcript.clear()
 
     async def _loop_until_shutdown(self) -> None:
         while not self._stopped.is_set():
@@ -335,7 +362,12 @@ class RealtimeAgentSession:
         )
 
     async def _handle_audio_frame(self, frame: CanonicalAudioFrame) -> None:
-        for event in self.endpointing.process_frame(frame):
+        partial = (
+            self._latest_partial_transcript.get(self.endpointing.current_turn_id)
+            if self.endpointing.current_turn_id is not None
+            else None
+        )
+        for event in self.endpointing.process_frame(frame, partial_transcript=partial):
             await self._handle_endpoint_event(event)
 
     async def _handle_endpoint_event(self, event: EndpointEvent) -> None:
@@ -352,6 +384,8 @@ class RealtimeAgentSession:
         await self._emit_endpoint_event(event)
         if event.type == "speech_end":
             await self._emit_state("listening", turn_id=event.turn_id)
+        if event.type == "endpoint_commit":
+            await self._finish_stt_turn(event.turn_id)
 
     async def _emit_endpoint_event(self, event: EndpointEvent) -> None:
         payload = {
@@ -376,7 +410,140 @@ class RealtimeAgentSession:
         )
 
     def _record_stt_audio(self, frame: CanonicalAudioFrame) -> None:
-        self._stt_forwarded_audio_ms += frame.duration_ms
+        turn_id = self.endpointing.current_turn_id
+        if turn_id is None:
+            return
+        stream = self._stt_streams.get(turn_id)
+        if stream is None:
+            stream = _STTTurnStream(turn_id=turn_id)
+            self._stt_streams[turn_id] = stream
+            stream.task = asyncio.create_task(self._run_stt_stream(stream))
+        stream.push(frame)
+
+    async def _run_stt_stream(self, stream: "_STTTurnStream") -> None:
+        try:
+            async for event in self.stt_provider.stream(stream.frames(), self.settings.language):
+                if event.is_final:
+                    await self._handle_final_transcript(stream.turn_id, event)
+                else:
+                    self._latest_partial_transcript[stream.turn_id] = event.text
+                    await self._emit_transcript_partial(stream.turn_id, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            await self._emit_stt_error(stream.turn_id, str(error))
+
+    async def _finish_stt_turn(self, turn_id: str) -> None:
+        stream = self._stt_streams.pop(turn_id, None)
+        if stream is None:
+            await self._emit_transcript_repeat(
+                turn_id,
+                reason="empty_transcript",
+                metrics={"audio_seconds": 0, "billed_units": 0, "cost_units": 0},
+            )
+            return
+        stream.close()
+        if stream.task is not None:
+            await stream.task
+        self._latest_partial_transcript.pop(turn_id, None)
+
+    async def _emit_transcript_partial(self, turn_id: str, event: TranscriptEvent) -> None:
+        await self.transport.publish_lossy(
+            self.sequencer.encode(
+                event_type="transcript_partial",
+                turn_id=turn_id,
+                payload={
+                    "text": event.text,
+                    "language": self.settings.language,
+                    "provider": event.provider,
+                    "model": event.model,
+                    "latency_ms": event.latency_ms,
+                    "audio_seconds": event.audio_seconds,
+                },
+            )
+        )
+
+    async def _handle_final_transcript(self, turn_id: str, event: TranscriptEvent) -> None:
+        metrics = _stt_metrics_payload(event)
+        status = "final"
+        repeat_reason: str | None = None
+        if not event.text:
+            status = "empty"
+            repeat_reason = "empty_transcript"
+        elif event.confidence is not None and event.confidence < self.settings.stt_min_confidence:
+            status = "low_confidence"
+            repeat_reason = "low_confidence"
+
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="transcript_final",
+                turn_id=turn_id,
+                payload={
+                    "text": event.text,
+                    "status": status,
+                    "language": self.settings.language,
+                    "confidence": event.confidence,
+                    **metrics,
+                },
+            )
+        )
+        print(
+            "stt_final",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                **metrics,
+                "empty": not event.text,
+                "low_confidence": status == "low_confidence",
+            },
+            flush=True,
+        )
+        if repeat_reason is not None:
+            await self._emit_transcript_repeat(turn_id, reason=repeat_reason, metrics=metrics)
+            return
+
+        # Sprint 6 owns LLM/TTS response generation. Sprint 5 stops after final user transcript.
+        await self._emit_state("listening", turn_id=turn_id)
+
+    async def _emit_transcript_repeat(
+        self,
+        turn_id: str,
+        *,
+        reason: str,
+        metrics: dict[str, object],
+    ) -> None:
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="transcript_repeat_requested",
+                turn_id=turn_id,
+                payload={
+                    "reason": reason,
+                    "message": "I did not catch that clearly. Please say it again.",
+                    **metrics,
+                },
+            )
+        )
+        print(
+            "stt_repeat_requested",
+            {"session_id": self.assignment.session_id, "turn_id": turn_id, "reason": reason},
+            flush=True,
+        )
+        await self._emit_state("listening", turn_id=turn_id)
+
+    async def _emit_stt_error(self, turn_id: str, message: str) -> None:
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="stt_error",
+                turn_id=turn_id,
+                payload={"message": message, "provider": selected_stt_provider_name(self.settings)},
+            )
+        )
+        print(
+            "stt_error",
+            {"session_id": self.assignment.session_id, "turn_id": turn_id, "message": message},
+            flush=True,
+        )
+        await self._emit_state("listening", turn_id=turn_id)
 
 
 class AgentSupervisor:
@@ -425,6 +592,95 @@ class AgentSupervisor:
         for session_id, task in list(self._tasks.items()):
             if task.done():
                 self._tasks.pop(session_id, None)
+
+
+class _STTTurnStream:
+    def __init__(self, *, turn_id: str) -> None:
+        self.turn_id = turn_id
+        self.task: asyncio.Task[None] | None = None
+        self._queue: asyncio.Queue[CanonicalAudioFrame | None] = asyncio.Queue()
+
+    def push(self, frame: CanonicalAudioFrame) -> None:
+        self._queue.put_nowait(frame)
+
+    def close(self) -> None:
+        self._queue.put_nowait(None)
+
+    async def frames(self) -> AsyncIterator[CanonicalAudioFrame]:
+        while True:
+            frame = await self._queue.get()
+            if frame is None:
+                return
+            yield frame
+
+
+def create_stt_provider(settings: Settings) -> STTProvider:
+    provider_name = selected_stt_provider_name(settings)
+    try:
+        if provider_name == "mock":
+            return MockSTTProvider()
+        if provider_name == "vosk":
+            return VoskSTTProvider(
+                model_path=settings.vosk_model_path,
+                model_name=settings.stt_model,
+            )
+        if provider_name == "sarvam":
+            return SarvamSTTProvider()
+        raise AgentAssignmentError(f"Unsupported STT provider: {provider_name}")
+    except Exception as error:
+        return _UnavailableSTTProvider(provider_name=provider_name, error=error)
+
+
+def selected_stt_provider_name(settings: Settings) -> str:
+    if settings.stt_provider:
+        return settings.stt_provider
+    try:
+        routing = ProviderRouting.from_dict(_load_persona_config(settings))
+        return routing.for_language(settings.language).stt
+    except Exception:
+        return "vosk"
+
+
+def _load_persona_config(settings: Settings) -> dict[str, object]:
+    import tomllib
+    from pathlib import Path
+
+    path = Path(settings.persona_config)
+    if not path.is_absolute():
+        for parent in Path(__file__).resolve().parents:
+            if (parent / "config" / "personas").is_dir():
+                path = parent / path
+                break
+    with path.open("rb") as file:
+        data = tomllib.load(file)
+    return data
+
+
+def _stt_metrics_payload(event: TranscriptEvent) -> dict[str, object]:
+    return {
+        "provider": event.provider,
+        "model": event.model,
+        "latency_ms": event.latency_ms,
+        "audio_seconds": event.audio_seconds,
+        "billed_units": event.billed_units,
+        "cost_units": event.cost_units,
+    }
+
+
+class _UnavailableSTTProvider(STTProvider):
+    def __init__(self, *, provider_name: str, error: Exception) -> None:
+        self.provider_name = provider_name
+        self.error = error
+
+    async def stream(
+        self,
+        audio_frames: AsyncIterator[CanonicalAudioFrame],
+        language: str,
+    ) -> AsyncIterator[TranscriptEvent]:
+        async for _frame in audio_frames:
+            break
+        raise RuntimeError(f"{self.provider_name} STT unavailable: {self.error}")
+        yield  # pragma: no cover
 
 
 async def _wait_until_started(task: asyncio.Task[None], started: asyncio.Event) -> None:

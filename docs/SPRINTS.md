@@ -289,6 +289,16 @@ Acceptance:
 - STT latency metrics logged.
 - STT cost metrics logged.
 
+Status:
+
+- Complete and green as of 2026-07-08.
+- Backend-local Vosk is the first Hindi STT adapter for Sprint 5.
+- Sarvam STT remains scaffolded only as a future/fallback API-backed adapter path behind the same provider interface/config.
+- Phone validation passed on Android over Wi-Fi with local Docker API, LiveKit, and realtime-agent.
+- Validated Hindi phrase through phone mic: "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai".
+- Observed STT metrics: provider `vosk`, model `vosk-model-small-hi-0.22`, audio seconds `4.29`, provider cost units `0`.
+- Android Studio debug runs need either `--dart-define=API_BASE_URL=http://<Mac LAN IP>:8000` or `adb reverse tcp:8000 tcp:8000` when using the default `http://localhost:8000`.
+
 ### Sprint 6: LLM Integration and Persona
 
 Goal:

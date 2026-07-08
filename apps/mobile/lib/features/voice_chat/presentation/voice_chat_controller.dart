@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/audio/audio_session_service.dart';
@@ -99,7 +101,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         _applyConnectionStatus,
       );
       await _eventSubscription?.cancel();
-      _eventSubscription = handle.events.listen(_applyLiveKitEvent);
+      _eventSubscription = handle.events.listen((event) {
+        unawaited(_applyLiveKitEvent(event));
+      });
       await liveKitService.sendReliable(
         _sequencer.next(
           type: 'client_session_started',
@@ -204,13 +208,14 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     }
   }
 
-  void _applyLiveKitEvent(LiveKitDataEvent event) {
+  Future<void> _applyLiveKitEvent(LiveKitDataEvent event) async {
     if (event.type == 'session_state') {
       final incoming = event.payload['state'];
       if (incoming == 'thinking') {
         state = state.copyWith(
           phase: VoiceSessionPhase.thinking,
           isBusy: false,
+          clearPartialTranscript: true,
         );
       } else if (incoming == 'user_speaking') {
         state = state.copyWith(
@@ -221,6 +226,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         state = state.copyWith(
           phase: VoiceSessionPhase.speaking,
           isBusy: false,
+          clearPartialTranscript: true,
         );
       } else if (incoming == 'listening') {
         state = state.copyWith(
@@ -232,9 +238,43 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       state = state.copyWith(
         phase: VoiceSessionPhase.userSpeaking,
         isBusy: false,
+        clearError: true,
+        clearPartialTranscript: true,
       );
     } else if (event.type == 'speech_end') {
       state = state.copyWith(phase: VoiceSessionPhase.listening, isBusy: false);
+    } else if (event.type == 'transcript_partial') {
+      final text = (event.payload['text'] as String?)?.trim();
+      if (text != null && text.isNotEmpty) {
+        state = state.copyWith(
+          phase: VoiceSessionPhase.userSpeaking,
+          partialTranscript: text,
+          isBusy: false,
+        );
+      }
+    } else if (event.type == 'transcript_final') {
+      await _persistFinalTranscript(event);
+      state = state.copyWith(
+        phase: VoiceSessionPhase.listening,
+        isBusy: false,
+        clearPartialTranscript: true,
+      );
+    } else if (event.type == 'transcript_repeat_requested') {
+      state = state.copyWith(
+        phase: VoiceSessionPhase.listening,
+        isBusy: false,
+        clearPartialTranscript: true,
+        errorMessage:
+            (event.payload['message'] as String?) ??
+            'Please say that again clearly.',
+      );
+    } else if (event.type == 'stt_error') {
+      state = state.copyWith(
+        phase: VoiceSessionPhase.listening,
+        isBusy: false,
+        clearPartialTranscript: true,
+        errorMessage: 'Speech recognition failed. Please try again.',
+      );
     } else if (event.type == 'barge_in') {
       state = state.copyWith(
         phase: VoiceSessionPhase.userSpeaking,
@@ -247,6 +287,48 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             (event.payload['message'] as String?) ?? 'Voice session error.',
       );
     }
+  }
+
+  Future<void> _persistFinalTranscript(LiveKitDataEvent event) async {
+    final text = (event.payload['text'] as String?)?.trim();
+    if (text == null || text.isEmpty) {
+      return;
+    }
+
+    final status = switch (event.payload['status']) {
+      'low_confidence' => 'final_low_confidence',
+      _ => 'final',
+    };
+    final turnId = event.turnId ?? '${event.sessionId}:turn:${event.sequence}';
+    final createdAt = event.timestampMs > 0
+        ? event.timestampMs
+        : DateTime.now().millisecondsSinceEpoch;
+    final language = (event.payload['language'] as String?) ?? 'hi-IN';
+
+    await ref
+        .read(appDatabaseProvider)
+        .upsertMessage(
+          ChatMessagesCompanion.insert(
+            id: 'msg_${event.sessionId}_${turnId}_user',
+            sessionId: event.sessionId,
+            turnId: turnId,
+            role: 'user',
+            messageText: text,
+            status: status,
+            language: language,
+            createdAt: createdAt,
+            latencyJson: Value(
+              jsonEncode({
+                'provider': event.payload['provider'],
+                'model': event.payload['model'],
+                'latency_ms': event.payload['latency_ms'],
+                'audio_seconds': event.payload['audio_seconds'],
+                'billed_units': event.payload['billed_units'],
+                'cost_units': event.payload['cost_units'],
+              }),
+            ),
+          ),
+        );
   }
 
   String _startErrorMessage(Object error) {

@@ -36,6 +36,7 @@ class VoiceChatState {
     required this.mockModeEnabled,
     this.activeSessionId,
     this.errorMessage,
+    this.partialTranscript,
     this.isBusy = false,
   });
 
@@ -44,12 +45,14 @@ class VoiceChatState {
       mockModeEnabled = true,
       activeSessionId = null,
       errorMessage = null,
+      partialTranscript = null,
       isBusy = false;
 
   final VoiceSessionPhase phase;
   final bool mockModeEnabled;
   final String? activeSessionId;
   final String? errorMessage;
+  final String? partialTranscript;
   final bool isBusy;
 
   bool get isSessionActive =>
@@ -64,9 +67,11 @@ class VoiceChatState {
     bool? mockModeEnabled,
     String? activeSessionId,
     String? errorMessage,
+    String? partialTranscript,
     bool? isBusy,
     bool clearError = false,
     bool clearSession = false,
+    bool clearPartialTranscript = false,
   }) {
     return VoiceChatState(
       phase: phase ?? this.phase,
@@ -75,6 +80,9 @@ class VoiceChatState {
           ? null
           : activeSessionId ?? this.activeSessionId,
       errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
+      partialTranscript: clearPartialTranscript
+          ? null
+          : partialTranscript ?? this.partialTranscript,
       isBusy: isBusy ?? this.isBusy,
     );
   }

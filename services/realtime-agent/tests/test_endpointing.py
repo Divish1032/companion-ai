@@ -1,9 +1,11 @@
 from app.audio_pipeline import (
+    CanonicalAudioFrame,
     EndpointingStateMachine,
     EnergyVadProvider,
     VadConfig,
     pcm_silence_frame,
     pcm_sine_frame,
+    to_mono_pcm16,
 )
 
 
@@ -86,6 +88,22 @@ def test_forced_endpoint_prevents_runaway_utterance() -> None:
 
     assert _event_types(events) == ["speech_start", "speech_end", "endpoint_commit"]
     assert events[-1].reason == "forced_endpoint"
+
+
+def test_audio_conversion_outputs_vosk_required_mono_16khz_pcm16() -> None:
+    stereo_8khz = CanonicalAudioFrame(
+        pcm16=(1000).to_bytes(2, "little", signed=True)
+        + (3000).to_bytes(2, "little", signed=True)
+        + (2000).to_bytes(2, "little", signed=True)
+        + (4000).to_bytes(2, "little", signed=True),
+        sample_rate=8000,
+        num_channels=2,
+        duration_ms=1,
+    )
+
+    converted = to_mono_pcm16(stereo_8khz, target_sample_rate=16000)
+
+    assert len(converted) == 8
 
 
 def _machine(

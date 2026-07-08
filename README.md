@@ -4,9 +4,9 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 3 realtime agent skeleton.
+Active phase: Sprint 5 STT integration complete.
 
-Sprint -1 validation gates and Sprints 0-2 are complete. Sprint 3 adds a room-specific realtime-agent skeleton that joins LiveKit, subscribes to user audio, emits reliable session-state events, and uses mocked providers only. Real STT, LLM, TTS, VAD, auth, text input, and video/avatar remain out of scope.
+Sprint -1 through Sprint 5 are complete and green. Sprint 5 streams endpointed user audio into the configured STT provider, defaults Hindi STT routing to backend-local Vosk, emits partial/final transcript events, and persists final user transcripts locally on device. Real LLM, real TTS, auth, text input, and video/avatar remain out of scope.
 
 ## Repo Layout
 
@@ -41,7 +41,7 @@ Do not commit real secrets or provider API keys.
 ## Commands
 
 ```bash
-make dev      # start Redis, LiveKit, API, and realtime-agent skeleton
+make dev      # start Redis, LiveKit, API, and realtime-agent
 make check    # docs, scaffold, Python, and Flutter checks
 make mobile   # run the Flutter app
 make logs     # follow Docker Compose logs
@@ -67,7 +67,21 @@ cd apps/mobile
 flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 ```
 
-## Realtime Agent Skeleton
+For physical Android phone testing over Wi-Fi, start Docker with a LAN LiveKit URL and run Flutter with the Mac LAN API URL:
+
+```bash
+API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 docker compose -f infra/docker-compose.yml up -d --build
+cd apps/mobile
+flutter run --dart-define=API_BASE_URL=http://<Mac LAN IP>:8000
+```
+
+If Android Studio launches without that dart define, this debug fallback also works:
+
+```bash
+adb reverse tcp:8000 tcp:8000
+```
+
+## Realtime Agent
 
 During local Docker runs, the API calls `API_AGENT_ASSIGNMENT_URL` before returning a successful session. The realtime-agent joins the same room as `agent_<session_id>`, emits reliable `session_state` events (`listening`, `thinking`, `speaking`, `error`), and publishes generated placeholder audio for fake pipeline testing when supported by LiveKit RTC.
 
@@ -75,7 +89,11 @@ The filler-audio path is represented by reliable `filler_audio` start/stop event
 
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Sprint 3 includes mocked provider implementations only; real STT, LLM, and TTS adapters are later-sprint work.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT routes to `vosk` for Sprint 5, while Sarvam STT remains scaffolded as a future/fallback API-backed adapter path.
+
+For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/` and set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If the model path is absent, the agent still starts and emits an `stt_error` event on speech instead of fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
+
+Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi transcript for "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai" with Vosk metrics logged by realtime-agent.
 
 ## Git Hooks
 

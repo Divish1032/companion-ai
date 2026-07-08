@@ -87,6 +87,10 @@ class AppDatabase extends _$AppDatabase {
     return into(chatMessages).insert(message);
   }
 
+  Future<void> upsertMessage(ChatMessagesCompanion message) {
+    return into(chatMessages).insertOnConflictUpdate(message);
+  }
+
   Future<void> replaceMessageText({
     required String messageId,
     required String text,

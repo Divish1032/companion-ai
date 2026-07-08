@@ -276,6 +276,24 @@ def pcm_silence_frame(*, duration_ms: int, sample_rate: int = 16000) -> Canonica
     )
 
 
+def to_mono_pcm16(
+    frame: CanonicalAudioFrame,
+    *,
+    target_sample_rate: int,
+) -> bytes:
+    if frame.sample_rate <= 0 or frame.num_channels <= 0:
+        raise ValueError("Audio frame must include a positive sample rate and channel count.")
+
+    mono = _downmix_pcm16_to_mono(frame.pcm16, frame.num_channels)
+    if frame.sample_rate == target_sample_rate:
+        return mono
+    return _resample_pcm16_linear(
+        mono,
+        source_sample_rate=frame.sample_rate,
+        target_sample_rate=target_sample_rate,
+    )
+
+
 def _suggests_continuation(partial_transcript: str | None) -> bool:
     if not partial_transcript:
         return False
@@ -293,3 +311,45 @@ def _pcm16_rms(data: bytes) -> int:
     samples = struct.unpack(f"<{sample_count}h", data[: sample_count * 2])
     mean_square = sum(sample * sample for sample in samples) / sample_count
     return int(math.sqrt(mean_square))
+
+
+def _downmix_pcm16_to_mono(pcm16: bytes, num_channels: int) -> bytes:
+    sample_count = len(pcm16) // 2
+    if sample_count == 0:
+        return b""
+    samples = struct.unpack(f"<{sample_count}h", pcm16[: sample_count * 2])
+    if num_channels == 1:
+        return struct.pack(f"<{len(samples)}h", *samples)
+
+    frame_count = len(samples) // num_channels
+    mono_samples = []
+    for frame_index in range(frame_count):
+        start = frame_index * num_channels
+        mono_samples.append(round(sum(samples[start : start + num_channels]) / num_channels))
+    return struct.pack(f"<{len(mono_samples)}h", *mono_samples)
+
+
+def _resample_pcm16_linear(
+    pcm16: bytes,
+    *,
+    source_sample_rate: int,
+    target_sample_rate: int,
+) -> bytes:
+    source_count = len(pcm16) // 2
+    if source_count == 0:
+        return b""
+    source = struct.unpack(f"<{source_count}h", pcm16[: source_count * 2])
+    target_count = max(round(source_count * target_sample_rate / source_sample_rate), 1)
+    if target_count == 1:
+        return struct.pack("<h", source[0])
+
+    ratio = (source_count - 1) / (target_count - 1)
+    resampled = []
+    for target_index in range(target_count):
+        position = target_index * ratio
+        left = int(position)
+        right = min(left + 1, source_count - 1)
+        fraction = position - left
+        value = round(source[left] + (source[right] - source[left]) * fraction)
+        resampled.append(value)
+    return struct.pack(f"<{len(resampled)}h", *resampled)

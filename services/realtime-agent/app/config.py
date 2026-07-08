@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     enable_livekit_rtc: bool = True
     enable_fake_audio: bool = True
     fake_audio_ms: int = 550
+    language: str = "hi-IN"
+    stt_provider: str = ""
+    stt_model: str = "vosk-model-small-hi-0.22"
+    vosk_model_path: str = ""
+    stt_min_confidence: float = 0.35
     vad_provider: str = "silero"
     vad_start_threshold: float = 0.55
     vad_end_threshold: float = 0.35

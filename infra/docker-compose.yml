@@ -51,8 +51,11 @@ services:
       AGENT_LIVEKIT_URL: ws://livekit:7880
       AGENT_LIVEKIT_API_KEY: ${AGENT_LIVEKIT_API_KEY:-devkey}
       AGENT_LIVEKIT_API_SECRET: ${AGENT_LIVEKIT_API_SECRET:-secret}
+      AGENT_VOSK_MODEL_PATH: /models/vosk-model-small-hi-0.22
     ports:
       - "8001:8001"
+    volumes:
+      - ../models:/models:ro
     depends_on:
       redis:
         condition: service_healthy

@@ -11,6 +11,11 @@ dependencies = [
     "uvicorn[standard]>=0.35.0",
 ]
 
+[project.optional-dependencies]
+vosk = [
+    "vosk>=0.3.45",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.0",
