@@ -171,18 +171,29 @@ class SessionStore:
             cursor = connection.execute(
                 """
                 UPDATE sessions
-                SET status = 'ended'
+                SET status = 'ended', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}'
                 WHERE session_id = ? AND device_id = ? AND status = 'active'
                 """,
                 (session_id, device_id),
             )
             return cursor.rowcount > 0
 
+    def clear_session_context(self, *, session_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE sessions
+                SET recent_context_json = '{"recent_turns":[],"memory_blocks":[]}'
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+
     def _expire_old_sessions(self, connection: sqlite3.Connection, now_ms: int) -> None:
         connection.execute(
             """
             UPDATE sessions
-            SET status = 'expired'
+            SET status = 'expired', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}'
             WHERE status = 'active' AND expires_at_ms <= ?
             """,
             (now_ms,),

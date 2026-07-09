@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field
 
 from app.agent_assignment import AgentAssigner, AgentAssignmentFailed
 from app.config import Settings
+from app.embedding_service import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    DEFAULT_EMBEDDING_MODEL,
+    embed_texts,
+    rerank,
+)
 from app.session_store import ActiveSessionExists, RateLimitExceeded, SessionStore
 
 settings = Settings()
@@ -27,9 +33,15 @@ class RecentTranscriptItem(BaseModel):
 
 class MemoryContextItem(BaseModel):
     memory_id: str = Field(min_length=1, max_length=160)
-    kind: str = Field(pattern="^(stable_fact|session_summary)$")
+    kind: str = Field(
+        pattern="^(stable_fact|core_profile|semantic|episodic|session_summary|procedural|safety_ephemeral)$"
+    )
     label: str = Field(min_length=1, max_length=80)
     content: str = Field(min_length=1, max_length=800)
+    original_text: str = Field(default="", max_length=1000)
+    canonical_text: str = Field(default="", max_length=1000)
+    language: str = Field(default="hi-IN", max_length=32)
+    script: str = Field(default="mixed", max_length=32)
     source_turn_ids: list[str] = Field(default_factory=list, max_length=8)
     source_role: str = Field(max_length=32)
     transcript_status: str = Field(max_length=128)
@@ -39,6 +51,11 @@ class MemoryContextItem(BaseModel):
     last_used_at_ms: int | None = None
     confidence_score: float = Field(ge=0, le=1)
     importance_score: float = Field(ge=0, le=1)
+    recurrence_count: int = Field(default=1, ge=0, le=1000)
+    sensitivity: str = Field(default="normal", max_length=64)
+    temporal_status: str = Field(default="current", max_length=64)
+    receipt_state: str = Field(default="implicit", max_length=64)
+    evidence_summary: str = Field(default="", max_length=500)
 
 
 class CreateSessionRequest(BaseModel):
@@ -71,6 +88,39 @@ class EndSessionRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class EmbeddingsRequest(BaseModel):
+    texts: list[str] = Field(min_length=1, max_length=32)
+    model: str = Field(default=DEFAULT_EMBEDDING_MODEL, max_length=120)
+    dimension: int = Field(default=DEFAULT_EMBEDDING_DIMENSION, ge=32, le=1024)
+
+
+class EmbeddingsResponse(BaseModel):
+    model: str
+    dimension: int
+    embeddings: list[list[float]]
+
+
+class RerankCandidate(BaseModel):
+    id: str = Field(min_length=1, max_length=160)
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class RerankRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    candidates: list[RerankCandidate] = Field(min_length=1, max_length=64)
+    model: str = Field(default="qwen3-reranker-0.6b-stateless-dev", max_length=120)
+
+
+class RerankResult(BaseModel):
+    id: str
+    score: float
+
+
+class RerankResponse(BaseModel):
+    model: str
+    results: list[RerankResult]
+
+
 def get_store() -> SessionStore:
     return store
 
@@ -90,6 +140,30 @@ async def config() -> dict[str, str]:
         "environment": settings.environment,
         "livekit_url": settings.livekit_url,
     }
+
+
+@app.post("/v1/embeddings", response_model=EmbeddingsResponse)
+async def embeddings(request: EmbeddingsRequest) -> EmbeddingsResponse:
+    vectors = embed_texts(request.texts, dimension=request.dimension)
+    return EmbeddingsResponse(
+        model=request.model,
+        dimension=request.dimension,
+        embeddings=vectors,
+    )
+
+
+@app.post("/v1/rerank", response_model=RerankResponse)
+async def rerank_candidates(request: RerankRequest) -> RerankResponse:
+    scores = rerank(request.query, [candidate.text for candidate in request.candidates])
+    ranked = sorted(
+        [
+            RerankResult(id=candidate.id, score=score)
+            for candidate, score in zip(request.candidates, scores, strict=True)
+        ],
+        key=lambda result: result.score,
+        reverse=True,
+    )
+    return RerankResponse(model=request.model, results=ranked)
 
 
 @app.post("/v1/session", response_model=CreateSessionResponse)
@@ -138,6 +212,7 @@ async def create_session(
             status_code=503,
             detail={"code": "agent_assignment_failed"},
         ) from error
+    session_store.clear_session_context(session_id=session.session_id)
 
     return CreateSessionResponse(
         session_id=session.session_id,

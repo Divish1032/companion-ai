@@ -66,8 +66,34 @@ def test_prompt_builder_selects_relevant_memory_before_recent_turns() -> None:
 
     assert "User prefers to be called Rahul." in joined
     assert "suicide" not in joined
-    assert joined.index("[stable_facts]") < joined.index("[recent_turns]")
+    assert joined.index("[core_profile]") < joined.index("[recent_turns]")
     assert diagnostics["memory_blocks_selected"] == 2
+
+
+def test_prompt_builder_injects_semantic_work_context_cautiously() -> None:
+    builder = PromptContextBuilder(
+        system_prompt="system",
+        initial_context={
+            "recent_turns": [],
+            "memory_blocks": [
+                _memory(
+                    "m_work",
+                    "semantic",
+                    "recurring_work_stressor",
+                    "User has previously mentioned work stress related to manager pressure.",
+                    importance=0.82,
+                ),
+            ],
+        },
+    )
+
+    messages, diagnostics = builder.build("aaj office se aaya, bad day tha")
+    joined = "\n".join(message.content for message in messages)
+
+    assert "[semantic_memory]" in joined
+    assert "manager pressure" in joined
+    assert "latest_user message is authoritative" in joined
+    assert diagnostics["memory_blocks_selected"] == 1
 
 
 def test_prompt_builder_prioritizes_identity_fact_and_caps_summaries() -> None:
@@ -181,6 +207,7 @@ def _memory(
         "kind": kind,
         "label": label,
         "content": content,
+        "canonical_text": content.casefold(),
         "source_turn_ids": ["t1"],
         "source_role": "user",
         "transcript_status": "final",
@@ -190,4 +217,9 @@ def _memory(
         "last_used_at_ms": None,
         "confidence_score": confidence,
         "importance_score": importance,
+        "recurrence_count": 1,
+        "sensitivity": "normal",
+        "temporal_status": "current",
+        "receipt_state": "implicit",
+        "evidence_summary": "test evidence",
     }

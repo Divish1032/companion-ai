@@ -25,9 +25,12 @@ void main() {
     );
 
     expect(memories, hasLength(1));
-    expect(memories.single.kind, 'stable_fact');
+    expect(memories.single.kind, 'core_profile');
     expect(memories.single.label, 'preferred_name');
     expect(memories.single.content, contains('Rahul'));
+    expect(memories.single.canonicalText, contains('rahul'));
+    expect(memories.single.temporalStatus, 'current');
+    expect(memories.single.receiptState, 'implicit');
     expect(jsonDecode(memories.single.sourceTurnIdsJson), contains('turn_1'));
     expect(memories.single.sttConfidence, 0.96);
   });
@@ -325,6 +328,38 @@ void main() {
 
     expect(summaries.length, lessThanOrEqualTo(4));
   });
+
+  test(
+    'graph-expanded recall connects vague office day to manager stress',
+    () async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: 'u1',
+          turnId: 'turn_1',
+          text: 'office mein manager bahut pressure deta hai',
+          confidence: 0.96,
+        ),
+      );
+
+      final memories = await database.readMemoryContext(
+        latestUserText: 'aaj office se aaya, bad day tha',
+        limit: 6,
+      );
+
+      expect(
+        memories.any(
+          (memory) =>
+              memory.kind == 'semantic' &&
+              memory.label == 'recurring_work_stressor' &&
+              memory.content.contains('manager pressure'),
+        ),
+        isTrue,
+      );
+    },
+  );
 }
 
 ChatMessagesCompanion _message({

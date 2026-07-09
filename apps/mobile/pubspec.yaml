@@ -45,6 +45,8 @@ dependencies:
   uuid: ^4.5.2
   livekit_client: ^2.3.1+hotfix.1
   http: ^1.6.0
+  objectbox: ^5.3.2
+  objectbox_flutter_libs: ^5.3.2
 
 dev_dependencies:
   build_runner: ^2.10.4
@@ -58,6 +60,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  objectbox_generator: ^5.3.2
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

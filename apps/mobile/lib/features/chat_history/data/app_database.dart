@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'memory_vector_index.dart';
+
 part 'app_database.g.dart';
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -46,6 +48,10 @@ class MemoryRecords extends Table {
   TextColumn get kind => text()();
   TextColumn get label => text()();
   TextColumn get content => text()();
+  TextColumn get originalText => text().withDefault(const Constant(''))();
+  TextColumn get canonicalText => text().withDefault(const Constant(''))();
+  TextColumn get language => text().withDefault(const Constant('hi-IN'))();
+  TextColumn get script => text().withDefault(const Constant('mixed'))();
   TextColumn get sourceTurnIdsJson => text()();
   TextColumn get sourceRole => text()();
   TextColumn get transcriptStatus => text()();
@@ -55,20 +61,85 @@ class MemoryRecords extends Table {
   IntColumn get lastUsedAt => integer().nullable()();
   RealColumn get confidenceScore => real()();
   RealColumn get importanceScore => real()();
+  IntColumn get recurrenceCount => integer().withDefault(const Constant(1))();
+  TextColumn get sensitivity => text().withDefault(const Constant('normal'))();
+  TextColumn get temporalStatus =>
+      text().withDefault(const Constant('current'))();
+  TextColumn get receiptState =>
+      text().withDefault(const Constant('implicit'))();
   TextColumn get supersededBy => text().nullable()();
+  TextColumn get replacementReason => text().nullable()();
+  TextColumn get evidenceSummary => text().withDefault(const Constant(''))();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
 }
 
-@DriftDatabase(tables: [ChatSessions, ChatMessages, MemoryRecords])
+class MemoryEntities extends Table {
+  TextColumn get id => text()();
+  TextColumn get kind => text()();
+  TextColumn get canonicalName => text()();
+  TextColumn get aliasesJson => text().withDefault(const Constant('[]'))();
+  TextColumn get language => text().withDefault(const Constant('hi-IN'))();
+  TextColumn get sensitivity => text().withDefault(const Constant('normal'))();
+  IntColumn get firstSeenAt => integer()();
+  IntColumn get lastSeenAt => integer()();
+  RealColumn get confidenceScore => real().withDefault(const Constant(0.7))();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+class MemoryEdges extends Table {
+  TextColumn get id => text()();
+  TextColumn get sourceEntityId => text()();
+  TextColumn get relation => text()();
+  TextColumn get targetEntityId => text()();
+  TextColumn get evidenceTurnIdsJson =>
+      text().withDefault(const Constant('[]'))();
+  RealColumn get confidenceScore => real().withDefault(const Constant(0.7))();
+  IntColumn get frequency => integer().withDefault(const Constant(1))();
+  TextColumn get polarity => text().withDefault(const Constant('neutral'))();
+  TextColumn get sensitivity => text().withDefault(const Constant('normal'))();
+  TextColumn get temporalStatus =>
+      text().withDefault(const Constant('current'))();
+  IntColumn get firstSeenAt => integer()();
+  IntColumn get lastSeenAt => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+class MemoryContradictions extends Table {
+  TextColumn get id => text()();
+  TextColumn get oldMemoryId => text()();
+  TextColumn get newMemoryId => text()();
+  TextColumn get reason => text()();
+  TextColumn get evidenceTurnIdsJson =>
+      text().withDefault(const Constant('[]'))();
+  IntColumn get createdAt => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+@DriftDatabase(
+  tables: [
+    ChatSessions,
+    ChatMessages,
+    MemoryRecords,
+    MemoryEntities,
+    MemoryEdges,
+    MemoryContradictions,
+  ],
+)
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -77,6 +148,21 @@ class AppDatabase extends _$AppDatabase {
       if (from < 2) {
         await m.addColumn(chatMessages, chatMessages.sttConfidence);
         await m.createTable(memoryRecords);
+      }
+      if (from < 3) {
+        await m.addColumn(memoryRecords, memoryRecords.originalText);
+        await m.addColumn(memoryRecords, memoryRecords.canonicalText);
+        await m.addColumn(memoryRecords, memoryRecords.language);
+        await m.addColumn(memoryRecords, memoryRecords.script);
+        await m.addColumn(memoryRecords, memoryRecords.recurrenceCount);
+        await m.addColumn(memoryRecords, memoryRecords.sensitivity);
+        await m.addColumn(memoryRecords, memoryRecords.temporalStatus);
+        await m.addColumn(memoryRecords, memoryRecords.receiptState);
+        await m.addColumn(memoryRecords, memoryRecords.replacementReason);
+        await m.addColumn(memoryRecords, memoryRecords.evidenceSummary);
+        await m.createTable(memoryEntities);
+        await m.createTable(memoryEdges);
+        await m.createTable(memoryContradictions);
       }
     },
     beforeOpen: (details) async {
@@ -189,9 +275,13 @@ class AppDatabase extends _$AppDatabase {
   Future<List<MemoryRecord>> readMemoryContext({
     required String latestUserText,
     required int limit,
+    List<VectorSearchHit> vectorHits = const [],
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final intent = _classifyMemoryQuery(latestUserText);
+    final vectorScores = {
+      for (final hit in vectorHits) hit.memoryId: hit.score,
+    };
     final rows =
         await (select(memoryRecords)
               ..where((row) => row.supersededBy.isNull())
@@ -204,6 +294,16 @@ class AppDatabase extends _$AppDatabase {
       for (final row in rows)
         if (_memoryRelevant(row, latestUserText))
           _RankedMemory(row, _memoryRank(row, latestUserText, intent)),
+      for (final row in rows)
+        if (vectorScores.containsKey(row.id) &&
+            _memoryAllowedForRetrieval(row, latestUserText))
+          _RankedMemory(
+            row,
+            _memoryRank(row, latestUserText, intent) +
+                0.45 +
+                vectorScores[row.id]!.clamp(0.0, 1.0),
+          ),
+      ...await _graphExpandedMemories(latestUserText, intent),
     ]..sort((a, b) => b.score.compareTo(a.score));
     final selected = _selectBoundedMemories(
       ranked,
@@ -215,6 +315,52 @@ class AppDatabase extends _$AppDatabase {
           .write(MemoryRecordsCompanion(lastUsedAt: Value(now)));
     }
     return selected;
+  }
+
+  Future<List<MemoryRecord>> readMemoryRecordsForTurn({
+    required String turnId,
+  }) async {
+    final rows = await (select(
+      memoryRecords,
+    )..where((row) => row.supersededBy.isNull())).get();
+    return [
+      for (final row in rows)
+        if (_decodeStringList(row.sourceTurnIdsJson).contains(turnId)) row,
+    ];
+  }
+
+  Future<List<MemoryRecord>> readEmbeddableMemoryRecords() {
+    return (select(memoryRecords)
+          ..where(
+            (row) =>
+                row.supersededBy.isNull() &
+                row.sensitivity.equals('normal') &
+                row.temporalStatus.isNotIn(['expired']) &
+                row.content.isNotValue(''),
+          )
+          ..orderBy([(row) => OrderingTerm.asc(row.updatedAt)]))
+        .get();
+  }
+
+  Future<List<MemoryRecord>> readSessionStartMemoryContext({
+    required int limit,
+  }) {
+    return (select(memoryRecords)
+          ..where(
+            (row) =>
+                row.supersededBy.isNull() &
+                row.sensitivity.equals('normal') &
+                row.temporalStatus.isNotIn(['expired', 'stale']) &
+                (row.kind.equals('core_profile') |
+                    (row.kind.equals('procedural') &
+                        row.label.equals('language_style'))),
+          )
+          ..orderBy([
+            (row) => OrderingTerm.desc(row.importanceScore),
+            (row) => OrderingTerm.desc(row.updatedAt),
+          ])
+          ..limit(limit))
+        .get();
   }
 
   Future<ChatMessage?> latestFinalUserMessage() {
@@ -230,6 +376,9 @@ class AppDatabase extends _$AppDatabase {
 
   Future<void> clearHistory() async {
     await transaction(() async {
+      await delete(memoryContradictions).go();
+      await delete(memoryEdges).go();
+      await delete(memoryEntities).go();
       await delete(memoryRecords).go();
       await delete(chatMessages).go();
       await delete(chatSessions).go();
@@ -240,8 +389,9 @@ class AppDatabase extends _$AppDatabase {
     if (!_eligibleForMemory(message) || message.role != 'user') {
       return;
     }
+    await _upsertGraphSignals(message);
     for (final candidate in _extractStableFactCandidates(message.messageText)) {
-      final id = 'memory_${candidate.kind}_${candidate.label}';
+      final id = 'memory_${candidate.memoryType}_${candidate.label}';
       final existing = await (select(
         memoryRecords,
       )..where((row) => row.id.equals(id))).getSingleOrNull();
@@ -260,12 +410,31 @@ class AppDatabase extends _$AppDatabase {
           )) {
         continue;
       }
+      final replacementReason = existing != null
+          ? _replacementReason(existing: existing, candidate: candidate)
+          : null;
+      if (existing != null && replacementReason != null) {
+        await into(memoryContradictions).insertOnConflictUpdate(
+          MemoryContradictionsCompanion.insert(
+            id: 'contradiction_${existing.id}_${message.turnId}',
+            oldMemoryId: existing.id,
+            newMemoryId: id,
+            reason: replacementReason,
+            evidenceTurnIdsJson: Value(jsonEncode(sourceTurnIds)),
+            createdAt: now,
+          ),
+        );
+      }
       await into(memoryRecords).insertOnConflictUpdate(
         MemoryRecordsCompanion.insert(
           id: id,
-          kind: 'stable_fact',
+          kind: candidate.memoryType,
           label: candidate.label,
           content: candidate.content,
+          originalText: Value(message.messageText),
+          canonicalText: Value(_canonicalMemoryText(candidate.content)),
+          language: Value(message.language),
+          script: Value(_detectScript(message.messageText)),
           sourceTurnIdsJson: jsonEncode(sourceTurnIds),
           sourceRole: 'user',
           transcriptStatus: message.status,
@@ -278,10 +447,17 @@ class AppDatabase extends _$AppDatabase {
           importanceScore: existing == null
               ? candidate.importance
               : (existing.importanceScore + 0.05).clamp(0.0, 0.95),
+          recurrenceCount: Value((existing?.recurrenceCount ?? 0) + 1),
+          sensitivity: const Value('normal'),
+          temporalStatus: const Value('current'),
+          receiptState: const Value('implicit'),
           supersededBy: const Value(null),
+          replacementReason: Value(replacementReason),
+          evidenceSummary: Value(candidate.evidenceSummary),
         ),
       );
     }
+    await _admitCompanionContextMemories(message);
   }
 
   Future<void> _upsertSessionSummary(
@@ -302,10 +478,18 @@ class AppDatabase extends _$AppDatabase {
     final now = assistant.createdAt;
     await into(memoryRecords).insertOnConflictUpdate(
       MemoryRecordsCompanion.insert(
-        id: 'summary_${user.sessionId}',
+        id: 'summary_${user.sessionId}_${user.turnId}',
         kind: 'session_summary',
         label: 'previous_session',
         content: 'User: $userText\nAssistant: $assistantText',
+        originalText: Value(
+          'User: ${user.messageText}\nAssistant: ${assistant.messageText}',
+        ),
+        canonicalText: Value(_canonicalMemoryText('$userText $assistantText')),
+        language: Value(user.language),
+        script: Value(
+          _detectScript('${user.messageText} ${assistant.messageText}'),
+        ),
         sourceTurnIdsJson: jsonEncode([user.turnId]),
         sourceRole: 'mixed',
         transcriptStatus: '${user.status}+${assistant.status}',
@@ -314,7 +498,12 @@ class AppDatabase extends _$AppDatabase {
         updatedAt: now,
         confidenceScore: 0.62,
         importanceScore: 0.35,
+        recurrenceCount: const Value(1),
+        sensitivity: const Value('normal'),
+        temporalStatus: const Value('past'),
+        receiptState: const Value('implicit'),
         supersededBy: const Value(null),
+        evidenceSummary: Value('Completed local session turn ${user.turnId}.'),
       ),
     );
     await _pruneSessionSummaries(keep: 4);
@@ -332,24 +521,230 @@ class AppDatabase extends _$AppDatabase {
       )..where((row) => row.id.equals(summary.id))).go();
     }
   }
+
+  Future<List<_RankedMemory>> _graphExpandedMemories(
+    String latestUserText,
+    _MemoryQueryIntent intent,
+  ) async {
+    final queryEntities = _extractMemoryEntities(latestUserText);
+    if (queryEntities.isEmpty || _isGreetingOnly(latestUserText)) {
+      return const [];
+    }
+    final entityIds = queryEntities.map((entity) => entity.id).toSet();
+    final edges =
+        await (select(memoryEdges)..where(
+              (edge) =>
+                  edge.sourceEntityId.isIn(entityIds) |
+                  edge.targetEntityId.isIn(entityIds),
+            ))
+            .get();
+    if (edges.isEmpty) {
+      return const [];
+    }
+    final relatedEntityIds = <String>{
+      for (final edge in edges) edge.sourceEntityId,
+      for (final edge in edges) edge.targetEntityId,
+    };
+    final relatedTerms = relatedEntityIds
+        .map((id) => id.replaceFirst('entity_', '').replaceAll('_', ' '))
+        .toSet();
+    final rows =
+        await (select(memoryRecords)..where(
+              (row) =>
+                  row.supersededBy.isNull() &
+                  (row.temporalStatus.equals('current') |
+                      row.temporalStatus.equals('past') |
+                      row.temporalStatus.equals('uncertain')) &
+                  row.sensitivity.equals('normal'),
+            ))
+            .get();
+    return [
+      for (final row in rows)
+        if (relatedTerms.any(
+          (term) =>
+              row.canonicalText.contains(term) ||
+              row.content.toLowerCase().contains(term),
+        ))
+          _RankedMemory(row, _memoryRank(row, latestUserText, intent) + 0.65),
+    ];
+  }
+
+  Future<void> _admitCompanionContextMemories(ChatMessage message) async {
+    final normalized = _normalizeForMemory(message.messageText);
+    if (!_looksWorkStressRelated(normalized)) {
+      return;
+    }
+    final now = message.createdAt;
+    const id = 'memory_semantic_work_stress_manager';
+    final existing = await (select(
+      memoryRecords,
+    )..where((row) => row.id.equals(id))).getSingleOrNull();
+    final sourceTurnIds = existing == null
+        ? [message.turnId]
+        : {
+            ..._decodeStringList(existing.sourceTurnIdsJson),
+            message.turnId,
+          }.toList();
+    await into(memoryRecords).insertOnConflictUpdate(
+      MemoryRecordsCompanion.insert(
+        id: id,
+        kind: 'semantic',
+        label: 'recurring_work_stressor',
+        content:
+            'User has previously mentioned work stress related to office or manager pressure.',
+        originalText: Value(message.messageText),
+        canonicalText: const Value('work stress office manager pressure'),
+        language: Value(message.language),
+        script: Value(_detectScript(message.messageText)),
+        sourceTurnIdsJson: jsonEncode(sourceTurnIds),
+        sourceRole: 'user',
+        transcriptStatus: message.status,
+        sttConfidence: Value(message.sttConfidence),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        confidenceScore: existing == null
+            ? 0.68
+            : (existing.confidenceScore + 0.06).clamp(0.0, 0.95),
+        importanceScore: existing == null
+            ? 0.72
+            : (existing.importanceScore + 0.04).clamp(0.0, 0.95),
+        recurrenceCount: Value((existing?.recurrenceCount ?? 0) + 1),
+        sensitivity: const Value('normal'),
+        temporalStatus: const Value('current'),
+        receiptState: const Value('unconfirmed'),
+        supersededBy: const Value(null),
+        evidenceSummary: const Value(
+          'Recurring work/office stress signal from local turns.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _upsertGraphSignals(ChatMessage message) async {
+    final entities = _extractMemoryEntities(message.messageText);
+    for (final entity in entities) {
+      await _upsertEntity(entity, message);
+    }
+    final entityIds = entities.map((entity) => entity.id).toSet();
+    Future<void> edge(String source, String relation, String target) async {
+      if (!entityIds.contains(source) || !entityIds.contains(target)) {
+        return;
+      }
+      await _upsertEdge(
+        sourceEntityId: source,
+        relation: relation,
+        targetEntityId: target,
+        message: message,
+        polarity: relation == 'causes_stress' ? 'negative' : 'neutral',
+      );
+    }
+
+    await edge('entity_office', 'related_to', 'entity_work');
+    await edge('entity_manager', 'works_at_context', 'entity_office');
+    await edge('entity_manager', 'causes_stress', 'entity_work_stress');
+    await edge('entity_office', 'recurs_with', 'entity_work_stress');
+  }
+
+  Future<void> _upsertEntity(
+    _MemoryEntityCandidate entity,
+    ChatMessage message,
+  ) async {
+    final existing = await (select(
+      memoryEntities,
+    )..where((row) => row.id.equals(entity.id))).getSingleOrNull();
+    await into(memoryEntities).insertOnConflictUpdate(
+      MemoryEntitiesCompanion.insert(
+        id: entity.id,
+        kind: entity.kind,
+        canonicalName: entity.canonicalName,
+        aliasesJson: Value(jsonEncode(entity.aliases)),
+        language: Value(message.language),
+        sensitivity: const Value('normal'),
+        firstSeenAt: existing?.firstSeenAt ?? message.createdAt,
+        lastSeenAt: message.createdAt,
+        confidenceScore: Value(
+          existing == null
+              ? entity.confidence
+              : (existing.confidenceScore + 0.03).clamp(0.0, 0.95),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _upsertEdge({
+    required String sourceEntityId,
+    required String relation,
+    required String targetEntityId,
+    required ChatMessage message,
+    required String polarity,
+  }) async {
+    final id = 'edge_${sourceEntityId}_${relation}_$targetEntityId';
+    final existing = await (select(
+      memoryEdges,
+    )..where((row) => row.id.equals(id))).getSingleOrNull();
+    final evidenceTurnIds = existing == null
+        ? [message.turnId]
+        : {
+            ..._decodeStringList(existing.evidenceTurnIdsJson),
+            message.turnId,
+          }.toList();
+    await into(memoryEdges).insertOnConflictUpdate(
+      MemoryEdgesCompanion.insert(
+        id: id,
+        sourceEntityId: sourceEntityId,
+        relation: relation,
+        targetEntityId: targetEntityId,
+        evidenceTurnIdsJson: Value(jsonEncode(evidenceTurnIds)),
+        confidenceScore: Value(
+          existing == null
+              ? 0.68
+              : (existing.confidenceScore + 0.04).clamp(0.0, 0.96),
+        ),
+        frequency: Value((existing?.frequency ?? 0) + 1),
+        polarity: Value(polarity),
+        sensitivity: const Value('normal'),
+        temporalStatus: const Value('current'),
+        firstSeenAt: existing?.firstSeenAt ?? message.createdAt,
+        lastSeenAt: message.createdAt,
+      ),
+    );
+  }
+}
+
+class _MemoryEntityCandidate {
+  const _MemoryEntityCandidate({
+    required this.id,
+    required this.kind,
+    required this.canonicalName,
+    required this.aliases,
+    required this.confidence,
+  });
+
+  final String id;
+  final String kind;
+  final String canonicalName;
+  final List<String> aliases;
+  final double confidence;
 }
 
 class _StableFactCandidate {
   const _StableFactCandidate({
-    required this.kind,
+    required this.memoryType,
     required this.label,
     required this.content,
     required this.value,
     required this.confidence,
     required this.importance,
+    this.evidenceSummary = '',
   });
 
-  final String kind;
+  final String memoryType;
   final String label;
   final String content;
   final String value;
   final double confidence;
   final double importance;
+  final String evidenceSummary;
 }
 
 class _RankedMemory {
@@ -400,13 +795,14 @@ List<_StableFactCandidate> _extractStableFactCandidates(String text) {
     if (preferredName != null) {
       candidates.add(
         _StableFactCandidate(
-          kind: 'preferred_name',
+          memoryType: 'core_profile',
           label: 'preferred_name',
           content:
               'User prefers to be called ${_cleanMemoryText(preferredName, maxChars: 40)}.',
           value: preferredName,
           confidence: 0.8,
           importance: 0.9,
+          evidenceSummary: 'Explicit preferred-name statement.',
         ),
       );
     }
@@ -416,13 +812,14 @@ List<_StableFactCandidate> _extractStableFactCandidates(String text) {
     if (preferenceValue != null) {
       candidates.add(
         _StableFactCandidate(
-          kind: 'preference',
+          memoryType: 'semantic',
           label: 'safe_preference',
           content:
               'User explicitly said: ${_cleanMemoryText(preferenceValue, maxChars: 120)}',
           value: preferenceValue,
           confidence: 0.72,
           importance: 0.65,
+          evidenceSummary: 'Explicit safe preference statement.',
         ),
       );
     }
@@ -430,12 +827,13 @@ List<_StableFactCandidate> _extractStableFactCandidates(String text) {
     if (languageStyle != null) {
       candidates.add(
         _StableFactCandidate(
-          kind: 'language_style',
+          memoryType: 'procedural',
           label: 'language_style',
           content: 'User prefers $languageStyle replies.',
           value: languageStyle,
           confidence: 0.78,
           importance: 0.75,
+          evidenceSummary: 'Explicit language-style preference.',
         ),
       );
     }
@@ -681,19 +1079,35 @@ bool _isStrongPreferenceStatement(String text) {
 }
 
 bool _memoryRelevant(MemoryRecord row, String latestUserText) {
-  if (row.confidenceScore < 0.5 || row.importanceScore < 0.25) {
+  if (!_memoryAllowedForRetrieval(row, latestUserText)) {
     return false;
   }
-  if (row.kind == 'stable_fact') {
+  if ({'stable_fact', 'core_profile', 'procedural'}.contains(row.kind)) {
     return true;
   }
-  final latest = latestUserText.toLowerCase();
-  final content = row.content.toLowerCase();
+  final latest = _canonicalMemoryText(latestUserText);
+  final content = '${row.canonicalText} ${row.content}'.toLowerCase();
   final latestWords = latest
       .split(RegExp(r'[^a-zA-Z\u0900-\u097F]+'))
       .where((word) => word.length >= 4)
       .toSet();
   return latestWords.any(content.contains);
+}
+
+bool _memoryAllowedForRetrieval(MemoryRecord row, String latestUserText) {
+  if (row.confidenceScore < 0.5 || row.importanceScore < 0.25) {
+    return false;
+  }
+  if (row.sensitivity != 'normal' ||
+      row.temporalStatus == 'expired' ||
+      row.temporalStatus == 'stale') {
+    return false;
+  }
+  if (_isGreetingOnly(latestUserText)) {
+    return row.kind == 'core_profile' &&
+        {'preferred_name', 'language_style'}.contains(row.label);
+  }
+  return true;
 }
 
 double _memoryRank(
@@ -705,17 +1119,25 @@ double _memoryRank(
   final recency = row.updatedAt / 10000000000000;
   final typeBoost = switch ((intent, row.label, row.kind)) {
     (_MemoryQueryIntent.identityRecall, 'preferred_name', 'stable_fact') => 1.0,
-    (_MemoryQueryIntent.languageRecall, 'language_style', 'stable_fact') => 0.9,
-    (_MemoryQueryIntent.preferenceRecall, 'safe_preference', 'stable_fact') =>
+    (_MemoryQueryIntent.identityRecall, 'preferred_name', 'core_profile') =>
+      1.0,
+    (_MemoryQueryIntent.languageRecall, 'language_style', 'procedural') => 0.9,
+    (_MemoryQueryIntent.preferenceRecall, 'safe_preference', 'semantic') =>
       0.75,
     (_, _, 'stable_fact') => 0.35,
+    (_, _, 'core_profile') => 0.5,
+    (_, _, 'procedural') => 0.42,
+    (_, _, 'semantic') => 0.32,
+    (_, _, 'episodic') => 0.18,
     (_, _, 'session_summary') => 0.0,
     _ => 0.0,
   };
+  final recurrence = (row.recurrenceCount.clamp(1, 12) - 1) * 0.025;
   return row.importanceScore +
       row.confidenceScore +
       relevance +
       typeBoost +
+      recurrence +
       recency;
 }
 
@@ -742,9 +1164,136 @@ List<MemoryRecord> _selectBoundedMemories(
       }
       summaries += 1;
     }
+    if (selected.any((memory) => memory.id == item.record.id)) {
+      continue;
+    }
     selected.add(item.record);
   }
   return selected;
+}
+
+List<_MemoryEntityCandidate> _extractMemoryEntities(String text) {
+  final normalized = _normalizeForMemory(text);
+  final entities = <_MemoryEntityCandidate>[];
+  void add(
+    String id,
+    String kind,
+    String canonicalName,
+    List<String> aliases, {
+    double confidence = 0.72,
+  }) {
+    if (entities.any((entity) => entity.id == id)) {
+      return;
+    }
+    entities.add(
+      _MemoryEntityCandidate(
+        id: id,
+        kind: kind,
+        canonicalName: canonicalName,
+        aliases: aliases,
+        confidence: confidence,
+      ),
+    );
+  }
+
+  if (_containsAny(normalized, ['office', 'work', 'kaam', 'काम', 'ऑफिस'])) {
+    add('entity_office', 'context', 'office', [
+      'office',
+      'work',
+      'kaam',
+      'ऑफिस',
+    ]);
+    add('entity_work', 'context', 'work', ['work', 'kaam', 'काम']);
+  }
+  if (_containsAny(normalized, ['manager', 'boss', 'sir', 'मैनेजर'])) {
+    add('entity_manager', 'work_role', 'manager', ['manager', 'boss', 'sir']);
+  }
+  if (_containsAny(normalized, [
+    'stress',
+    'pressure',
+    'bad day',
+    'bura din',
+    'खराब दिन',
+    'pareshan',
+    'परेशान',
+  ])) {
+    add('entity_work_stress', 'stressor', 'work stress', [
+      'stress',
+      'pressure',
+      'bad day',
+      'pareshan',
+    ]);
+  }
+  return entities;
+}
+
+bool _looksWorkStressRelated(String normalized) {
+  return _containsAny(normalized, ['office', 'work', 'kaam', 'ऑफिस', 'काम']) &&
+      _containsAny(normalized, [
+        'manager',
+        'boss',
+        'stress',
+        'pressure',
+        'bad day',
+        'pareshan',
+        'मैनेजर',
+        'परेशान',
+      ]);
+}
+
+bool _isGreetingOnly(String text) {
+  final normalized = _normalizeForMemory(text);
+  const greetings = {'hi', 'hello', 'hey', 'namaste', 'नमस्ते', 'haan', 'हाँ'};
+  return greetings.contains(normalized);
+}
+
+bool _containsAny(String normalized, Iterable<String> tokens) {
+  return tokens.any(normalized.contains);
+}
+
+String _canonicalMemoryText(String text) {
+  var normalized = _normalizeForMemory(text);
+  const replacements = {
+    'ऑफिस': 'office',
+    'काम': 'work',
+    'kaam': 'work',
+    'मैनेजर': 'manager',
+    'परेशान': 'stress',
+    'pareshan': 'stress',
+    'bura din': 'bad day',
+    'खराब दिन': 'bad day',
+    'naam': 'name',
+    'yaad': 'remember',
+    'pasand': 'like',
+  };
+  for (final entry in replacements.entries) {
+    normalized = normalized.replaceAll(entry.key, entry.value);
+  }
+  return normalized;
+}
+
+String _detectScript(String text) {
+  final hasDevanagari = RegExp(r'[\u0900-\u097F]').hasMatch(text);
+  final hasLatin = RegExp(r'[A-Za-z]').hasMatch(text);
+  if (hasDevanagari && hasLatin) {
+    return 'mixed';
+  }
+  if (hasDevanagari) {
+    return 'devanagari';
+  }
+  return 'latin';
+}
+
+String? _replacementReason({
+  required MemoryRecord existing,
+  required _StableFactCandidate candidate,
+}) {
+  final existingValue = _stableFactValue(existing);
+  final candidateValue = candidate.value.toLowerCase();
+  if (existingValue == candidateValue) {
+    return null;
+  }
+  return 'new_explicit_${candidate.label}_statement';
 }
 
 bool _containsSensitiveMemoryBlocker(String normalized) {

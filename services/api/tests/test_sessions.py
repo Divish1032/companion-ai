@@ -40,15 +40,14 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
         device_id="anon_test_device",
     )
     assert session is not None
-    assert "first" not in session.recent_context_json
-    assert "second" in session.recent_context_json
-    assert "third" in session.recent_context_json
-    assert "first memory" not in session.recent_context_json
-    assert "second memory" in session.recent_context_json
+    assert session.recent_context() == {"recent_turns": [], "memory_blocks": []}
     assigned_context = assigner.assigned_contexts[0]
     assert isinstance(assigned_context, dict)
     assert len(assigned_context["recent_turns"]) == 2
     assert len(assigned_context["memory_blocks"]) == 1
+    assert "second" in str(assigned_context)
+    assert "third" in str(assigned_context)
+    assert "second memory" in str(assigned_context)
     assert assigner.assigned_session_ids == [body["session_id"]]
 
     token_response = client.post(
@@ -147,6 +146,33 @@ def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -
     assert retry.status_code == 503
 
 
+def test_stateless_embeddings_and_rerank_do_not_require_session(tmp_path: Path) -> None:
+    client, _store = _client(tmp_path)
+
+    embedding_response = client.post(
+        "/v1/embeddings",
+        json={"texts": ["office manager pressure"], "dimension": 64},
+    )
+    assert embedding_response.status_code == 200
+    embedding_body = embedding_response.json()
+    assert embedding_body["dimension"] == 64
+    assert len(embedding_body["embeddings"]) == 1
+    assert len(embedding_body["embeddings"][0]) == 64
+
+    rerank_response = client.post(
+        "/v1/rerank",
+        json={
+            "query": "bad day at office",
+            "candidates": [
+                {"id": "work", "text": "office manager pressure stress"},
+                {"id": "food", "text": "chai preference"},
+            ],
+        },
+    )
+    assert rerank_response.status_code == 200
+    assert rerank_response.json()["results"][0]["id"] == "work"
+
+
 def _client(
     tmp_path: Path,
     *,
@@ -178,9 +204,13 @@ def _context_item(turn_id: str, text: str, *, role: str = "user") -> dict[str, o
 def _memory_item(memory_id: str, content: str) -> dict[str, object]:
     return {
         "memory_id": memory_id,
-        "kind": "stable_fact",
+        "kind": "semantic",
         "label": "safe_preference",
         "content": content,
+        "canonical_text": content,
+        "sensitivity": "normal",
+        "temporal_status": "current",
+        "receipt_state": "implicit",
         "source_turn_ids": ["turn_1"],
         "source_role": "user",
         "transcript_status": "final",

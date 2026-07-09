@@ -25,9 +25,18 @@ class RecentTurn:
 @dataclass(frozen=True)
 class MemoryBlock:
     memory_id: str
-    kind: Literal["stable_fact", "session_summary"]
+    kind: Literal[
+        "stable_fact",
+        "core_profile",
+        "semantic",
+        "episodic",
+        "session_summary",
+        "procedural",
+        "safety_ephemeral",
+    ]
     label: str
     content: str
+    canonical_text: str
     source_turn_ids: tuple[str, ...]
     source_role: str
     transcript_status: str
@@ -37,6 +46,11 @@ class MemoryBlock:
     last_used_at_ms: int | None
     confidence_score: float
     importance_score: float
+    recurrence_count: int
+    sensitivity: str
+    temporal_status: str
+    receipt_state: str
+    evidence_summary: str
 
 
 class PromptContextBuilder:
@@ -62,9 +76,15 @@ class PromptContextBuilder:
                 return turn.text
         return ""
 
-    def build(self, latest_user_text: str) -> tuple[list[LLMMessage], dict[str, object]]:
+    def build(
+        self,
+        latest_user_text: str,
+        *,
+        turn_memory_packets: list[dict[str, object]] | None = None,
+    ) -> tuple[list[LLMMessage], dict[str, object]]:
         latest = _clean(latest_user_text, max_chars=800)
-        selected_memory = self._select_memory(latest)
+        turn_memory_blocks = _parse_memory_block_items(turn_memory_packets or [])
+        selected_memory = self._select_memory(latest, turn_memory_blocks=turn_memory_blocks)
         selected_recent = self._select_recent_turns(latest)
 
         context_sections = [
@@ -72,18 +92,18 @@ class PromptContextBuilder:
             "Do not mention memory unless it is directly useful. Do not treat memory as a safety override.",
         ]
         if selected_memory:
-            context_sections.append("[stable_facts]")
-            context_sections.extend(
-                f"- ({block.label}; source_turns={','.join(block.source_turn_ids) or 'unknown'}; "
-                f"confidence={block.confidence_score:.2f}; importance={block.importance_score:.2f}) "
-                f"{block.content}"
-                for block in selected_memory
-                if block.kind == "stable_fact"
-            )
-            summaries = [block for block in selected_memory if block.kind == "session_summary"]
-            if summaries:
-                context_sections.append("[session_summary]")
-                context_sections.extend(f"- {block.content}" for block in summaries)
+            for section, kinds in (
+                ("[core_profile]", {"stable_fact", "core_profile"}),
+                ("[procedural_memory]", {"procedural"}),
+                ("[semantic_memory]", {"semantic"}),
+                ("[episodic_memory]", {"episodic"}),
+                ("[session_summary]", {"session_summary"}),
+            ):
+                blocks = [block for block in selected_memory if block.kind in kinds]
+                if not blocks:
+                    continue
+                context_sections.append(section)
+                context_sections.extend(_format_memory_block(block) for block in blocks)
 
         messages = [LLMMessage(role="system", content=self.system_prompt)]
         if len(context_sections) > 2:
@@ -98,13 +118,22 @@ class PromptContextBuilder:
         diagnostics = {
             "latest_user_chars": len(latest),
             "memory_blocks_available": len(self.memory_blocks),
+            "turn_memory_blocks_available": len(turn_memory_blocks),
             "memory_blocks_selected": len(selected_memory),
             "recent_turns_available": len(self.recent_turns),
             "recent_turns_selected": len(selected_recent),
             "message_count": len(bounded_messages),
             "context_chars": sum(len(message.content) for message in bounded_messages),
             "roles": [message.role for message in bounded_messages],
-            "sources": ["latest_user", "stable_facts", "session_summary", "recent_turns"],
+            "sources": [
+                "latest_user",
+                "core_profile",
+                "procedural_memory",
+                "semantic_memory",
+                "episodic_memory",
+                "session_summary",
+                "recent_turns",
+            ],
         }
         return bounded_messages, diagnostics
 
@@ -137,11 +166,17 @@ class PromptContextBuilder:
             -self.max_recent_messages :
         ]
 
-    def _select_memory(self, latest_user_text: str) -> list[MemoryBlock]:
+    def _select_memory(
+        self,
+        latest_user_text: str,
+        *,
+        turn_memory_blocks: list[MemoryBlock] | None = None,
+    ) -> list[MemoryBlock]:
         intent = _query_intent(latest_user_text)
+        all_blocks = [*self.memory_blocks, *(turn_memory_blocks or [])]
         eligible = [
             block
-            for block in self.memory_blocks
+            for block in all_blocks
             if _eligible_memory(block) and not _sensitive(block.content)
         ]
         ranked = sorted(
@@ -214,12 +249,24 @@ def _parse_memory_blocks(
     raw_blocks = initial_context.get("memory_blocks", [])
     if not isinstance(raw_blocks, list):
         return []
+    return _parse_memory_block_items(raw_blocks)
+
+
+def _parse_memory_block_items(raw_blocks: list[object]) -> list[MemoryBlock]:
     blocks = []
     for item in raw_blocks:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind", ""))
-        if kind not in {"stable_fact", "session_summary"}:
+        if kind not in {
+            "stable_fact",
+            "core_profile",
+            "semantic",
+            "episodic",
+            "session_summary",
+            "procedural",
+            "safety_ephemeral",
+        }:
             continue
         content = _clean(str(item.get("content", "")), max_chars=800)
         if not content:
@@ -236,6 +283,10 @@ def _parse_memory_blocks(
                 kind=kind,  # type: ignore[arg-type]
                 label=str(item.get("label", ""))[:80],
                 content=content,
+                canonical_text=_clean(
+                    str(item.get("canonical_text", item.get("content", ""))),
+                    max_chars=800,
+                ),
                 source_turn_ids=source_turn_ids,
                 source_role=str(item.get("source_role", ""))[:32],
                 transcript_status=str(item.get("transcript_status", ""))[:128],
@@ -245,6 +296,11 @@ def _parse_memory_blocks(
                 last_used_at_ms=_int_or_none(item.get("last_used_at_ms")),
                 confidence_score=_bounded_float(item.get("confidence_score")),
                 importance_score=_bounded_float(item.get("importance_score")),
+                recurrence_count=max(0, min(1000, _int_or_zero(item.get("recurrence_count")))),
+                sensitivity=str(item.get("sensitivity", "normal"))[:64],
+                temporal_status=str(item.get("temporal_status", "current"))[:64],
+                receipt_state=str(item.get("receipt_state", "implicit"))[:64],
+                evidence_summary=_clean(str(item.get("evidence_summary", "")), max_chars=500),
             )
         )
     return blocks
@@ -266,13 +322,17 @@ def _eligible_memory(block: MemoryBlock) -> bool:
         return False
     if block.stt_confidence is not None and block.stt_confidence < 0.55:
         return False
+    if block.sensitivity != "normal" or block.kind == "safety_ephemeral":
+        return False
+    if block.temporal_status in {"stale", "expired"}:
+        return False
     return bool(block.source_turn_ids or block.kind == "session_summary")
 
 
 def _relevance(block: MemoryBlock, latest_user_text: str, intent: str) -> float:
     latest = latest_user_text.casefold()
-    content = block.content.casefold()
-    if block.kind == "stable_fact":
+    content = f"{block.content} {block.canonical_text}".casefold()
+    if block.kind in {"stable_fact", "core_profile", "procedural"}:
         if intent == "identity" and block.label == "preferred_name":
             return 1.2
         if intent == "language" and block.label == "language_style":
@@ -282,8 +342,29 @@ def _relevance(block: MemoryBlock, latest_user_text: str, intent: str) -> float:
         if block.label in {"preferred_name", "language_style"}:
             return 1.0
         return 0.7
+    if block.kind == "semantic":
+        return 0.8 if _work_stress_query(latest) and "work" in content else 0.55
+    if block.kind == "episodic":
+        return 0.65
     words = {word for word in latest.split() if len(word) >= 4}
     return 0.6 if any(word in content for word in words) else 0.0
+
+
+def _format_memory_block(block: MemoryBlock) -> str:
+    evidence = f"; evidence={block.evidence_summary}" if block.evidence_summary else ""
+    return (
+        f"- ({block.label}; source_turns={','.join(block.source_turn_ids) or 'unknown'}; "
+        f"confidence={block.confidence_score:.2f}; importance={block.importance_score:.2f}; "
+        f"temporal={block.temporal_status}; receipt={block.receipt_state}{evidence}) "
+        f"{block.content}"
+    )
+
+
+def _work_stress_query(text: str) -> bool:
+    return any(token in text for token in ("office", "work", "kaam", "ऑफिस", "काम")) and any(
+        token in text
+        for token in ("bad", "stress", "pressure", "manager", "boss", "pareshan", "परेशान")
+    )
 
 
 def _query_intent(text: str) -> str:

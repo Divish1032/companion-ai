@@ -6,6 +6,10 @@ import 'package:companion_mobile/core/identity/anonymous_device_id.dart';
 import 'package:companion_mobile/core/permissions/microphone_permission_service.dart';
 import 'package:companion_mobile/core/privacy/consent_store.dart';
 import 'package:companion_mobile/features/chat_history/data/app_database.dart';
+import 'package:companion_mobile/features/chat_history/data/memory_embedding_service.dart';
+import 'package:companion_mobile/features/chat_history/data/memory_model_config.dart';
+import 'package:companion_mobile/features/chat_history/data/memory_vector_index.dart';
+import 'package:companion_mobile/features/chat_history/data/objectbox_memory_vector_index.dart';
 import 'package:companion_mobile/features/livekit_session/data/livekit_connection_service.dart';
 import 'package:companion_mobile/features/livekit_session/data/session_api_client.dart';
 import 'package:companion_mobile/features/livekit_session/domain/livekit_data_event.dart';
@@ -19,9 +23,14 @@ void main() {
     'voice session connects, persists simulated turns, and clears history',
     (tester) async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final vectorIndex = InMemoryMemoryVectorIndex();
       addTearDown(database.close);
+      await vectorIndex.upsert(
+        memoryId: 'memory_to_clear',
+        embedding: _testEmbedding(),
+      );
 
-      await tester.pumpWidget(_testApp(database));
+      await tester.pumpWidget(_testApp(database, vectorIndex: vectorIndex));
 
       expect(find.text('Ready'), findsOneWidget);
       expect(find.byType(TextField), findsNothing);
@@ -44,7 +53,7 @@ void main() {
       expect(find.textContaining('re-spoken clearly'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pumpWidget(_testApp(database));
+      await tester.pumpWidget(_testApp(database, vectorIndex: vectorIndex));
       await tester.pumpAndSettle();
       expect(find.textContaining('re-spoken clearly'), findsOneWidget);
 
@@ -57,6 +66,11 @@ void main() {
         find.text('Start a voice session to see local transcript history.'),
         findsOneWidget,
       );
+      final vectorHits = await vectorIndex.search(
+        queryEmbedding: _testEmbedding(),
+        limit: 4,
+      );
+      expect(vectorHits, isEmpty);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 1));
@@ -177,10 +191,20 @@ void main() {
 Widget _testApp(
   AppDatabase database, {
   _FakeLiveKitConnectionService? liveKit,
+  InMemoryMemoryVectorIndex? vectorIndex,
 }) {
   return ProviderScope(
     overrides: [
       appDatabaseProvider.overrideWith((ref) => database),
+      memoryVectorIndexProvider.overrideWith(
+        (ref) async => vectorIndex ?? InMemoryMemoryVectorIndex(),
+      ),
+      memoryEmbeddingClientProvider.overrideWith(
+        (ref) => _FakeMemoryEmbeddingClient(),
+      ),
+      memoryRerankClientProvider.overrideWith(
+        (ref) => _FakeMemoryRerankClient(),
+      ),
       anonymousDeviceIdProvider.overrideWith((ref) async => 'anon_test_device'),
       consentStoreProvider.overrideWith((ref) => _FakeConsentStore()),
       microphonePermissionServiceProvider.overrideWith(
@@ -196,6 +220,10 @@ Widget _testApp(
     ],
     child: const CompanionApp(),
   );
+}
+
+List<double> _testEmbedding() {
+  return <double>[1, for (var i = 1; i < memoryEmbeddingDimensions; i += 1) 0];
 }
 
 class _FakeConsentStore implements ConsentStore {
@@ -251,6 +279,26 @@ class _FakeSessionApiClient implements SessionApiClient {
       roomName: 'companion_session_test',
       expiresInSeconds: 600,
     );
+  }
+}
+
+class _FakeMemoryEmbeddingClient implements MemoryEmbeddingClient {
+  @override
+  Future<List<List<double>>> embedTexts(List<String> texts) async {
+    return [
+      for (var i = 0; i < texts.length; i += 1)
+        [1.0, for (var j = 1; j < memoryEmbeddingDimensions; j += 1) 0.0],
+    ];
+  }
+}
+
+class _FakeMemoryRerankClient implements MemoryRerankClient {
+  @override
+  Future<List<String>> rerank({
+    required String query,
+    required List<MemoryRecord> candidates,
+  }) async {
+    return [for (final candidate in candidates) candidate.id];
   }
 }
 

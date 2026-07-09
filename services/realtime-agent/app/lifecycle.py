@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import struct
 from collections.abc import AsyncIterator
@@ -18,6 +19,8 @@ from app.audio_pipeline import (
 from app.config import Settings, load_persona_settings
 from app.context import PromptContextBuilder
 from app.events import EventSequencer, TurnIdFactory
+from app.memory_router import route_memory_query
+from app.memory_router import MemoryRoutingDecision
 from app.providers import (
     LLMProvider,
     PersonaLLMProvider,
@@ -32,6 +35,9 @@ from app.providers import (
 from app.providers.interfaces import LLMMessage, LLMToken, TTSAudioFrame, TranscriptEvent
 from app.providers.mock import MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
+
+
+MEMORY_LOOKUP_TIMEOUT_SECONDS = 0.2
 
 
 class AgentAssignmentError(Exception):
@@ -88,8 +94,7 @@ class LiveKitAgentTransport:
             payload = getattr(data_packet, "data", b"")
             if isinstance(payload, str):
                 payload = payload.encode("utf-8")
-            if b"client_session_started" in payload or b"client_cancel_turn" in payload:
-                self._activity_queue.put_nowait(payload.decode("utf-8", errors="ignore"))
+            self._activity_queue.put_nowait(payload.decode("utf-8", errors="ignore"))
 
         @room.on("participant_disconnected")
         def on_participant_disconnected(participant) -> None:  # noqa: ANN001
@@ -312,6 +317,7 @@ class RealtimeAgentSession:
             stt_audio_sink=self._record_stt_audio,
         )
         self._current_turn: asyncio.Task[None] | None = None
+        self._pending_memory_requests: dict[tuple[str, int], asyncio.Future[list[dict[str, object]]]] = {}
         self._stopped = asyncio.Event()
         self.started = asyncio.Event()
         self._assistant_speaking = False
@@ -368,6 +374,8 @@ class RealtimeAgentSession:
                 continue
             if activity == "client_left":
                 return
+            if await self._handle_client_data_event(activity):
+                continue
             if "client_cancel_turn" in activity:
                 self.cancel_current_turn()
                 await self._emit_state("listening", turn_id=None)
@@ -669,7 +677,7 @@ class RealtimeAgentSession:
         turn_id: str,
         user_text: str,
     ) -> tuple[str, bool, LLMToken | None]:
-        messages = self._llm_messages(user_text)
+        messages = await self._llm_messages(turn_id, user_text)
         chunks: list[str] = []
         last_token: LLMToken | None = None
         async for token in self.llm_provider.stream(
@@ -686,17 +694,119 @@ class RealtimeAgentSession:
         clipped_text, clipped = _clip_response_text(text, max_chars=self.persona.max_output_chars)
         return clipped_text, clipped, last_token
 
-    def _llm_messages(self, user_text: str) -> list[LLMMessage]:
-        messages, diagnostics = self.context_builder.build(user_text)
+    async def _llm_messages(self, turn_id: str, user_text: str) -> list[LLMMessage]:
+        memory_route = route_memory_query(user_text)
+        turn_memory_packets: list[dict[str, object]] = []
+        if memory_route.route not in {"none", "safety"} and memory_route.max_blocks > 0:
+            turn_memory_packets = await self._lookup_turn_memory(turn_id, user_text, memory_route)
+        messages, diagnostics = self.context_builder.build(
+            user_text,
+            turn_memory_packets=turn_memory_packets,
+        )
         print(
             "prompt_context",
             {
                 "session_id": self.assignment.session_id,
+                "memory_route": memory_route.route,
+                "memory_route_confidence": memory_route.confidence,
+                "memory_route_reason": memory_route.reason,
                 **diagnostics,
             },
             flush=True,
         )
         return messages
+
+    async def _lookup_turn_memory(
+        self,
+        turn_id: str,
+        user_text: str,
+        memory_route: MemoryRoutingDecision,
+    ) -> list[dict[str, object]]:
+        event = self.sequencer.next(
+            event_type="memory_lookup_request",
+            turn_id=turn_id,
+            payload={
+                "query_text": user_text,
+                "route": memory_route.route,
+                "route_confidence": memory_route.confidence,
+                "route_reason": memory_route.reason,
+                "max_blocks": memory_route.max_blocks,
+            },
+        )
+        sequence = event["sequence"]
+        if not isinstance(sequence, int):
+            return []
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[list[dict[str, object]]] = loop.create_future()
+        key = (turn_id, sequence)
+        self._pending_memory_requests[key] = future
+        await self.transport.publish_reliable(
+            json.dumps(event, separators=(",", ":")).encode("utf-8")
+        )
+        try:
+            return await asyncio.wait_for(future, MEMORY_LOOKUP_TIMEOUT_SECONDS)
+        except TimeoutError:
+            print(
+                "memory_lookup_timeout",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "request_sequence": sequence,
+                    "memory_route": memory_route.route,
+                    "timeout_ms": round(MEMORY_LOOKUP_TIMEOUT_SECONDS * 1000),
+                },
+                flush=True,
+            )
+            return []
+        finally:
+            self._pending_memory_requests.pop(key, None)
+
+    async def _handle_client_data_event(self, activity: str) -> bool:
+        try:
+            event = json.loads(activity)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(event, dict) or event.get("type") != "memory_lookup_response":
+            return False
+
+        turn_id = event.get("turn_id")
+        request_sequence = event.get("request_sequence")
+        if not isinstance(turn_id, str) or not isinstance(request_sequence, int):
+            return True
+
+        key = (turn_id, request_sequence)
+        future = self._pending_memory_requests.get(key)
+        if future is None or future.done():
+            print(
+                "memory_lookup_stale_response",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "request_sequence": request_sequence,
+                },
+                flush=True,
+            )
+            return True
+
+        raw_packets = event.get("memory_packets", [])
+        packets = [
+            packet
+            for packet in raw_packets
+            if isinstance(packet, dict)
+        ][:6] if isinstance(raw_packets, list) else []
+        future.set_result(packets)
+        print(
+            "memory_lookup_response",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                "request_sequence": request_sequence,
+                "elapsed_ms": event.get("elapsed_ms"),
+                "memory_packets": len(packets),
+            },
+            flush=True,
+        )
+        return True
 
     async def _emit_assistant_partial(
         self,

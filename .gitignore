@@ -27,6 +27,8 @@ coverage/
 dist/
 build/
 .cache/
+apps/mobile/lib/libobjectbox.*
+apps/mobile/download/
 
 # Python
 __pycache__/

@@ -9,6 +9,8 @@ import '../../../core/identity/anonymous_device_id.dart';
 import '../../../core/permissions/microphone_permission_service.dart';
 import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
+import '../../chat_history/data/memory_embedding_service.dart';
+import '../../chat_history/data/objectbox_memory_vector_index.dart';
 import '../../livekit_session/data/livekit_connection_service.dart';
 import '../../livekit_session/data/session_api_client.dart';
 import '../../livekit_session/domain/livekit_data_event.dart';
@@ -175,6 +177,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
   Future<void> clearHistory() async {
     await ref.read(appDatabaseProvider).clearHistory();
+    final vectorIndex = await ref.read(memoryVectorIndexProvider.future);
+    await vectorIndex.deleteAll();
     state = const VoiceChatState.initial();
   }
 
@@ -275,6 +279,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         isBusy: false,
         clearPartialTranscript: true,
       );
+    } else if (event.type == 'memory_lookup_request') {
+      await _replyToMemoryLookupRequest(event);
     } else if (event.type == 'transcript_repeat_requested') {
       state = state.copyWith(
         phase: VoiceSessionPhase.listening,
@@ -303,6 +309,51 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             (event.payload['message'] as String?) ?? 'Voice session error.',
       );
     }
+  }
+
+  Future<void> _replyToMemoryLookupRequest(LiveKitDataEvent event) async {
+    final query = (event.payload['query_text'] as String?)?.trim();
+    if (query == null || query.isEmpty) {
+      return;
+    }
+    final startedAt = DateTime.now().millisecondsSinceEpoch;
+    final limit = ((event.payload['max_blocks'] as num?)?.toInt() ?? 6).clamp(
+      0,
+      6,
+    );
+    final memories = await ref
+        .read(memoryLookupServiceProvider)
+        .lookup(latestUserText: query, limit: limit);
+    final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAt;
+    await ref
+        .read(liveKitConnectionServiceProvider)
+        .sendReliable(
+          _sequencer.next(
+            type: 'memory_lookup_response',
+            sessionId: event.sessionId,
+            turnId: event.turnId,
+            payload: {
+              'request_sequence': event.sequence,
+              'elapsed_ms': elapsedMs,
+              'memory_packets': [
+                for (final memory in memories)
+                  {
+                    'memory_id': memory.id,
+                    'kind': memory.kind,
+                    'label': memory.label,
+                    'content': memory.content,
+                    'canonical_text': memory.canonicalText,
+                    'source_turn_ids': jsonDecode(memory.sourceTurnIdsJson),
+                    'confidence_score': memory.confidenceScore,
+                    'importance_score': memory.importanceScore,
+                    'temporal_status': memory.temporalStatus,
+                    'sensitivity': memory.sensitivity,
+                    'evidence_summary': memory.evidenceSummary,
+                  },
+              ],
+            },
+          ),
+        );
   }
 
   Future<void> _persistFinalTranscript(LiveKitDataEvent event) async {
@@ -348,6 +399,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             ),
           ),
         );
+    await ref.read(memoryEmbeddingSyncProvider).syncTurnMemories(turnId);
   }
 
   Future<void> _persistAssistantTranscript(LiveKitDataEvent event) async {
@@ -387,6 +439,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             ),
           ),
         );
+    await ref.read(memoryEmbeddingSyncProvider).syncTurnMemories(turnId);
   }
 
   String _startErrorMessage(Object error) {

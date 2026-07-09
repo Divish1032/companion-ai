@@ -550,6 +550,143 @@ def test_llm_context_preserves_assistant_roles_and_updates_in_session_history() 
     assert second_roles[-1] == ("user", "[latest_user] dusra user turn")
 
 
+def test_query_time_memory_lookup_response_reaches_llm_context() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            session._respond_to_final_transcript("session_test:turn:0005", "office bad day tha")
+        )
+        request = await _wait_for_decoded_event_type(transport, "memory_lookup_request")
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_lookup_response",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": request["sequence"],
+                    "elapsed_ms": 12,
+                    "memory_packets": [_memory_packet()],
+                }
+            )
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    assert len(llm.calls) == 1
+    context_text = "\n".join(message.content for message in llm.calls[0])
+    assert "[semantic_memory]" in context_text
+    assert "manager pressure" in context_text
+
+
+def test_query_time_memory_lookup_timeout_falls_back_without_memory() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._respond_to_final_transcript("session_test:turn:0006", "office bad day tha")
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assert any(event["type"] == "memory_lookup_request" for event in events)
+    assert len(llm.calls) == 1
+    context_text = "\n".join(message.content for message in llm.calls[0])
+    assert "manager pressure" not in context_text
+    assert context_text.endswith("[latest_user] office bad day tha")
+
+
+def test_stale_memory_lookup_response_is_ignored_until_matching_response_arrives() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            session._respond_to_final_transcript("session_test:turn:0007", "office bad day tha")
+        )
+        request = await _wait_for_decoded_event_type(transport, "memory_lookup_request")
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_lookup_response",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": int(request["sequence"]) + 100,
+                    "memory_packets": [
+                        _memory_packet(
+                            memory_id="stale_memory",
+                            content="Stale memory should not reach the prompt.",
+                        )
+                    ],
+                }
+            )
+        )
+        assert llm.calls == []
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_lookup_response",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": request["sequence"],
+                    "memory_packets": [_memory_packet()],
+                }
+            )
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    context_text = "\n".join(message.content for message in llm.calls[0])
+    assert "manager pressure" in context_text
+    assert "Stale memory" not in context_text
+
+
+def test_safety_and_greeting_routes_do_not_send_memory_lookup() -> None:
+    transport = MemoryAgentTransport()
+    llm = CountingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._respond_to_final_transcript("session_test:turn:0008", "hi")
+        await session._respond_to_final_transcript(
+            "session_test:turn:0009",
+            "main mar jaana chahta hoon",
+        )
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assert not any(event["type"] == "memory_lookup_request" for event in events)
+    assert llm.calls == 1
+    assistant = [
+        event for event in events if event["type"] == "assistant_transcript_final"
+    ][-1]
+    assert assistant["status"] == "safety_override"
+
+
 def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
     transport = MemoryAgentTransport()
     session = RealtimeAgentSession(
@@ -692,10 +829,51 @@ async def _wait_for_event_type(transport: MemoryAgentTransport, event_type: str)
     raise AssertionError(f"expected event type {event_type}")
 
 
+async def _wait_for_decoded_event_type(
+    transport: MemoryAgentTransport,
+    event_type: str,
+) -> dict[str, object]:
+    for _ in range(50):
+        for event in transport.events:
+            decoded = _decode(event)
+            if decoded.get("type") == event_type:
+                return decoded
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expected event type {event_type}")
+
+
 def _decode(data: bytes) -> dict[str, object]:
     decoded = json.loads(data.decode("utf-8"))
     assert isinstance(decoded, dict)
     return decoded
+
+
+def _memory_packet(
+    *,
+    memory_id: str = "memory_work_stress",
+    content: str = "User has previously mentioned office stress from manager pressure.",
+) -> dict[str, object]:
+    return {
+        "memory_id": memory_id,
+        "kind": "semantic",
+        "label": "recurring_work_stressor",
+        "content": content,
+        "canonical_text": "work stress office manager pressure",
+        "source_turn_ids": ["turn_old"],
+        "source_role": "user",
+        "transcript_status": "final",
+        "stt_confidence": 0.99,
+        "created_at_ms": 1,
+        "updated_at_ms": 2,
+        "last_used_at_ms": None,
+        "confidence_score": 0.82,
+        "importance_score": 0.76,
+        "recurrence_count": 1,
+        "sensitivity": "normal",
+        "temporal_status": "current",
+        "receipt_state": "implicit",
+        "evidence_summary": "Local prior complete turn.",
+    }
 
 
 class EmptySTTProvider(STTProvider):
