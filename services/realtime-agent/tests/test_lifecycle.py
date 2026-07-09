@@ -586,6 +586,53 @@ def test_query_time_memory_lookup_response_reaches_llm_context() -> None:
     assert "manager pressure" in context_text
 
 
+def test_query_time_memory_lookup_can_carry_pending_receipt_prompt() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            session._respond_to_final_transcript("session_test:turn:0010", "office bad day tha")
+        )
+        request = await _wait_for_decoded_event_type(transport, "memory_lookup_request")
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_lookup_response",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": request["sequence"],
+                    "elapsed_ms": 12,
+                    "memory_packets": [_memory_packet()],
+                    "pending_receipts": [
+                        {
+                            "memory_id": "memory_semantic_work_stress_manager",
+                            "kind": "semantic",
+                            "label": "recurring_work_stressor",
+                            "content": "User has previously mentioned work stress related to manager pressure.",
+                            "confidence_score": 0.68,
+                            "importance_score": 0.72,
+                            "evidence_summary": "Recurring work/office stress signal from local turns.",
+                        }
+                    ],
+                }
+            )
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    context_text = "\n".join(message.content for message in llm.calls[0])
+    assert "[memory_receipt]" in context_text
+    assert "Potential memory" in context_text
+    assert "voice-only confirmation question" in context_text
+
+
 def test_query_time_memory_lookup_timeout_falls_back_without_memory() -> None:
     transport = MemoryAgentTransport()
     llm = RecordingLLMProvider()

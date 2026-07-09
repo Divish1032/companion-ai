@@ -1100,6 +1100,17 @@ class $MemoryRecordsTable extends MemoryRecords
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _receiptPromptedAtMeta = const VerificationMeta(
+    'receiptPromptedAt',
+  );
+  @override
+  late final GeneratedColumn<int> receiptPromptedAt = GeneratedColumn<int>(
+    'receipt_prompted_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _confidenceScoreMeta = const VerificationMeta(
     'confidenceScore',
   );
@@ -1222,6 +1233,7 @@ class $MemoryRecordsTable extends MemoryRecords
     createdAt,
     updatedAt,
     lastUsedAt,
+    receiptPromptedAt,
     confidenceScore,
     importanceScore,
     recurrenceCount,
@@ -1364,6 +1376,15 @@ class $MemoryRecordsTable extends MemoryRecords
         lastUsedAt.isAcceptableOrUnknown(
           data['last_used_at']!,
           _lastUsedAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('receipt_prompted_at')) {
+      context.handle(
+        _receiptPromptedAtMeta,
+        receiptPromptedAt.isAcceptableOrUnknown(
+          data['receipt_prompted_at']!,
+          _receiptPromptedAtMeta,
         ),
       );
     }
@@ -1521,6 +1542,10 @@ class $MemoryRecordsTable extends MemoryRecords
         DriftSqlType.int,
         data['${effectivePrefix}last_used_at'],
       ),
+      receiptPromptedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}receipt_prompted_at'],
+      ),
       confidenceScore: attachedDatabase.typeMapping.read(
         DriftSqlType.double,
         data['${effectivePrefix}confidence_score'],
@@ -1582,6 +1607,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
   final int createdAt;
   final int updatedAt;
   final int? lastUsedAt;
+  final int? receiptPromptedAt;
   final double confidenceScore;
   final double importanceScore;
   final int recurrenceCount;
@@ -1607,6 +1633,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
     required this.createdAt,
     required this.updatedAt,
     this.lastUsedAt,
+    this.receiptPromptedAt,
     required this.confidenceScore,
     required this.importanceScore,
     required this.recurrenceCount,
@@ -1638,6 +1665,9 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
     map['updated_at'] = Variable<int>(updatedAt);
     if (!nullToAbsent || lastUsedAt != null) {
       map['last_used_at'] = Variable<int>(lastUsedAt);
+    }
+    if (!nullToAbsent || receiptPromptedAt != null) {
+      map['receipt_prompted_at'] = Variable<int>(receiptPromptedAt);
     }
     map['confidence_score'] = Variable<double>(confidenceScore);
     map['importance_score'] = Variable<double>(importanceScore);
@@ -1676,6 +1706,9 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
       lastUsedAt: lastUsedAt == null && nullToAbsent
           ? const Value.absent()
           : Value(lastUsedAt),
+      receiptPromptedAt: receiptPromptedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(receiptPromptedAt),
       confidenceScore: Value(confidenceScore),
       importanceScore: Value(importanceScore),
       recurrenceCount: Value(recurrenceCount),
@@ -1713,6 +1746,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
       createdAt: serializer.fromJson<int>(json['createdAt']),
       updatedAt: serializer.fromJson<int>(json['updatedAt']),
       lastUsedAt: serializer.fromJson<int?>(json['lastUsedAt']),
+      receiptPromptedAt: serializer.fromJson<int?>(json['receiptPromptedAt']),
       confidenceScore: serializer.fromJson<double>(json['confidenceScore']),
       importanceScore: serializer.fromJson<double>(json['importanceScore']),
       recurrenceCount: serializer.fromJson<int>(json['recurrenceCount']),
@@ -1745,6 +1779,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
       'createdAt': serializer.toJson<int>(createdAt),
       'updatedAt': serializer.toJson<int>(updatedAt),
       'lastUsedAt': serializer.toJson<int?>(lastUsedAt),
+      'receiptPromptedAt': serializer.toJson<int?>(receiptPromptedAt),
       'confidenceScore': serializer.toJson<double>(confidenceScore),
       'importanceScore': serializer.toJson<double>(importanceScore),
       'recurrenceCount': serializer.toJson<int>(recurrenceCount),
@@ -1773,6 +1808,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
     int? createdAt,
     int? updatedAt,
     Value<int?> lastUsedAt = const Value.absent(),
+    Value<int?> receiptPromptedAt = const Value.absent(),
     double? confidenceScore,
     double? importanceScore,
     int? recurrenceCount,
@@ -1800,6 +1836,9 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
     lastUsedAt: lastUsedAt.present ? lastUsedAt.value : this.lastUsedAt,
+    receiptPromptedAt: receiptPromptedAt.present
+        ? receiptPromptedAt.value
+        : this.receiptPromptedAt,
     confidenceScore: confidenceScore ?? this.confidenceScore,
     importanceScore: importanceScore ?? this.importanceScore,
     recurrenceCount: recurrenceCount ?? this.recurrenceCount,
@@ -1843,6 +1882,9 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
       lastUsedAt: data.lastUsedAt.present
           ? data.lastUsedAt.value
           : this.lastUsedAt,
+      receiptPromptedAt: data.receiptPromptedAt.present
+          ? data.receiptPromptedAt.value
+          : this.receiptPromptedAt,
       confidenceScore: data.confidenceScore.present
           ? data.confidenceScore.value
           : this.confidenceScore,
@@ -1891,6 +1933,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('lastUsedAt: $lastUsedAt, ')
+          ..write('receiptPromptedAt: $receiptPromptedAt, ')
           ..write('confidenceScore: $confidenceScore, ')
           ..write('importanceScore: $importanceScore, ')
           ..write('recurrenceCount: $recurrenceCount, ')
@@ -1921,6 +1964,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
     createdAt,
     updatedAt,
     lastUsedAt,
+    receiptPromptedAt,
     confidenceScore,
     importanceScore,
     recurrenceCount,
@@ -1950,6 +1994,7 @@ class MemoryRecord extends DataClass implements Insertable<MemoryRecord> {
           other.createdAt == this.createdAt &&
           other.updatedAt == this.updatedAt &&
           other.lastUsedAt == this.lastUsedAt &&
+          other.receiptPromptedAt == this.receiptPromptedAt &&
           other.confidenceScore == this.confidenceScore &&
           other.importanceScore == this.importanceScore &&
           other.recurrenceCount == this.recurrenceCount &&
@@ -1977,6 +2022,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
   final Value<int> createdAt;
   final Value<int> updatedAt;
   final Value<int?> lastUsedAt;
+  final Value<int?> receiptPromptedAt;
   final Value<double> confidenceScore;
   final Value<double> importanceScore;
   final Value<int> recurrenceCount;
@@ -2003,6 +2049,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.lastUsedAt = const Value.absent(),
+    this.receiptPromptedAt = const Value.absent(),
     this.confidenceScore = const Value.absent(),
     this.importanceScore = const Value.absent(),
     this.recurrenceCount = const Value.absent(),
@@ -2030,6 +2077,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
     required int createdAt,
     required int updatedAt,
     this.lastUsedAt = const Value.absent(),
+    this.receiptPromptedAt = const Value.absent(),
     required double confidenceScore,
     required double importanceScore,
     this.recurrenceCount = const Value.absent(),
@@ -2067,6 +2115,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
     Expression<int>? createdAt,
     Expression<int>? updatedAt,
     Expression<int>? lastUsedAt,
+    Expression<int>? receiptPromptedAt,
     Expression<double>? confidenceScore,
     Expression<double>? importanceScore,
     Expression<int>? recurrenceCount,
@@ -2094,6 +2143,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
       if (lastUsedAt != null) 'last_used_at': lastUsedAt,
+      if (receiptPromptedAt != null) 'receipt_prompted_at': receiptPromptedAt,
       if (confidenceScore != null) 'confidence_score': confidenceScore,
       if (importanceScore != null) 'importance_score': importanceScore,
       if (recurrenceCount != null) 'recurrence_count': recurrenceCount,
@@ -2123,6 +2173,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
     Value<int>? createdAt,
     Value<int>? updatedAt,
     Value<int?>? lastUsedAt,
+    Value<int?>? receiptPromptedAt,
     Value<double>? confidenceScore,
     Value<double>? importanceScore,
     Value<int>? recurrenceCount,
@@ -2150,6 +2201,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+      receiptPromptedAt: receiptPromptedAt ?? this.receiptPromptedAt,
       confidenceScore: confidenceScore ?? this.confidenceScore,
       importanceScore: importanceScore ?? this.importanceScore,
       recurrenceCount: recurrenceCount ?? this.recurrenceCount,
@@ -2211,6 +2263,9 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
     if (lastUsedAt.present) {
       map['last_used_at'] = Variable<int>(lastUsedAt.value);
     }
+    if (receiptPromptedAt.present) {
+      map['receipt_prompted_at'] = Variable<int>(receiptPromptedAt.value);
+    }
     if (confidenceScore.present) {
       map['confidence_score'] = Variable<double>(confidenceScore.value);
     }
@@ -2262,6 +2317,7 @@ class MemoryRecordsCompanion extends UpdateCompanion<MemoryRecord> {
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('lastUsedAt: $lastUsedAt, ')
+          ..write('receiptPromptedAt: $receiptPromptedAt, ')
           ..write('confidenceScore: $confidenceScore, ')
           ..write('importanceScore: $importanceScore, ')
           ..write('recurrenceCount: $recurrenceCount, ')
@@ -4551,6 +4607,7 @@ typedef $$MemoryRecordsTableCreateCompanionBuilder =
       required int createdAt,
       required int updatedAt,
       Value<int?> lastUsedAt,
+      Value<int?> receiptPromptedAt,
       required double confidenceScore,
       required double importanceScore,
       Value<int> recurrenceCount,
@@ -4579,6 +4636,7 @@ typedef $$MemoryRecordsTableUpdateCompanionBuilder =
       Value<int> createdAt,
       Value<int> updatedAt,
       Value<int?> lastUsedAt,
+      Value<int?> receiptPromptedAt,
       Value<double> confidenceScore,
       Value<double> importanceScore,
       Value<int> recurrenceCount,
@@ -4672,6 +4730,11 @@ class $$MemoryRecordsTableFilterComposer
 
   ColumnFilters<int> get lastUsedAt => $composableBuilder(
     column: $table.lastUsedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get receiptPromptedAt => $composableBuilder(
+    column: $table.receiptPromptedAt,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4805,6 +4868,11 @@ class $$MemoryRecordsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get receiptPromptedAt => $composableBuilder(
+    column: $table.receiptPromptedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<double> get confidenceScore => $composableBuilder(
     column: $table.confidenceScore,
     builder: (column) => ColumnOrderings(column),
@@ -4919,6 +4987,11 @@ class $$MemoryRecordsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<int> get receiptPromptedAt => $composableBuilder(
+    column: $table.receiptPromptedAt,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<double> get confidenceScore => $composableBuilder(
     column: $table.confidenceScore,
     builder: (column) => column,
@@ -5011,6 +5084,7 @@ class $$MemoryRecordsTableTableManager
                 Value<int> createdAt = const Value.absent(),
                 Value<int> updatedAt = const Value.absent(),
                 Value<int?> lastUsedAt = const Value.absent(),
+                Value<int?> receiptPromptedAt = const Value.absent(),
                 Value<double> confidenceScore = const Value.absent(),
                 Value<double> importanceScore = const Value.absent(),
                 Value<int> recurrenceCount = const Value.absent(),
@@ -5037,6 +5111,7 @@ class $$MemoryRecordsTableTableManager
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 lastUsedAt: lastUsedAt,
+                receiptPromptedAt: receiptPromptedAt,
                 confidenceScore: confidenceScore,
                 importanceScore: importanceScore,
                 recurrenceCount: recurrenceCount,
@@ -5065,6 +5140,7 @@ class $$MemoryRecordsTableTableManager
                 required int createdAt,
                 required int updatedAt,
                 Value<int?> lastUsedAt = const Value.absent(),
+                Value<int?> receiptPromptedAt = const Value.absent(),
                 required double confidenceScore,
                 required double importanceScore,
                 Value<int> recurrenceCount = const Value.absent(),
@@ -5091,6 +5167,7 @@ class $$MemoryRecordsTableTableManager
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 lastUsedAt: lastUsedAt,
+                receiptPromptedAt: receiptPromptedAt,
                 confidenceScore: confidenceScore,
                 importanceScore: importanceScore,
                 recurrenceCount: recurrenceCount,

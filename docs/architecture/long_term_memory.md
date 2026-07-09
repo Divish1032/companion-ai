@@ -12,7 +12,9 @@ Verified status:
 - [x] Phase 1 foundations for the current dev-endpoint-backed MVP slice.
 - [x] Phase 2 query-time retrieval for the current dev-endpoint-backed MVP
   slice.
-- [ ] Phase 3 consolidation and graph intelligence.
+- [x] Phase 3 consolidation and graph intelligence dev implementation for the
+  deterministic/local MVP slice. Manual Android validation is still required
+  before treating it as field-tested.
 - [ ] Phase 4 real model serving and ambiguity handling.
 - [ ] Phase 5 evaluation, tuning, and Android validation.
 
@@ -453,6 +455,10 @@ Implemented in the foundation slice:
 - Added tests for:
   - typed memory metadata
   - graph-expanded office/manager recall
+  - broader deterministic Phase 3 extraction categories
+  - boss/manager/sir and office/work/kaam alias linking
+  - non-name contradiction handling for explicit boundary updates
+  - local consolidation decay and episodic-to-summary aging
   - stateless embedding/rerank endpoints
   - API context scrubbing
   - typed prompt memory injection
@@ -464,6 +470,63 @@ Implemented in the foundation slice:
   - tiny session-start memory context
   - query-time memory lookup success, timeout, stale response, and safety/greeting
     bypass
+- Added an incremental Phase 3 local consolidation/graph slice:
+  - public local `consolidateLocalMemory` entrypoint that operates on durable
+    phone-owned SQLite memory records only
+  - post-complete-turn consolidation trigger after local session summary creation
+  - deterministic extraction for explicit family/relationship, routine, goal,
+    boundary, comfort style, ritual, taboo-topic, and recurring-stressor
+    statements
+  - expanded entity/alias extraction for boss/manager/sir, office/work/kaam, and
+    selected Hindi/Devanagari/Hinglish variants
+  - graph edges for relationships, routines, goals, boundaries, comfort style,
+    rituals, and recurring stressors
+  - contradiction ledger updates for explicit non-name replacement statements
+    such as boundary changes
+  - deterministic multi-value memory IDs for selected labels, so distinct
+    family relationships/routines/rituals/stressors can coexist while a
+    correction to the same relationship supersedes that specific memory
+  - expanded multi-value supersession coverage for goals and boundaries by
+    topic qualifiers
+  - local decay policy where stale low-importance memories decay first,
+    confirmed high-confidence core profile memories are preserved, and old
+    episodic records are aged into past session summaries
+  - local pending-receipt query entrypoint for unconfirmed important memories
+  - explicit voice-transcript receipt handling for `confirmed` and `rejected`
+    results using narrow phrases such as "haan yaad rakhna" or "yaad mat
+    rakhna"
+  - rejected receipt memories are expired and excluded from retrieval and
+    embedding sync
+  - query-time voice receipt prompt plumbing:
+    - mobile includes at most one pending receipt candidate in reliable
+      `memory_lookup_response`
+    - realtime-agent accepts `pending_receipts` beside `memory_packets`
+    - prompt context adds a bounded `[memory_receipt]` instruction asking for
+      at most one short voice-only confirmation question
+    - confirmation/rejection remains phone-owned and is applied only from a
+      later explicit user voice transcript
+  - richer Hindi/Hinglish/Devanagari deterministic extraction and alias
+    handling for family relationships, routines, goals, boundaries, comfort
+    style, rituals, taboo topics, and recurring stressors
+  - false-positive guards for question-shaped/speculative turns and sensitive
+    medical/legal/financial/safety-adjacent turns
+  - redacted dev diagnostics:
+    - mobile SQLite memory admission, lookup, consolidation, receipt prompt,
+      receipt result, and snapshot logs under `companion.memory`
+    - mobile voice memory lookup response logs under `companion.voice.memory`
+    - realtime-agent prompt and memory lookup logs include route, counts,
+      latency, selected counts, and pending receipt counts without transcript
+      text
+  - local diagnostics snapshot API with counts by kind/label/receipt/temporal
+    status and memory IDs only
+  - receipt prompt bookkeeping fix:
+    - added dedicated `receipt_prompted_at` local field so memory retrieval
+      `last_used_at` does not suppress pending receipt prompts
+    - mobile no longer marks a receipt as prompted merely because it attempted
+      a lookup response; this prevents late/stale lookup responses from
+      consuming a receipt prompt before the backend can use it
+    - deterministic local persona provider now appends an explicit short
+      voice receipt question when `[memory_receipt]` context is present
 
 Verification already run and passed:
 
@@ -492,27 +555,38 @@ cd services/realtime-agent && uv run ruff check app tests && uv run pytest
 
 ### Phase 3 Remaining: Consolidation And Graph Intelligence
 
-- Add a post-session/local background consolidation job.
-- Expand deterministic extraction beyond office/manager:
-  - family/relationships
-  - routines
-  - goals
-  - boundaries
-  - comfort style
-  - rituals
-  - taboo topics
-  - recurring stressors
-- Add alias linking:
-  - boss/manager/sir
-  - office/work/kaam
-  - Hindi/Devanagari/Hinglish variants
-- Add contradiction and supersession handling beyond preferred-name updates.
-- Add decay policy:
-  - stale low-importance memories decay first
-  - high-confidence confirmed core profile decays slowly or never
-  - episodic memories become past summaries over time
-- Add memory receipts UX/events.
-- Persist receipt results as `confirmed` or `rejected`.
+- No remaining automated dev implementation tasks for the deterministic/local
+  MVP slice.
+- Manual Android validation completed on a real Wi-Fi Android debug device for:
+  - clean local clear-history baseline clears local transcripts/memory/entities
+  - office/manager stress admission as an unconfirmed
+    `recurring_work_stressor`
+  - graph alias creation for office/work/kaam and manager/boss/sir/Hindi
+    variants
+  - query-time memory lookup response under 200 ms after warm-up with
+    `memory_packets > 0`
+  - proactive receipt prompt path with realtime-agent
+    `pending_receipts=1` and `memory_receipts_available=1`
+  - visible voice receipt question:
+    "Kya main office/manager pressure wali baat yaad rakhun?"
+  - explicit "yaad rakhna" confirmation persists
+    `receipt_state=confirmed` and appends the confirmation turn id
+- Manual Android validation still recommended for:
+  - same-session recall
+  - previous-session recall
+  - "hi" no-overretrieval
+  - explicit "nahi yaad mat rakhna" rejects and removes a pending memory from
+    future recall
+  - Hindi/Hinglish/Devanagari phrasings for relationships, routines, goals,
+    boundaries, comfort style, rituals, taboo topics, and recurring stressors
+    are admitted only when explicit
+  - question-shaped/speculative/sensitive turns are not stored as durable memory
+- During manual validation, capture redacted logs for:
+  - `companion.memory`
+  - `companion.voice.memory`
+  - realtime-agent `prompt_context`
+  - realtime-agent `memory_lookup_response`
+  - realtime-agent `memory_lookup_timeout`, if any
 
 ### Phase 4 Remaining: Precision And Ambiguity
 

@@ -13,6 +13,7 @@ import 'package:companion_mobile/features/chat_history/data/objectbox_memory_vec
 import 'package:companion_mobile/features/livekit_session/data/livekit_connection_service.dart';
 import 'package:companion_mobile/features/livekit_session/data/session_api_client.dart';
 import 'package:companion_mobile/features/livekit_session/domain/livekit_data_event.dart';
+import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -186,6 +187,64 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 1));
   });
+
+  testWidgets('memory lookup response includes pending receipt candidates', (
+    tester,
+  ) async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    final liveKit = _FakeLiveKitConnectionService();
+    addTearDown(database.close);
+
+    await database.upsertUserMessageAndExtractMemory(
+      ChatMessagesCompanion.insert(
+        id: 'u_memory_seed',
+        sessionId: 'session_test',
+        turnId: 'turn_memory_seed',
+        role: 'user',
+        messageText: 'office mein manager bahut pressure deta hai',
+        status: 'final',
+        language: 'hi-IN',
+        createdAt: 1,
+        sttConfidence: const Value(0.96),
+      ),
+    );
+
+    await tester.pumpWidget(_testApp(database, liveKit: liveKit));
+    await tester.tap(find.text('Start voice session'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agree'));
+    await tester.pumpAndSettle();
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'memory_lookup_request',
+        sequence: 10,
+        sessionId: 'session_test',
+        timestampMs: 10,
+        turnId: 'session_test:turn:0002',
+        payload: {'query_text': 'aaj office bad day tha', 'max_blocks': 6},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final response = liveKit.sentReliable.lastWhere(
+      (event) => event.type == 'memory_lookup_response',
+    );
+    final pendingReceipts =
+        response.payload['pending_receipts'] as List<Object?>;
+    final firstReceipt = pendingReceipts.single as Map<String, Object?>;
+
+    expect(firstReceipt['memory_id'], 'memory_semantic_work_stress_manager');
+    expect(firstReceipt['label'], 'recurring_work_stressor');
+    final memory = (await database.select(database.memoryRecords).get())
+        .singleWhere(
+          (record) => record.id == 'memory_semantic_work_stress_manager',
+        );
+    expect(memory.receiptPromptedAt, null);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 1));
+  });
 }
 
 Widget _testApp(
@@ -305,6 +364,8 @@ class _FakeMemoryRerankClient implements MemoryRerankClient {
 class _FakeLiveKitConnectionService extends LiveKitConnectionService {
   final _connections = StreamController<LiveKitConnectionStatus>.broadcast();
   final _events = StreamController<LiveKitDataEvent>.broadcast();
+  final sentReliable = <LiveKitDataEvent>[];
+  final sentLossy = <LiveKitDataEvent>[];
 
   @override
   Stream<LiveKitConnectionStatus> get connectionUpdates => _connections.stream;
@@ -326,10 +387,14 @@ class _FakeLiveKitConnectionService extends LiveKitConnectionService {
   }
 
   @override
-  Future<void> sendReliable(LiveKitDataEvent event) async {}
+  Future<void> sendReliable(LiveKitDataEvent event) async {
+    sentReliable.add(event);
+  }
 
   @override
-  Future<void> sendLossy(LiveKitDataEvent event) async {}
+  Future<void> sendLossy(LiveKitDataEvent event) async {
+    sentLossy.add(event);
+  }
 
   @override
   Future<void> disconnect() async {

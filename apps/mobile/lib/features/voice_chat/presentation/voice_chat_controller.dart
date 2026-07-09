@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -321,10 +322,21 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       0,
       6,
     );
+    final pendingReceipts = await ref
+        .read(appDatabaseProvider)
+        .readPendingMemoryReceipts(limit: 1);
     final memories = await ref
         .read(memoryLookupServiceProvider)
         .lookup(latestUserText: query, limit: limit);
     final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAt;
+    _logVoiceMemoryDiagnostic('memory_lookup_response_mobile', {
+      'turn_id': event.turnId,
+      'request_sequence': event.sequence,
+      'elapsed_ms': elapsedMs,
+      'memory_packets': memories.length,
+      'pending_receipts': pendingReceipts.length,
+      'memory_labels': [for (final memory in memories) memory.label],
+    });
     await ref
         .read(liveKitConnectionServiceProvider)
         .sendReliable(
@@ -348,6 +360,18 @@ class VoiceChatController extends Notifier<VoiceChatState> {
                     'importance_score': memory.importanceScore,
                     'temporal_status': memory.temporalStatus,
                     'sensitivity': memory.sensitivity,
+                    'evidence_summary': memory.evidenceSummary,
+                  },
+              ],
+              'pending_receipts': [
+                for (final memory in pendingReceipts)
+                  {
+                    'memory_id': memory.id,
+                    'kind': memory.kind,
+                    'label': memory.label,
+                    'content': memory.content,
+                    'confidence_score': memory.confidenceScore,
+                    'importance_score': memory.importanceScore,
                     'evidence_summary': memory.evidenceSummary,
                   },
               ],
@@ -454,3 +478,10 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 }
 
 enum StartSessionResult { started, needsConsent, permissionDenied, failed }
+
+void _logVoiceMemoryDiagnostic(String event, Map<String, Object?> fields) {
+  developer.log(
+    jsonEncode({'event': event, ...fields}),
+    name: 'companion.voice.memory',
+  );
+}

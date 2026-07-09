@@ -1,6 +1,6 @@
 from app.providers import ProviderRouting
 from app.providers.interfaces import LLMMessage
-from app.providers.llm import SarvamChatLLMProvider
+from app.providers.llm import PersonaLLMProvider, SarvamChatLLMProvider
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
 from app.providers.tts import SarvamBulbulTTSProvider, chunk_tts_text
 from app.audio_pipeline import pcm_sine_frame
@@ -52,6 +52,39 @@ def test_mock_providers_are_available_for_skeleton() -> None:
         assert chunks
 
     asyncio.run(scenario())
+
+
+def test_persona_llm_asks_explicit_memory_receipt_question() -> None:
+    import asyncio
+
+    async def scenario() -> str:
+        provider = PersonaLLMProvider()
+        chunks = [
+            token.text
+            async for token in provider.stream(
+                [
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "[memory_receipt]\n"
+                            "After answering naturally, ask at most one short voice-only "
+                            "confirmation question.\n"
+                            "- (recurring_work_stressor; memory_id=m1) Potential memory: "
+                            "User has previously mentioned work stress related to office "
+                            "or manager pressure."
+                        ),
+                    ),
+                    LLMMessage(role="user", content="[latest_user] aaj office ka din heavy tha"),
+                ],
+                "hi-IN",
+                max_output_chars=220,
+            )
+        ]
+        return "".join(chunks)
+
+    response = asyncio.run(scenario())
+
+    assert response.endswith("Kya main office/manager pressure wali baat yaad rakhun?")
 
 
 def test_sarvam_llm_uses_voice_safe_request_shape(monkeypatch) -> None:  # noqa: ANN001

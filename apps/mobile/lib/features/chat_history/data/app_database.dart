@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:drift/drift.dart';
@@ -59,6 +60,7 @@ class MemoryRecords extends Table {
   IntColumn get createdAt => integer()();
   IntColumn get updatedAt => integer()();
   IntColumn get lastUsedAt => integer().nullable()();
+  IntColumn get receiptPromptedAt => integer().nullable()();
   RealColumn get confidenceScore => real()();
   RealColumn get importanceScore => real()();
   IntColumn get recurrenceCount => integer().withDefault(const Constant(1))();
@@ -139,7 +141,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -163,6 +165,9 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(memoryEntities);
         await m.createTable(memoryEdges);
         await m.createTable(memoryContradictions);
+      }
+      if (from < 4) {
+        await m.addColumn(memoryRecords, memoryRecords.receiptPromptedAt);
       }
     },
     beforeOpen: (details) async {
@@ -222,6 +227,7 @@ class AppDatabase extends _$AppDatabase {
   Future<void> upsertAssistantMessageAndSummarizeTurn(
     ChatMessagesCompanion message,
   ) async {
+    int? consolidationNow;
     await transaction(() async {
       await into(chatMessages).insertOnConflictUpdate(message);
       final assistant = await (select(
@@ -244,8 +250,12 @@ class AppDatabase extends _$AppDatabase {
               .getSingleOrNull();
       if (user != null && _eligibleForMemory(user)) {
         await _upsertSessionSummary(user, assistant);
+        consolidationNow = assistant.createdAt;
       }
     });
+    if (consolidationNow != null) {
+      await consolidateLocalMemory(nowMs: consolidationNow);
+    }
   }
 
   Future<void> replaceMessageText({
@@ -314,6 +324,13 @@ class AppDatabase extends _$AppDatabase {
       await (update(memoryRecords)..where((record) => record.id.equals(row.id)))
           .write(MemoryRecordsCompanion(lastUsedAt: Value(now)));
     }
+    _logMemoryDiagnostic('memory_lookup_local', {
+      'intent': intent.name,
+      'candidate_count': rows.length,
+      'vector_hit_count': vectorHits.length,
+      'selected_count': selected.length,
+      'selected_labels': [for (final row in selected) row.label],
+    });
     return selected;
   }
 
@@ -335,6 +352,7 @@ class AppDatabase extends _$AppDatabase {
             (row) =>
                 row.supersededBy.isNull() &
                 row.sensitivity.equals('normal') &
+                row.receiptState.isNotIn(['rejected']) &
                 row.temporalStatus.isNotIn(['expired']) &
                 row.content.isNotValue(''),
           )
@@ -350,6 +368,7 @@ class AppDatabase extends _$AppDatabase {
             (row) =>
                 row.supersededBy.isNull() &
                 row.sensitivity.equals('normal') &
+                row.receiptState.isNotIn(['rejected']) &
                 row.temporalStatus.isNotIn(['expired', 'stale']) &
                 (row.kind.equals('core_profile') |
                     (row.kind.equals('procedural') &
@@ -385,13 +404,94 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  Future<void> consolidateLocalMemory({int? nowMs}) async {
+    await transaction(() async {
+      await _applyMemoryDecay(nowMs ?? DateTime.now().millisecondsSinceEpoch);
+    });
+  }
+
+  Future<List<MemoryRecord>> readPendingMemoryReceipts({required int limit}) {
+    final minPromptSpacingMs =
+        DateTime.now().millisecondsSinceEpoch -
+        const Duration(minutes: 15).inMilliseconds;
+    return (select(memoryRecords)
+          ..where(
+            (row) =>
+                row.supersededBy.isNull() &
+                row.sensitivity.equals('normal') &
+                row.receiptState.equals('unconfirmed') &
+                row.temporalStatus.isNotIn(['expired', 'stale']) &
+                (row.receiptPromptedAt.isNull() |
+                    row.receiptPromptedAt.isSmallerThanValue(
+                      minPromptSpacingMs,
+                    )) &
+                row.importanceScore.isBiggerOrEqualValue(0.6),
+          )
+          ..orderBy([
+            (row) => OrderingTerm.desc(row.importanceScore),
+            (row) => OrderingTerm.desc(row.updatedAt),
+          ])
+          ..limit(limit))
+        .get();
+  }
+
+  Future<void> markMemoryReceiptPrompted({
+    required String memoryId,
+    required int promptedAt,
+  }) {
+    _logMemoryDiagnostic('memory_receipt_prompted', {'memory_id': memoryId});
+    return (update(memoryRecords)..where((row) => row.id.equals(memoryId)))
+        .write(MemoryRecordsCompanion(receiptPromptedAt: Value(promptedAt)));
+  }
+
+  Future<Map<String, Object?>> readMemoryDiagnosticsSnapshot() async {
+    final memories = await select(memoryRecords).get();
+    final entities = await select(memoryEntities).get();
+    final edges = await select(memoryEdges).get();
+    final contradictions = await select(memoryContradictions).get();
+    final byKind = <String, int>{};
+    final byLabel = <String, int>{};
+    final byReceipt = <String, int>{};
+    final byTemporal = <String, int>{};
+    for (final memory in memories) {
+      byKind.update(memory.kind, (count) => count + 1, ifAbsent: () => 1);
+      byLabel.update(memory.label, (count) => count + 1, ifAbsent: () => 1);
+      byReceipt.update(
+        memory.receiptState,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+      byTemporal.update(
+        memory.temporalStatus,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    final snapshot = {
+      'memory_count': memories.length,
+      'entity_count': entities.length,
+      'edge_count': edges.length,
+      'contradiction_count': contradictions.length,
+      'by_kind': byKind,
+      'by_label': byLabel,
+      'by_receipt': byReceipt,
+      'by_temporal': byTemporal,
+      'memory_ids': [for (final memory in memories) memory.id],
+    };
+    _logMemoryDiagnostic('memory_diagnostics_snapshot', snapshot);
+    return snapshot;
+  }
+
   Future<void> _admitStableFacts(ChatMessage message) async {
     if (!_eligibleForMemory(message) || message.role != 'user') {
       return;
     }
+    if (await _applyMemoryReceiptReply(message)) {
+      return;
+    }
     await _upsertGraphSignals(message);
     for (final candidate in _extractStableFactCandidates(message.messageText)) {
-      final id = 'memory_${candidate.memoryType}_${candidate.label}';
+      final id = _memoryRecordId(candidate);
       final existing = await (select(
         memoryRecords,
       )..where((row) => row.id.equals(id))).getSingleOrNull();
@@ -456,6 +556,13 @@ class AppDatabase extends _$AppDatabase {
           evidenceSummary: Value(candidate.evidenceSummary),
         ),
       );
+      _logMemoryDiagnostic('memory_admitted', {
+        'memory_id': id,
+        'kind': candidate.memoryType,
+        'label': candidate.label,
+        'receipt_state': 'implicit',
+        'replacement': replacementReason != null,
+      });
     }
     await _admitCompanionContextMemories(message);
   }
@@ -643,6 +750,172 @@ class AppDatabase extends _$AppDatabase {
     await edge('entity_manager', 'works_at_context', 'entity_office');
     await edge('entity_manager', 'causes_stress', 'entity_work_stress');
     await edge('entity_office', 'recurs_with', 'entity_work_stress');
+    await edge('entity_family', 'related_to', 'entity_relationships');
+    await edge('entity_relationships', 'related_to', 'entity_comfort_style');
+    await edge('entity_routine', 'recurs_with', 'entity_ritual');
+    await edge('entity_goal', 'related_to', 'entity_routine');
+    await edge('entity_boundary', 'has_boundary', 'entity_taboo_topic');
+    await edge('entity_comfort_style', 'prefers', 'entity_boundary');
+    await edge('entity_recurring_stressor', 'causes_stress', 'entity_stress');
+  }
+
+  Future<void> _applyMemoryDecay(int nowMs) async {
+    const dayMs = 24 * 60 * 60 * 1000;
+    final rows =
+        await (select(memoryRecords)..where(
+              (row) =>
+                  row.supersededBy.isNull() &
+                  row.temporalStatus.isNotIn(['expired']),
+            ))
+            .get();
+    var decayed = 0;
+    var expired = 0;
+    var agedEpisodic = 0;
+    for (final row in rows) {
+      final ageDays = ((nowMs - row.updatedAt) / dayMs).floor();
+      if (ageDays < 14) {
+        continue;
+      }
+      if (row.kind == 'core_profile' &&
+          row.confidenceScore >= 0.85 &&
+          row.receiptState == 'confirmed') {
+        continue;
+      }
+      if (row.kind == 'episodic' && ageDays >= 30) {
+        await (update(
+          memoryRecords,
+        )..where((record) => record.id.equals(row.id))).write(
+          MemoryRecordsCompanion(
+            kind: const Value('session_summary'),
+            label: const Value('past_episodic_summary'),
+            temporalStatus: const Value('past'),
+            importanceScore: Value(
+              (row.importanceScore - 0.08).clamp(0.25, 0.8),
+            ),
+            evidenceSummary: Value(
+              row.evidenceSummary.isEmpty
+                  ? 'Aged local episodic memory into a past summary.'
+                  : '${row.evidenceSummary} Aged into a past summary.',
+            ),
+          ),
+        );
+        agedEpisodic += 1;
+        continue;
+      }
+      if (row.importanceScore <= 0.45 || row.temporalStatus == 'stale') {
+        final nextImportance = (row.importanceScore - 0.12).clamp(0.0, 1.0);
+        final nextStatus = nextImportance < 0.25 || ageDays >= 90
+            ? 'expired'
+            : ageDays >= 30
+            ? 'stale'
+            : row.temporalStatus;
+        await (update(
+          memoryRecords,
+        )..where((record) => record.id.equals(row.id))).write(
+          MemoryRecordsCompanion(
+            importanceScore: Value(nextImportance),
+            temporalStatus: Value(nextStatus),
+            evidenceSummary: Value(
+              row.evidenceSummary.isEmpty
+                  ? 'Decayed by local consolidation policy.'
+                  : '${row.evidenceSummary} Decayed by local consolidation policy.',
+            ),
+          ),
+        );
+        decayed += 1;
+        if (nextStatus == 'expired') {
+          expired += 1;
+        }
+      }
+    }
+    _logMemoryDiagnostic('memory_consolidation_decay', {
+      'record_count': rows.length,
+      'decayed_count': decayed,
+      'expired_count': expired,
+      'aged_episodic_count': agedEpisodic,
+    });
+  }
+
+  Future<bool> _applyMemoryReceiptReply(ChatMessage message) async {
+    final decision = _classifyMemoryReceiptReply(message.messageText);
+    if (decision == _MemoryReceiptDecision.none) {
+      return false;
+    }
+    final pending =
+        await (select(memoryRecords)
+              ..where(
+                (row) =>
+                    row.supersededBy.isNull() &
+                    row.sensitivity.equals('normal') &
+                    row.receiptState.equals('unconfirmed') &
+                    row.temporalStatus.isNotIn(['expired', 'stale']),
+              )
+              ..orderBy([
+                (row) => OrderingTerm.desc(row.importanceScore),
+                (row) => OrderingTerm.desc(row.updatedAt),
+              ])
+              ..limit(1))
+            .getSingleOrNull();
+    if (pending == null ||
+        _decodeStringList(pending.sourceTurnIdsJson).contains(message.turnId)) {
+      return false;
+    }
+    final now = message.createdAt;
+    final sourceTurnIds = {
+      ..._decodeStringList(pending.sourceTurnIdsJson),
+      message.turnId,
+    }.toList();
+    if (decision == _MemoryReceiptDecision.confirm) {
+      await (update(
+        memoryRecords,
+      )..where((row) => row.id.equals(pending.id))).write(
+        MemoryRecordsCompanion(
+          sourceTurnIdsJson: Value(jsonEncode(sourceTurnIds)),
+          updatedAt: Value(now),
+          confidenceScore: Value(
+            (pending.confidenceScore + 0.1).clamp(0.0, 0.98),
+          ),
+          importanceScore: Value(
+            (pending.importanceScore + 0.06).clamp(0.0, 0.95),
+          ),
+          recurrenceCount: Value(pending.recurrenceCount + 1),
+          receiptState: const Value('confirmed'),
+          evidenceSummary: Value(
+            pending.evidenceSummary.isEmpty
+                ? 'Confirmed by explicit local voice receipt.'
+                : '${pending.evidenceSummary} Confirmed by explicit local voice receipt.',
+          ),
+        ),
+      );
+      _logMemoryDiagnostic('memory_receipt_result', {
+        'memory_id': pending.id,
+        'result': 'confirmed',
+      });
+      return true;
+    }
+    await (update(
+      memoryRecords,
+    )..where((row) => row.id.equals(pending.id))).write(
+      MemoryRecordsCompanion(
+        sourceTurnIdsJson: Value(jsonEncode(sourceTurnIds)),
+        updatedAt: Value(now),
+        confidenceScore: const Value(0.0),
+        importanceScore: const Value(0.0),
+        receiptState: const Value('rejected'),
+        temporalStatus: const Value('expired'),
+        replacementReason: const Value('explicit_memory_receipt_rejection'),
+        evidenceSummary: Value(
+          pending.evidenceSummary.isEmpty
+              ? 'Rejected by explicit local voice receipt.'
+              : '${pending.evidenceSummary} Rejected by explicit local voice receipt.',
+        ),
+      ),
+    );
+    _logMemoryDiagnostic('memory_receipt_result', {
+      'memory_id': pending.id,
+      'result': 'rejected',
+    });
+    return true;
   }
 
   Future<void> _upsertEntity(
@@ -735,6 +1008,7 @@ class _StableFactCandidate {
     required this.value,
     required this.confidence,
     required this.importance,
+    this.idQualifier,
     this.evidenceSummary = '',
   });
 
@@ -744,6 +1018,7 @@ class _StableFactCandidate {
   final String value;
   final double confidence;
   final double importance;
+  final String? idQualifier;
   final String evidenceSummary;
 }
 
@@ -755,6 +1030,8 @@ class _RankedMemory {
 }
 
 enum _UtteranceType { statement, question, correction, unsafe }
+
+enum _MemoryReceiptDecision { none, confirm, reject }
 
 enum _MemoryQueryIntent {
   identityRecall,
@@ -838,6 +1115,14 @@ List<_StableFactCandidate> _extractStableFactCandidates(String text) {
       );
     }
   }
+  candidates.addAll(_extractRelationshipCandidates(cleaned));
+  candidates.addAll(_extractRoutineCandidates(cleaned));
+  candidates.addAll(_extractGoalCandidates(cleaned));
+  candidates.addAll(_extractBoundaryCandidates(cleaned));
+  candidates.addAll(_extractComfortStyleCandidates(cleaned));
+  candidates.addAll(_extractRitualCandidates(cleaned));
+  candidates.addAll(_extractTabooTopicCandidates(cleaned));
+  candidates.addAll(_extractRecurringStressorCandidates(cleaned));
   return candidates;
 }
 
@@ -869,6 +1154,18 @@ bool _shouldReplaceStableFact({
       utteranceType != _UtteranceType.question &&
           confidence >= 0.7 &&
           candidate.confidence >= existing.confidenceScore - 0.05,
+    'family_relationship' ||
+    'routine' ||
+    'goal' ||
+    'boundary' ||
+    'comfort_style' ||
+    'ritual' ||
+    'taboo_topic' ||
+    'recurring_stressor' =>
+      utteranceType != _UtteranceType.question &&
+          confidence >= 0.72 &&
+          (candidate.confidence >= existing.confidenceScore - 0.08 ||
+              _looksLikeCorrection(_normalizeForMemory(message.messageText))),
     'safe_preference' =>
       (utteranceType == _UtteranceType.correction ||
               _isStrongPreferenceStatement(message.messageText)) &&
@@ -899,6 +1196,34 @@ String _stableFactValue(MemoryRecord record) {
     }
   }
   return record.content.trim().toLowerCase();
+}
+
+String _memoryRecordId(_StableFactCandidate candidate) {
+  final qualifier = candidate.idQualifier;
+  if (qualifier == null || qualifier.isEmpty) {
+    return 'memory_${candidate.memoryType}_${candidate.label}';
+  }
+  return 'memory_${candidate.memoryType}_${candidate.label}_$qualifier';
+}
+
+String? _memoryIdToken(String value) {
+  final canonical = _canonicalMemoryText(value)
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+      .replaceAll(RegExp(r'_+'), '_')
+      .replaceAll(RegExp(r'^_|_$'), '');
+  if (canonical.isEmpty || canonical.length > 48) {
+    return null;
+  }
+  return canonical;
+}
+
+String? _topicQualifier(String normalized, List<String> tokens) {
+  for (final token in tokens) {
+    if (normalized.contains(token)) {
+      return _memoryIdToken(token);
+    }
+  }
+  return null;
 }
 
 String? _extractPreferredName(String text) {
@@ -960,6 +1285,353 @@ String? _extractLanguageStyle(String text) {
     return 'Hindi';
   }
   return null;
+}
+
+List<_StableFactCandidate> _extractRelationshipCandidates(String text) {
+  final patterns = [
+    RegExp(
+      r'(?:meri|mera|my)\s+(behen|bahan|bhai|sister|brother|wife|husband|partner|maa|mummy|papa)\s+(?:ka naam\s+)?(?:is\s+)?([A-Za-z\u0900-\u097F]{2,32})(?:\s+(?:hai|है))?',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'(?:मेरी|मेरा)\s+(माँ|मां|मम्मी|पापा|भाई|बहन|पत्नी|पति|साथी)\s+(?:का नाम\s+)?([A-Za-z\u0900-\u097F]{2,32})(?:\s+है)?',
+      caseSensitive: false,
+    ),
+  ];
+  RegExpMatch? match;
+  for (final pattern in patterns) {
+    match = pattern.firstMatch(text);
+    if (match != null) {
+      break;
+    }
+  }
+  final relation = match?.group(1);
+  final name = match?.group(2);
+  if (relation == null || name == null || _isQuestionToken(name)) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'family_relationship',
+      content:
+          'User mentioned $relation named ${_cleanMemoryText(name, maxChars: 40)}.',
+      value: '$relation:$name',
+      confidence: 0.7,
+      importance: 0.62,
+      idQualifier: _memoryIdToken(relation),
+      evidenceSummary: 'Explicit family or relationship statement.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractRoutineCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'roz',
+    'daily',
+    'har din',
+    'every day',
+    'subah',
+    'shaam',
+    'morning',
+    'evening',
+    'रोज',
+    'हर दिन',
+    'सुबह',
+    'शाम',
+  ])) {
+    return const [];
+  }
+  if (!_containsAny(normalized, [
+    'walk',
+    'gym',
+    'chai',
+    'study',
+    'meditation',
+    'journal',
+    'padhna',
+    'पढ़',
+    'चाय',
+    'टहल',
+    'ध्यान',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'routine',
+      content:
+          'User described a routine: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.68,
+      importance: 0.58,
+      idQualifier: _topicQualifier(normalized, [
+        'walk',
+        'gym',
+        'chai',
+        'study',
+        'meditation',
+        'journal',
+        'padhna',
+        'पढ़',
+        'चाय',
+        'टहल',
+        'ध्यान',
+      ]),
+      evidenceSummary: 'Explicit routine statement.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractGoalCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (_isQuestionLikeMemoryTurn(normalized) ||
+      _containsAny(normalized, ['shayad', 'maybe', 'sochne chahiye'])) {
+    return const [];
+  }
+  if (!_containsAny(normalized, [
+    'goal',
+    'target',
+    'chahta hoon',
+    'chahti hoon',
+    'karna hai',
+    'seekhna hai',
+    'banana hai',
+    'improve karna',
+    'लक्ष्य',
+    'करना है',
+    'सीखना है',
+    'बनना है',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'goal',
+      content: 'User stated a goal: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.66,
+      importance: 0.68,
+      idQualifier: _topicQualifier(normalized, [
+        'fitness',
+        'health',
+        'english',
+        'hindi',
+        'career',
+        'job',
+        'study',
+        'exam',
+        'coding',
+        'padhna',
+        'स्वास्थ्य',
+        'फिटनेस',
+        'इंग्लिश',
+        'करियर',
+        'नौकरी',
+        'पढ़',
+      ]),
+      evidenceSummary: 'Explicit goal statement.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractBoundaryCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'mat karna',
+    'dont',
+    "don't",
+    'avoid',
+    'nahi chahiye',
+    'advice nahi',
+    'call mat',
+    'baat mat',
+    'मत करना',
+    'नहीं चाहिए',
+    'बात मत',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'boundary',
+      content: 'User set a boundary: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.72,
+      importance: 0.74,
+      idQualifier: _topicQualifier(normalized, [
+        'advice',
+        'call',
+        'calls',
+        'politics',
+        'work',
+        'office',
+        'family',
+        'सलाह',
+        'कॉल',
+        'राजनीति',
+        'ऑफिस',
+        'परिवार',
+      ]),
+      evidenceSummary: 'Explicit boundary statement.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractComfortStyleCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'bas sunna',
+    'pehle suno',
+    'advice se pehle',
+    'just listen',
+    'listen first',
+    'पहले सुनो',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'procedural',
+      label: 'comfort_style',
+      content:
+          'User prefers this comfort style: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.76,
+      importance: 0.78,
+      idQualifier: _topicQualifier(normalized, [
+        'listen',
+        'sunna',
+        'suno',
+        'advice',
+        'सलाह',
+        'सुनो',
+      ]),
+      evidenceSummary: 'Explicit comfort-style preference.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractRitualCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'har sunday',
+    'every sunday',
+    'sunday',
+    'weekend',
+    'hafte',
+    'रविवार',
+    'हफ्ते',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'ritual',
+      content:
+          'User described a ritual: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.67,
+      importance: 0.6,
+      idQualifier: _topicQualifier(normalized, [
+        'har sunday',
+        'every sunday',
+        'sunday',
+        'weekend',
+        'hafte',
+        'रविवार',
+        'हफ्ते',
+      ]),
+      evidenceSummary: 'Explicit recurring ritual statement.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractTabooTopicCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'baat mat',
+    'topic avoid',
+    'avoid topic',
+    'ke bare mein mat',
+    'ke baare mein baat mat',
+    'बारे में बात मत',
+  ])) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'taboo_topic',
+      content:
+          'User asked to avoid a topic: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.72,
+      importance: 0.72,
+      idQualifier: _topicQualifier(normalized, [
+        'politics',
+        'family',
+        'work',
+        'office',
+        'health',
+        'money',
+        'राजनीति',
+        'परिवार',
+        'ऑफिस',
+        'पैसे',
+      ]),
+      evidenceSummary: 'Explicit taboo-topic boundary.',
+    ),
+  ];
+}
+
+List<_StableFactCandidate> _extractRecurringStressorCandidates(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (!_containsAny(normalized, [
+    'stress hota',
+    'pressure hota',
+    'tension hoti',
+    'chinta hoti',
+    'pareshan',
+    'तनाव',
+    'चिंता',
+  ])) {
+    return const [];
+  }
+  if (_looksWorkStressRelated(normalized)) {
+    return const [];
+  }
+  return [
+    _StableFactCandidate(
+      memoryType: 'semantic',
+      label: 'recurring_stressor',
+      content:
+          'User mentioned a recurring stressor: ${_cleanMemoryText(text, maxChars: 120)}',
+      value: _canonicalMemoryText(text),
+      confidence: 0.64,
+      importance: 0.62,
+      idQualifier: _topicQualifier(normalized, [
+        'traffic',
+        'commute',
+        'travel',
+        'family',
+        'money',
+        'exam',
+        'stress',
+        'pressure',
+        'traffic',
+        'परिवार',
+        'पैसे',
+        'एग्जाम',
+      ]),
+      evidenceSummary: 'Explicit recurring-stressor statement.',
+    ),
+  ];
 }
 
 bool _isDeclarativeIdentityStatement(String text) {
@@ -1078,6 +1750,54 @@ bool _isStrongPreferenceStatement(String text) {
       normalized.contains('मुझे') && normalized.contains('पसंद');
 }
 
+_MemoryReceiptDecision _classifyMemoryReceiptReply(String text) {
+  final normalized = _normalizeForMemory(text);
+  if (_containsSensitiveMemoryBlocker(normalized) ||
+      _isQuestionLikeMemoryTurn(normalized)) {
+    return _MemoryReceiptDecision.none;
+  }
+  final mentionsMemoryAction = _containsAny(normalized, [
+    'yaad',
+    'remember',
+    'memory',
+    'याद',
+  ]);
+  if (!mentionsMemoryAction) {
+    return _MemoryReceiptDecision.none;
+  }
+  if (_containsAny(normalized, [
+    'mat yaad',
+    'yaad mat',
+    'dont remember',
+    "don't remember",
+    'do not remember',
+    'forget',
+    'bhool jao',
+    'भूल जाओ',
+    'याद मत',
+    'मत याद',
+  ])) {
+    return _MemoryReceiptDecision.reject;
+  }
+  if (_containsAny(normalized, [
+    'haan yaad',
+    'ha yaad',
+    'yes remember',
+    'remember this',
+    'remember it',
+    'yaad rakh',
+    'yaad rakhna',
+    'yaad rakh lo',
+    'हाँ याद',
+    'हां याद',
+    'याद रखना',
+    'याद रखो',
+  ])) {
+    return _MemoryReceiptDecision.confirm;
+  }
+  return _MemoryReceiptDecision.none;
+}
+
 bool _memoryRelevant(MemoryRecord row, String latestUserText) {
   if (!_memoryAllowedForRetrieval(row, latestUserText)) {
     return false;
@@ -1099,6 +1819,7 @@ bool _memoryAllowedForRetrieval(MemoryRecord row, String latestUserText) {
     return false;
   }
   if (row.sensitivity != 'normal' ||
+      row.receiptState == 'rejected' ||
       row.temporalStatus == 'expired' ||
       row.temporalStatus == 'stale') {
     return false;
@@ -1196,17 +1917,44 @@ List<_MemoryEntityCandidate> _extractMemoryEntities(String text) {
     );
   }
 
-  if (_containsAny(normalized, ['office', 'work', 'kaam', 'काम', 'ऑफिस'])) {
+  if (_containsAny(normalized, [
+    'office',
+    'work',
+    'kaam',
+    'काम',
+    'ऑफिस',
+    'ऑफ़िस',
+    'कार्य',
+  ])) {
     add('entity_office', 'context', 'office', [
       'office',
       'work',
       'kaam',
       'ऑफिस',
+      'ऑफ़िस',
     ]);
-    add('entity_work', 'context', 'work', ['work', 'kaam', 'काम']);
+    add('entity_work', 'context', 'work', ['work', 'kaam', 'काम', 'कार्य']);
   }
-  if (_containsAny(normalized, ['manager', 'boss', 'sir', 'मैनेजर'])) {
-    add('entity_manager', 'work_role', 'manager', ['manager', 'boss', 'sir']);
+  if (_containsAny(normalized, [
+    'manager',
+    'boss',
+    'sir',
+    'मैनेजर',
+    'बॉस',
+    'सर',
+    'sahab',
+    'साहब',
+  ])) {
+    add('entity_manager', 'work_role', 'manager', [
+      'manager',
+      'boss',
+      'sir',
+      'मैनेजर',
+      'बॉस',
+      'सर',
+      'sahab',
+      'साहब',
+    ]);
   }
   if (_containsAny(normalized, [
     'stress',
@@ -1223,6 +1971,147 @@ List<_MemoryEntityCandidate> _extractMemoryEntities(String text) {
       'bad day',
       'pareshan',
     ]);
+  }
+  if (_containsAny(normalized, [
+    'family',
+    'relationship',
+    'behen',
+    'bahan',
+    'bhai',
+    'maa',
+    'mummy',
+    'papa',
+    'sister',
+    'brother',
+    'परिवार',
+    'बहन',
+    'भाई',
+    'माँ',
+    'मां',
+    'मम्मी',
+    'पापा',
+  ])) {
+    add('entity_family', 'people', 'family', ['family', 'parivar', 'परिवार']);
+    add('entity_relationships', 'context', 'relationships', [
+      'relationship',
+      'rishta',
+      'रिश्ता',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'routine',
+    'roz',
+    'daily',
+    'har din',
+    'subah',
+    'shaam',
+    'morning',
+    'evening',
+    'रोज',
+    'हर दिन',
+    'सुबह',
+    'शाम',
+  ])) {
+    add('entity_routine', 'routine', 'routine', [
+      'routine',
+      'roz',
+      'daily',
+      'रोज',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'goal',
+    'target',
+    'chahta hoon',
+    'chahti hoon',
+    'seekhna hai',
+    'banana hai',
+    'लक्ष्य',
+    'सीखना है',
+    'बनना है',
+  ])) {
+    add('entity_goal', 'goal', 'goal', ['goal', 'target', 'लक्ष्य']);
+  }
+  if (_containsAny(normalized, [
+    'boundary',
+    'mat karna',
+    'nahi chahiye',
+    'advice nahi',
+    'call mat',
+    'baat mat',
+    'मत करना',
+    'नहीं चाहिए',
+    'बात मत',
+  ])) {
+    add('entity_boundary', 'boundary', 'boundary', [
+      'boundary',
+      'mat karna',
+      'मत करना',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'bas sunna',
+    'pehle suno',
+    'just listen',
+    'listen first',
+    'पहले सुनो',
+  ])) {
+    add('entity_comfort_style', 'preference', 'comfort style', [
+      'comfort style',
+      'bas sunna',
+      'just listen',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'ritual',
+    'har sunday',
+    'every sunday',
+    'sunday',
+    'weekend',
+    'hafte',
+    'रविवार',
+    'हफ्ते',
+  ])) {
+    add('entity_ritual', 'routine', 'ritual', [
+      'ritual',
+      'har sunday',
+      'रविवार',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'taboo',
+    'baat mat',
+    'avoid topic',
+    'topic avoid',
+    'ke baare mein baat mat',
+    'बारे में बात मत',
+  ])) {
+    add('entity_taboo_topic', 'boundary', 'taboo topic', [
+      'taboo',
+      'baat mat',
+      'avoid topic',
+    ]);
+  }
+  if (_containsAny(normalized, [
+    'stress hota',
+    'pressure hota',
+    'tension hoti',
+    'chinta hoti',
+    'traffic',
+    'pareshan',
+    'तनाव',
+    'चिंता',
+  ])) {
+    add('entity_recurring_stressor', 'stressor', 'recurring stressor', [
+      'stress hota',
+      'pressure hota',
+      'traffic',
+      'tension',
+      'chinta',
+      'तनाव',
+      'चिंता',
+    ]);
+    add('entity_stress', 'stressor', 'stress', ['stress', 'pressure']);
   }
   return entities;
 }
@@ -1255,16 +2144,70 @@ String _canonicalMemoryText(String text) {
   var normalized = _normalizeForMemory(text);
   const replacements = {
     'ऑफिस': 'office',
+    'ऑफ़िस': 'office',
     'काम': 'work',
+    'कार्य': 'work',
     'kaam': 'work',
     'मैनेजर': 'manager',
+    'बॉस': 'manager',
+    'सर': 'manager',
+    'साहब': 'manager',
+    'sahab': 'manager',
+    'boss': 'manager',
+    'sir': 'manager',
     'परेशान': 'stress',
     'pareshan': 'stress',
+    'tension': 'stress',
+    'चिंता': 'stress',
+    'तनाव': 'stress',
     'bura din': 'bad day',
     'खराब दिन': 'bad day',
     'naam': 'name',
     'yaad': 'remember',
     'pasand': 'like',
+    'roz': 'routine',
+    'रोज': 'routine',
+    'हर दिन': 'routine',
+    'parivar': 'family',
+    'परिवार': 'family',
+    'behen': 'sister',
+    'bahan': 'sister',
+    'बहन': 'sister',
+    'bhai': 'brother',
+    'भाई': 'brother',
+    'maa': 'mother',
+    'mummy': 'mother',
+    'माँ': 'mother',
+    'मां': 'mother',
+    'मम्मी': 'mother',
+    'papa': 'father',
+    'पापा': 'father',
+    'रिश्ता': 'relationship',
+    'inglish': 'english',
+    'इंग्लिश': 'english',
+    'लक्ष्य': 'goal',
+    'मत करना': 'boundary',
+    'नहीं चाहिए': 'boundary',
+    'पहले सुनो': 'listen first',
+    'रविवार': 'sunday',
+    'subah': 'morning',
+    'सुबह': 'morning',
+    'shaam': 'evening',
+    'शाम': 'evening',
+    'padhna': 'study',
+    'पढ़ना': 'study',
+    'पढ़': 'study',
+    'ध्यान': 'meditation',
+    'टहल': 'walk',
+    'सलाह': 'advice',
+    'कॉल': 'call',
+    'राजनीति': 'politics',
+    'पैसे': 'money',
+    'फिटनेस': 'fitness',
+    'स्वास्थ्य': 'health',
+    'करियर': 'career',
+    'नौकरी': 'job',
+    'एग्जाम': 'exam',
   };
   for (final entry in replacements.entries) {
     normalized = normalized.replaceAll(entry.key, entry.value);
@@ -1340,6 +2283,13 @@ List<String> _decodeStringList(String encoded) {
     for (final item in decoded)
       if (item is String) item,
   ];
+}
+
+void _logMemoryDiagnostic(String event, Map<String, Object?> fields) {
+  developer.log(
+    jsonEncode({'event': event, ...fields}),
+    name: 'companion.memory',
+  );
 }
 
 LazyDatabase _openConnection() {

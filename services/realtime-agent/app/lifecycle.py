@@ -697,11 +697,17 @@ class RealtimeAgentSession:
     async def _llm_messages(self, turn_id: str, user_text: str) -> list[LLMMessage]:
         memory_route = route_memory_query(user_text)
         turn_memory_packets: list[dict[str, object]] = []
+        turn_memory_receipts: list[dict[str, object]] = []
         if memory_route.route not in {"none", "safety"} and memory_route.max_blocks > 0:
-            turn_memory_packets = await self._lookup_turn_memory(turn_id, user_text, memory_route)
+            turn_memory_packets, turn_memory_receipts = await self._lookup_turn_memory(
+                turn_id,
+                user_text,
+                memory_route,
+            )
         messages, diagnostics = self.context_builder.build(
             user_text,
             turn_memory_packets=turn_memory_packets,
+            turn_memory_receipts=turn_memory_receipts,
         )
         print(
             "prompt_context",
@@ -721,7 +727,7 @@ class RealtimeAgentSession:
         turn_id: str,
         user_text: str,
         memory_route: MemoryRoutingDecision,
-    ) -> list[dict[str, object]]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         event = self.sequencer.next(
             event_type="memory_lookup_request",
             turn_id=turn_id,
@@ -737,7 +743,9 @@ class RealtimeAgentSession:
         if not isinstance(sequence, int):
             return []
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[list[dict[str, object]]] = loop.create_future()
+        future: asyncio.Future[tuple[list[dict[str, object]], list[dict[str, object]]]] = (
+            loop.create_future()
+        )
         key = (turn_id, sequence)
         self._pending_memory_requests[key] = future
         await self.transport.publish_reliable(
@@ -757,7 +765,7 @@ class RealtimeAgentSession:
                 },
                 flush=True,
             )
-            return []
+            return [], []
         finally:
             self._pending_memory_requests.pop(key, None)
 
@@ -794,7 +802,13 @@ class RealtimeAgentSession:
             for packet in raw_packets
             if isinstance(packet, dict)
         ][:6] if isinstance(raw_packets, list) else []
-        future.set_result(packets)
+        raw_receipts = event.get("pending_receipts", [])
+        receipts = [
+            receipt
+            for receipt in raw_receipts
+            if isinstance(receipt, dict)
+        ][:1] if isinstance(raw_receipts, list) else []
+        future.set_result((packets, receipts))
         print(
             "memory_lookup_response",
             {
@@ -803,6 +817,7 @@ class RealtimeAgentSession:
                 "request_sequence": request_sequence,
                 "elapsed_ms": event.get("elapsed_ms"),
                 "memory_packets": len(packets),
+                "pending_receipts": len(receipts),
             },
             flush=True,
         )

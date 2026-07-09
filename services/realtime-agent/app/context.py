@@ -53,6 +53,17 @@ class MemoryBlock:
     evidence_summary: str
 
 
+@dataclass(frozen=True)
+class MemoryReceiptPrompt:
+    memory_id: str
+    kind: str
+    label: str
+    content: str
+    confidence_score: float
+    importance_score: float
+    evidence_summary: str
+
+
 class PromptContextBuilder:
     def __init__(
         self,
@@ -81,9 +92,11 @@ class PromptContextBuilder:
         latest_user_text: str,
         *,
         turn_memory_packets: list[dict[str, object]] | None = None,
+        turn_memory_receipts: list[dict[str, object]] | None = None,
     ) -> tuple[list[LLMMessage], dict[str, object]]:
         latest = _clean(latest_user_text, max_chars=800)
         turn_memory_blocks = _parse_memory_block_items(turn_memory_packets or [])
+        receipt_prompts = _parse_memory_receipt_items(turn_memory_receipts or [])
         selected_memory = self._select_memory(latest, turn_memory_blocks=turn_memory_blocks)
         selected_recent = self._select_recent_turns(latest)
 
@@ -104,6 +117,13 @@ class PromptContextBuilder:
                     continue
                 context_sections.append(section)
                 context_sections.extend(_format_memory_block(block) for block in blocks)
+        if receipt_prompts and not _sensitive(latest):
+            context_sections.append("[memory_receipt]")
+            context_sections.append(
+                "After answering naturally, ask at most one short voice-only confirmation "
+                "question about whether to remember this. Do not imply it is already confirmed."
+            )
+            context_sections.append(_format_receipt_prompt(receipt_prompts[0]))
 
         messages = [LLMMessage(role="system", content=self.system_prompt)]
         if len(context_sections) > 2:
@@ -119,6 +139,7 @@ class PromptContextBuilder:
             "latest_user_chars": len(latest),
             "memory_blocks_available": len(self.memory_blocks),
             "turn_memory_blocks_available": len(turn_memory_blocks),
+            "memory_receipts_available": len(receipt_prompts),
             "memory_blocks_selected": len(selected_memory),
             "recent_turns_available": len(self.recent_turns),
             "recent_turns_selected": len(selected_recent),
@@ -132,6 +153,7 @@ class PromptContextBuilder:
                 "semantic_memory",
                 "episodic_memory",
                 "session_summary",
+                "memory_receipt",
                 "recent_turns",
             ],
         }
@@ -306,6 +328,28 @@ def _parse_memory_block_items(raw_blocks: list[object]) -> list[MemoryBlock]:
     return blocks
 
 
+def _parse_memory_receipt_items(raw_receipts: list[object]) -> list[MemoryReceiptPrompt]:
+    receipts = []
+    for item in raw_receipts:
+        if not isinstance(item, dict):
+            continue
+        content = _clean(str(item.get("content", "")), max_chars=220)
+        if not content or _sensitive(content):
+            continue
+        receipts.append(
+            MemoryReceiptPrompt(
+                memory_id=str(item.get("memory_id", ""))[:160],
+                kind=str(item.get("kind", ""))[:64],
+                label=str(item.get("label", ""))[:80],
+                content=content,
+                confidence_score=_bounded_float(item.get("confidence_score")),
+                importance_score=_bounded_float(item.get("importance_score")),
+                evidence_summary=_clean(str(item.get("evidence_summary", "")), max_chars=240),
+            )
+        )
+    return receipts[:1]
+
+
 def _eligible_recent(turn: RecentTurn) -> bool:
     if turn.status not in {"final", "final_corrected"}:
         return False
@@ -323,6 +367,8 @@ def _eligible_memory(block: MemoryBlock) -> bool:
     if block.stt_confidence is not None and block.stt_confidence < 0.55:
         return False
     if block.sensitivity != "normal" or block.kind == "safety_ephemeral":
+        return False
+    if block.receipt_state == "rejected":
         return False
     if block.temporal_status in {"stale", "expired"}:
         return False
@@ -357,6 +403,15 @@ def _format_memory_block(block: MemoryBlock) -> str:
         f"confidence={block.confidence_score:.2f}; importance={block.importance_score:.2f}; "
         f"temporal={block.temporal_status}; receipt={block.receipt_state}{evidence}) "
         f"{block.content}"
+    )
+
+
+def _format_receipt_prompt(receipt: MemoryReceiptPrompt) -> str:
+    evidence = f"; evidence={receipt.evidence_summary}" if receipt.evidence_summary else ""
+    return (
+        f"- ({receipt.label}; memory_id={receipt.memory_id}; "
+        f"confidence={receipt.confidence_score:.2f}; importance={receipt.importance_score:.2f}"
+        f"{evidence}) Potential memory: {receipt.content}"
     )
 
 

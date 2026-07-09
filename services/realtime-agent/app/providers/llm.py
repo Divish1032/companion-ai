@@ -129,6 +129,7 @@ def _persona_response(messages: list[LLMMessage]) -> str:
     memory_text = "\n".join(
         message.content for message in messages if message.role == "system"
     ).casefold()
+    receipt_question = _receipt_question(memory_text)
     remembered_name = _remembered_name(memory_text)
     if remembered_name and any(
         phrase in normalized
@@ -141,19 +142,48 @@ def _persona_response(messages: list[LLMMessage]) -> str:
             "mujhe kya bulate",
         )
     ):
-        return f"Haan, mujhe yaad hai ki aapko {remembered_name} bulana hai."
+        return _with_receipt_question(
+            f"Haan, mujhe yaad hai ki aapko {remembered_name} bulana hai.",
+            receipt_question,
+        )
     if "hinglish" in memory_text and any(
         phrase in normalized for phrase in ("kaise baat", "kis style", "remember")
     ):
-        return "Haan, main Hinglish mein hi natural tareeke se baat karunga."
+        return _with_receipt_question(
+            "Haan, main Hinglish mein hi natural tareeke se baat karunga.",
+            receipt_question,
+        )
     if any(word in normalized for word in ("mood", "theek nahi", "udaas", "pareshan", "off")):
-        return (
+        return _with_receipt_question(
             "Samajh raha hoon. Aaj mood theek nahi hai toh thoda dheere chalte hain. "
-            "Ek chhoti si baat batao, sabse zyada heavy kya lag raha hai?"
+            "Ek chhoti si baat batao, sabse zyada heavy kya lag raha hai?",
+            receipt_question,
         )
     if any(word in normalized for word in ("namaste", "hello", "hi", "haan")):
-        return "Namaste. Main yahin hoon, aaram se bolo. Aaj dil mein kya chal raha hai?"
-    return "Haan, main sun raha hoon. Thoda aur batao, main bina judge kiye saath hoon."
+        return _with_receipt_question(
+            "Namaste. Main yahin hoon, aaram se bolo. Aaj dil mein kya chal raha hai?",
+            receipt_question,
+        )
+    return _with_receipt_question(
+        "Haan, main sun raha hoon. Thoda aur batao, main bina judge kiye saath hoon.",
+        receipt_question,
+    )
+
+
+def _receipt_question(memory_text: str) -> str | None:
+    if "[memory_receipt]" not in memory_text:
+        return None
+    if "recurring_work_stressor" in memory_text or "manager pressure" in memory_text:
+        return "Kya main office/manager pressure wali baat yaad rakhun?"
+    return "Kya main yeh baat yaad rakhun?"
+
+
+def _with_receipt_question(response: str, receipt_question: str | None) -> str:
+    if not receipt_question:
+        return response
+    if receipt_question.casefold() in response.casefold():
+        return response
+    return f"{response} {receipt_question}"
 
 
 def _remembered_name(memory_text: str) -> str | None:

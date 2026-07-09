@@ -175,6 +175,59 @@ def test_prompt_builder_updates_same_session_history_after_complete_turn() -> No
     assert messages[-1].content == "[latest_user] naam yaad hai?"
 
 
+def test_prompt_builder_adds_bounded_memory_receipt_prompt() -> None:
+    builder = PromptContextBuilder(system_prompt="system", initial_context=[])
+
+    messages, diagnostics = builder.build(
+        "aaj office ka din heavy tha",
+        turn_memory_receipts=[
+            {
+                "memory_id": "memory_semantic_work_stress_manager",
+                "kind": "semantic",
+                "label": "recurring_work_stressor",
+                "content": "User has previously mentioned work stress related to office or manager pressure.",
+                "confidence_score": 0.68,
+                "importance_score": 0.72,
+                "evidence_summary": "Recurring work/office stress signal from local turns.",
+            }
+        ],
+    )
+    joined = "\n".join(message.content for message in messages)
+
+    assert "[memory_receipt]" in joined
+    assert "ask at most one short voice-only confirmation question" in joined
+    assert "Potential memory" in joined
+    assert diagnostics["memory_receipts_available"] == 1
+    assert messages[-1].content == "[latest_user] aaj office ka din heavy tha"
+
+
+def test_prompt_builder_excludes_rejected_memory_blocks() -> None:
+    builder = PromptContextBuilder(
+        system_prompt="system",
+        initial_context={
+            "recent_turns": [],
+            "memory_blocks": [
+                {
+                    **_memory(
+                        "m_rejected",
+                        "semantic",
+                        "recurring_work_stressor",
+                        "Rejected memory should not appear.",
+                        importance=0.9,
+                    ),
+                    "receipt_state": "rejected",
+                }
+            ],
+        },
+    )
+
+    messages, diagnostics = builder.build("office bad day tha")
+    joined = "\n".join(message.content for message in messages)
+
+    assert "Rejected memory should not appear." not in joined
+    assert diagnostics["memory_blocks_selected"] == 0
+
+
 def _turn(
     turn_id: str,
     role: str,
