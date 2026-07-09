@@ -26,8 +26,7 @@ class PersonaLLMProvider(LLMProvider):
         max_output_chars: int,
     ) -> AsyncIterator[LLMToken]:
         started = time.perf_counter()
-        user_text = _latest_user_text(messages)
-        response = _clip_text(_persona_response(user_text), max_output_chars=max_output_chars)
+        response = _clip_text(_persona_response(messages), max_output_chars=max_output_chars)
         for chunk in _chunk_text(response, chunk_chars=36):
             await asyncio.sleep(0)
             yield LLMToken(
@@ -124,8 +123,29 @@ def _latest_user_text(messages: list[LLMMessage]) -> str:
     return ""
 
 
-def _persona_response(user_text: str) -> str:
+def _persona_response(messages: list[LLMMessage]) -> str:
+    user_text = _latest_user_text(messages)
     normalized = user_text.casefold()
+    memory_text = "\n".join(
+        message.content for message in messages if message.role == "system"
+    ).casefold()
+    remembered_name = _remembered_name(memory_text)
+    if remembered_name and any(
+        phrase in normalized
+        for phrase in (
+            "mera naam",
+            "my name",
+            "naam kya",
+            "kya yaad",
+            "remember me",
+            "mujhe kya bulate",
+        )
+    ):
+        return f"Haan, mujhe yaad hai ki aapko {remembered_name} bulana hai."
+    if "hinglish" in memory_text and any(
+        phrase in normalized for phrase in ("kaise baat", "kis style", "remember")
+    ):
+        return "Haan, main Hinglish mein hi natural tareeke se baat karunga."
     if any(word in normalized for word in ("mood", "theek nahi", "udaas", "pareshan", "off")):
         return (
             "Samajh raha hoon. Aaj mood theek nahi hai toh thoda dheere chalte hain. "
@@ -134,6 +154,17 @@ def _persona_response(user_text: str) -> str:
     if any(word in normalized for word in ("namaste", "hello", "hi", "haan")):
         return "Namaste. Main yahin hoon, aaram se bolo. Aaj dil mein kya chal raha hai?"
     return "Haan, main sun raha hoon. Thoda aur batao, main bina judge kiye saath hoon."
+
+
+def _remembered_name(memory_text: str) -> str | None:
+    marker = "user prefers to be called "
+    start = memory_text.find(marker)
+    if start < 0:
+        return None
+    value = memory_text[start + len(marker) :].split(".", 1)[0].strip()
+    if not value or len(value) > 32:
+        return None
+    return value.title()
 
 
 def _chunk_text(text: str, *, chunk_chars: int) -> list[str]:

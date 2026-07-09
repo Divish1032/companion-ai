@@ -34,6 +34,16 @@ class HttpSessionApiClient implements SessionApiClient {
   @override
   Future<LiveKitSessionInfo> createSession({required String deviceId}) async {
     final context = await database.readRecentTranscriptContext(limit: 12);
+    String? latestUserText;
+    for (final message in context) {
+      if (message.role == 'user') {
+        latestUserText = message.messageText;
+      }
+    }
+    final memories = await database.readMemoryContext(
+      latestUserText: latestUserText ?? '',
+      limit: 6,
+    );
     final response = await http.post(
       Uri.parse('$baseUrl/v1/session'),
       headers: const {'content-type': 'application/json'},
@@ -47,7 +57,28 @@ class HttpSessionApiClient implements SessionApiClient {
                   ? 'assistant'
                   : 'user',
               'text': message.messageText,
+              'status': message.status,
+              'confidence': message.sttConfidence,
+              'source': 'recent_turns',
               'created_at_ms': message.createdAt,
+            },
+        ],
+        'memory_context': [
+          for (final memory in memories)
+            {
+              'memory_id': memory.id,
+              'kind': memory.kind,
+              'label': memory.label,
+              'content': memory.content,
+              'source_turn_ids': jsonDecode(memory.sourceTurnIdsJson),
+              'source_role': memory.sourceRole,
+              'transcript_status': memory.transcriptStatus,
+              'stt_confidence': memory.sttConfidence,
+              'created_at_ms': memory.createdAt,
+              'updated_at_ms': memory.updatedAt,
+              'last_used_at_ms': memory.lastUsedAt,
+              'confidence_score': memory.confidenceScore,
+              'importance_score': memory.importanceScore,
             },
         ],
       }),

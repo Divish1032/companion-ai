@@ -337,6 +337,138 @@ def test_crisis_final_transcript_uses_safety_response_without_llm() -> None:
     assert transport.audio_publications == 0
 
 
+def test_crisis_final_transcript_uses_safety_response_for_devanagari_input() -> None:
+    transport = MemoryAgentTransport()
+    llm = CountingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("मैं मर जाना चाहता हूं"),
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert assistant["status"] == "safety_override"
+    assert assistant["safety_reason"] == "crisis_keyword"
+    assert "112" in str(assistant["text"])
+    assert llm.calls == 0
+
+
+def test_previous_session_memory_reaches_llm_response_path() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(
+            recent_context={
+                "recent_turns": [],
+                "memory_blocks": [
+                    {
+                        "memory_id": "memory_preferred_name",
+                        "kind": "stable_fact",
+                        "label": "preferred_name",
+                        "content": "User prefers to be called Rahul.",
+                        "source_turn_ids": ["old_turn"],
+                        "source_role": "user",
+                        "transcript_status": "final",
+                        "stt_confidence": 0.99,
+                        "created_at_ms": 1,
+                        "updated_at_ms": 2,
+                        "last_used_at_ms": None,
+                        "confidence_score": 0.8,
+                        "importance_score": 0.9,
+                    }
+                ],
+            }
+        ),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("mera naam kya yaad hai"),
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert "Rahul" in str(assistant["text"])
+
+
+def test_crisis_input_is_not_overridden_by_memory_context() -> None:
+    transport = MemoryAgentTransport()
+    llm = CountingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(
+            recent_context={
+                "recent_turns": [],
+                "memory_blocks": [
+                    {
+                        "memory_id": "memory_preference",
+                        "kind": "stable_fact",
+                        "label": "safe_preference",
+                        "content": "User explicitly said: mujhe jokes pasand hai.",
+                        "source_turn_ids": ["old_turn"],
+                        "source_role": "user",
+                        "transcript_status": "final",
+                        "stt_confidence": 0.99,
+                        "created_at_ms": 1,
+                        "updated_at_ms": 2,
+                        "last_used_at_ms": None,
+                        "confidence_score": 0.8,
+                        "importance_score": 0.7,
+                    }
+                ],
+            }
+        ),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        stt_provider=StaticSTTProvider("main mar jaana chahta hoon"),
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session.run())
+        await session.started.wait()
+        for _ in range(8):
+            await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
+        for _ in range(24):
+            await transport.activity.put(pcm_silence_frame(duration_ms=30))
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert assistant["status"] == "safety_override"
+    assert assistant["safety_reason"] == "crisis_keyword"
+    assert llm.calls == 0
+
+
 def test_barge_in_stops_tts_audio_with_fade_path() -> None:
     transport = MemoryAgentTransport(audio_publish_delay_seconds=1)
     session = RealtimeAgentSession(
@@ -412,10 +544,10 @@ def test_llm_context_preserves_assistant_roles_and_updates_in_session_history() 
     first_roles = [(message.role, message.content) for message in llm.calls[0]]
     second_roles = [(message.role, message.content) for message in llm.calls[1]]
 
-    assert ("assistant", "pehla assistant reply") in first_roles
-    assert ("assistant", "legacy ai reply") in first_roles
-    assert ("assistant", "recorded reply") in second_roles
-    assert second_roles[-1] == ("user", "dusra user turn")
+    assert ("assistant", "[recent_turns] pehla assistant reply") in first_roles
+    assert ("assistant", "[recent_turns] legacy ai reply") in first_roles
+    assert ("assistant", "[recent_turns] recorded reply") in second_roles
+    assert second_roles[-1] == ("user", "[latest_user] dusra user turn")
 
 
 def test_empty_stt_result_requests_repeat_without_thinking_state() -> None:
@@ -512,7 +644,10 @@ def test_wait_until_started_does_not_cancel_agent_task() -> None:
     assert asyncio.run(scenario()) is True
 
 
-def _assignment(*, recent_context: list[dict[str, object]]) -> AgentAssignment:
+def _assignment(
+    *,
+    recent_context: dict[str, object] | list[dict[str, object]],
+) -> AgentAssignment:
     return AgentAssignment(
         session_id="session_test",
         room_name="companion_session_test",

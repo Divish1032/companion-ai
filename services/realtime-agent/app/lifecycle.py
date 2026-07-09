@@ -16,6 +16,7 @@ from app.audio_pipeline import (
     create_vad_provider,
 )
 from app.config import Settings, load_persona_settings
+from app.context import PromptContextBuilder
 from app.events import EventSequencer, TurnIdFactory
 from app.providers import (
     LLMProvider,
@@ -42,7 +43,7 @@ class AgentAssignment:
     session_id: str
     room_name: str
     expires_at_ms: int
-    recent_context: list[dict[str, object]]
+    recent_context: dict[str, object] | list[dict[str, object]]
 
 
 class AgentTransport(Protocol):
@@ -295,7 +296,11 @@ class RealtimeAgentSession:
         self.tts_provider = tts_provider or create_tts_provider(settings)
         self.safety_classifier = safety_classifier or SafetyClassifier()
         self.persona = load_persona_settings(settings)
-        self._conversation_history = self._initial_conversation_history()
+        self.context_builder = PromptContextBuilder(
+            system_prompt=self.persona.system_prompt,
+            initial_context=assignment.recent_context,
+            max_recent_messages=self.persona.history_messages,
+        )
         self.sequencer = EventSequencer(assignment.session_id)
         self.turn_ids = TurnIdFactory(assignment.session_id)
         self._stt_streams: dict[str, _STTTurnStream] = {}
@@ -379,9 +384,7 @@ class RealtimeAgentSession:
         turn_id = self.turn_ids.next()
         await self._emit_state("thinking", turn_id=turn_id)
 
-        prompt = " ".join(
-            str(item.get("text", "")) for item in self.assignment.recent_context[-2:]
-        ).strip()
+        prompt = self.context_builder.latest_recent_user_text()
         if not prompt:
             prompt = "mock pipeline turn"
 
@@ -615,7 +618,12 @@ class RealtimeAgentSession:
                 clipped=False,
                 token=None,
             )
-            self._remember_turn(user_text, decision.response_override)
+            self.context_builder.remember_complete_turn(
+                turn_id,
+                user_text,
+                decision.response_override,
+                assistant_status="safety_override",
+            )
             await self._emit_state("listening", turn_id=turn_id, safety_reason=decision.reason)
             return
 
@@ -652,7 +660,7 @@ class RealtimeAgentSession:
             clipped=clipped,
             token=last_token,
         )
-        self._remember_turn(user_text, text)
+        self.context_builder.remember_complete_turn(turn_id, user_text, text)
         await self._speak_text(turn_id, text)
         await self._emit_state("listening", turn_id=turn_id)
 
@@ -679,28 +687,16 @@ class RealtimeAgentSession:
         return clipped_text, clipped, last_token
 
     def _llm_messages(self, user_text: str) -> list[LLMMessage]:
-        messages = [LLMMessage(role="system", content=self.persona.system_prompt)]
-        messages.extend(self._conversation_history[-self.persona.history_messages :])
-        messages.append(LLMMessage(role="user", content=user_text))
-        return messages
-
-    def _initial_conversation_history(self) -> list[LLMMessage]:
-        history: list[LLMMessage] = []
-        for item in self.assignment.recent_context:
-            text = str(item.get("text", "")).strip()
-            if not text:
-                continue
-            history.append(LLMMessage(role=_llm_role(item.get("role")), content=text))
-        return history[-self.persona.history_messages :]
-
-    def _remember_turn(self, user_text: str, assistant_text: str) -> None:
-        self._conversation_history.extend(
-            [
-                LLMMessage(role="user", content=user_text),
-                LLMMessage(role="assistant", content=assistant_text),
-            ]
+        messages, diagnostics = self.context_builder.build(user_text)
+        print(
+            "prompt_context",
+            {
+                "session_id": self.assignment.session_id,
+                **diagnostics,
+            },
+            flush=True,
         )
-        self._conversation_history = self._conversation_history[-self.persona.history_messages :]
+        return messages
 
     async def _emit_assistant_partial(
         self,
@@ -1054,11 +1050,6 @@ def _clip_response_text(text: str, *, max_chars: int) -> tuple[str, bool]:
     if boundary <= 0:
         boundary = max_chars
     return text[:boundary].strip(), True
-
-
-def _llm_role(value: object) -> str:
-    role = str(value or "").strip().casefold()
-    return "assistant" if role in {"assistant", "ai"} else "user"
 
 
 class _UnavailableSTTProvider(STTProvider):

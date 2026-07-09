@@ -15,6 +15,7 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
     main.settings.livekit_api_secret = "secret"
     main.settings.livekit_url = "ws://localhost:7880"
     main.settings.max_recent_context_messages = 2
+    main.settings.max_memory_context_blocks = 1
 
     response = client.post(
         "/v1/session",
@@ -24,6 +25,10 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
                 _context_item("turn_1", "first"),
                 _context_item("turn_2", "second"),
                 _context_item("turn_3", "third", role="assistant"),
+            ],
+            "memory_context": [
+                _memory_item("memory_1", "first memory"),
+                _memory_item("memory_2", "second memory"),
             ],
         },
     )
@@ -38,6 +43,12 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
     assert "first" not in session.recent_context_json
     assert "second" in session.recent_context_json
     assert "third" in session.recent_context_json
+    assert "first memory" not in session.recent_context_json
+    assert "second memory" in session.recent_context_json
+    assigned_context = assigner.assigned_contexts[0]
+    assert isinstance(assigned_context, dict)
+    assert len(assigned_context["recent_turns"]) == 2
+    assert len(assigned_context["memory_blocks"]) == 1
     assert assigner.assigned_session_ids == [body["session_id"]]
 
     token_response = client.post(
@@ -143,10 +154,11 @@ def _client(
 ) -> tuple[TestClient, SessionStore]:
     store = SessionStore(str(tmp_path / "sessions.sqlite"))
     main.app.dependency_overrides[main.get_store] = lambda: store
-    main.app.dependency_overrides[main.get_agent_assigner] = (
-        lambda: assigner or _FakeAgentAssigner()
+    main.app.dependency_overrides[main.get_agent_assigner] = lambda: (
+        assigner or _FakeAgentAssigner()
     )
     main.settings.max_recent_context_messages = 12
+    main.settings.max_memory_context_blocks = 6
     main.settings.session_create_limit_per_day = 50
     main.settings.token_mint_limit_per_session = 20
     main.settings.max_session_seconds = 1200
@@ -163,12 +175,32 @@ def _context_item(turn_id: str, text: str, *, role: str = "user") -> dict[str, o
     }
 
 
+def _memory_item(memory_id: str, content: str) -> dict[str, object]:
+    return {
+        "memory_id": memory_id,
+        "kind": "stable_fact",
+        "label": "safe_preference",
+        "content": content,
+        "source_turn_ids": ["turn_1"],
+        "source_role": "user",
+        "transcript_status": "final",
+        "stt_confidence": 0.99,
+        "created_at_ms": 1,
+        "updated_at_ms": 2,
+        "last_used_at_ms": None,
+        "confidence_score": 0.8,
+        "importance_score": 0.7,
+    }
+
+
 class _FakeAgentAssigner:
     def __init__(self) -> None:
         self.assigned_session_ids: list[str] = []
+        self.assigned_contexts: list[dict[str, object]] = []
 
     async def assign(self, *, session) -> None:  # noqa: ANN001
         self.assigned_session_ids.append(session.session_id)
+        self.assigned_contexts.append(session.recent_context())
 
 
 class _FailingAgentAssigner:

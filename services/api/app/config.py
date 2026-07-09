@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     livekit_token_ttl_seconds: int = 600
     max_session_seconds: int = 1200
     max_recent_context_messages: int = 12
+    max_memory_context_blocks: int = 6
     session_create_limit_per_day: int = 50
     token_mint_limit_per_session: int = 20
 

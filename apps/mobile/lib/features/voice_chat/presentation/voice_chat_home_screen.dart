@@ -74,7 +74,7 @@ class VoiceChatHomeScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('Clear chat history?'),
         content: const Text(
-          'This removes the local transcript stored on this device.',
+          'This removes local transcripts and memory stored on this device.',
         ),
         actions: [
           TextButton(

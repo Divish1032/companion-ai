@@ -6,7 +6,7 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 Active phase: Sprint 6 LLM integration and persona complete.
 
-Sprint -1 through Sprint 6 are complete and green. Sprint 6 turns final user transcripts into concise Hindi/Hinglish assistant text responses through the LLM provider interface, emits assistant transcript partial/final events, and applies crisis safety overrides before any playback path. Real TTS, auth, text input, and video/avatar remain out of scope.
+Sprint -1 through Sprint 7 are complete and green. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds local-only conversation memory for bounded prompt context across sessions. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
 
 ## Repo Layout
 
@@ -96,6 +96,8 @@ For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/`
 Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi transcript for "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai" with Vosk metrics logged by realtime-agent.
 
 Sprint 6 assistant text responses use the persona prompt, short history window, and response length limits in `config/personas/hindi_companion_v1.toml`. To use Sarvam chat completions, set `AGENT_LLM_PROVIDER=sarvam` and provide `AGENT_SARVAM_API_KEY` or root `SARVAM_API_KEY`; without a working provider the turn emits the configured graceful fallback response. The Sarvam-30B adapter was live-key smoke tested through `/v1/chat/completions`; it disables reasoning for short voice-turn responses so assistant content is returned within the small token cap.
+
+Sprint 7.5 memory remains on device in the mobile Drift database. The app extracts conservative stable facts and previous-session summaries from complete final turns, excludes low-confidence/replaced/sensitive/noisy items, and sends only bounded structured `recent_turns` plus `memory_blocks` when starting a new voice session. The API stores that bundle only with the active session assignment, and the realtime agent builds redacted, source-labelled LLM prompt context with latest user text as authoritative.
 
 ## Git Hooks
 

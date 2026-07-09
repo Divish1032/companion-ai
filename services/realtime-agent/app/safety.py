@@ -18,6 +18,17 @@ CRISIS_KEYWORDS = (
     "suicide",
     "khud ko maar",
     "khud ko nuksan",
+    "main mar jana chahta hoon",
+    "meri jaan dena chahta hoon",
+    "mai mar jana chahta hu",
+    "मैं मर जाना चाहता हूं",
+    "मैं मर जाना चाहता हूँ",
+    "मैं अपनी जान देना चाहता हूं",
+    "मैं अपनी जान देना चाहता हूँ",
+    "जीने का मन नहीं करता",
+    "सब खत्म करना है",
+    "खुद को मार",
+    "खुद को नुकसान",
 )
 
 PROMPT_INJECTION_KEYWORDS = (

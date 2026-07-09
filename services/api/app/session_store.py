@@ -18,11 +18,21 @@ class SessionRecord:
     status: str
     recent_context_json: str
 
-    def recent_context(self) -> list[dict[str, object]]:
+    def recent_context(self) -> dict[str, object]:
         data = json.loads(self.recent_context_json)
+        if isinstance(data, dict):
+            recent_turns = data.get("recent_turns")
+            memory_blocks = data.get("memory_blocks")
+            return {
+                "recent_turns": recent_turns if isinstance(recent_turns, list) else [],
+                "memory_blocks": memory_blocks if isinstance(memory_blocks, list) else [],
+            }
         if not isinstance(data, list):
-            return []
-        return [item for item in data if isinstance(item, dict)]
+            return {"recent_turns": [], "memory_blocks": []}
+        return {
+            "recent_turns": [item for item in data if isinstance(item, dict)],
+            "memory_blocks": [],
+        }
 
 
 class SessionStore:
@@ -69,7 +79,7 @@ class SessionStore:
         *,
         device_id: str,
         max_session_seconds: int,
-        recent_context: list[dict[str, object]],
+        recent_context: dict[str, object] | list[dict[str, object]],
         session_create_limit_per_day: int,
     ) -> SessionRecord:
         now = datetime.now(UTC)

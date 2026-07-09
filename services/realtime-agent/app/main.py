@@ -13,7 +13,7 @@ class AgentAssignRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     room_name: str = Field(min_length=1, max_length=128)
     expires_at_ms: int
-    recent_context: list[dict[str, object]] = Field(default_factory=list)
+    recent_context: dict[str, object] | list[dict[str, object]] = Field(default_factory=dict)
 
 
 class AgentCancelRequest(BaseModel):

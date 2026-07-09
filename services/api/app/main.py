@@ -19,12 +19,32 @@ class RecentTranscriptItem(BaseModel):
     turn_id: str = Field(min_length=1, max_length=128)
     role: str = Field(pattern="^(user|ai|assistant)$")
     text: str = Field(min_length=1, max_length=1000)
+    status: str = Field(default="final", max_length=64)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    source: str = Field(default="recent_turns", max_length=64)
     created_at_ms: int
+
+
+class MemoryContextItem(BaseModel):
+    memory_id: str = Field(min_length=1, max_length=160)
+    kind: str = Field(pattern="^(stable_fact|session_summary)$")
+    label: str = Field(min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=800)
+    source_turn_ids: list[str] = Field(default_factory=list, max_length=8)
+    source_role: str = Field(max_length=32)
+    transcript_status: str = Field(max_length=128)
+    stt_confidence: float | None = Field(default=None, ge=0, le=1)
+    created_at_ms: int
+    updated_at_ms: int
+    last_used_at_ms: int | None = None
+    confidence_score: float = Field(ge=0, le=1)
+    importance_score: float = Field(ge=0, le=1)
 
 
 class CreateSessionRequest(BaseModel):
     device_id: str = Field(min_length=8, max_length=128)
     recent_transcript_context: list[RecentTranscriptItem] = Field(default_factory=list)
+    memory_context: list[MemoryContextItem] = Field(default_factory=list)
 
 
 class CreateSessionResponse(BaseModel):
@@ -82,11 +102,17 @@ async def create_session(
         item.model_dump()
         for item in request.recent_transcript_context[-settings.max_recent_context_messages :]
     ]
+    bounded_memory = [
+        item.model_dump() for item in request.memory_context[-settings.max_memory_context_blocks :]
+    ]
     try:
         session = session_store.create_session(
             device_id=request.device_id,
             max_session_seconds=settings.max_session_seconds,
-            recent_context=bounded_context,
+            recent_context={
+                "recent_turns": bounded_context,
+                "memory_blocks": bounded_memory,
+            },
             session_create_limit_per_day=settings.session_create_limit_per_day,
         )
     except ActiveSessionExists as error:

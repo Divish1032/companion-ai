@@ -323,7 +323,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
     await ref
         .read(appDatabaseProvider)
-        .upsertMessage(
+        .upsertUserMessageAndExtractMemory(
           ChatMessagesCompanion.insert(
             id: 'msg_${event.sessionId}_${turnId}_user',
             sessionId: event.sessionId,
@@ -333,6 +333,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             status: status,
             language: language,
             createdAt: createdAt,
+            sttConfidence: Value(
+              (event.payload['confidence'] as num?)?.toDouble(),
+            ),
             latencyJson: Value(
               jsonEncode({
                 'provider': event.payload['provider'],
@@ -361,7 +364,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
     await ref
         .read(appDatabaseProvider)
-        .upsertMessage(
+        .upsertAssistantMessageAndSummarizeTurn(
           ChatMessagesCompanion.insert(
             id: 'msg_${event.sessionId}_${turnId}_assistant',
             sessionId: event.sessionId,
