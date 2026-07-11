@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/review-checklist-v1",
+  "title": "Fixture Review Checklist",
+  "description": "Per-fixture human review template. Tracks reviewer sign-off, ambiguity findings, and effort.",
+  "type": "object",
+  "required": ["fixture_id", "reviewer", "review_date", "verdict"],
+  "properties": {
+    "fixture_id": {
+      "type": "string",
+      "description": "The fixture being reviewed."
+    },
+    "reviewer": {
+      "type": "string",
+      "description": "Name or GitHub handle of the reviewer."
+    },
+    "reviewer_role": {
+      "type": "string",
+      "enum": ["product_owner", "hindi_reviewer", "maintainer"],
+      "description": "Role of the reviewer per fixture governance (section 7.3)."
+    },
+    "review_date": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO date when review was completed."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["accepted", "accepted_with_changes", "rejected", "needs_language_review"],
+      "description": "Review outcome. needs_language_review means a Hindi/Hinglish reviewer must also sign off."
+    },
+    "effort_minutes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Time spent reviewing this fixture."
+    },
+    "checks": {
+      "type": "object",
+      "required": [
+        "natural_language_quality",
+        "memory_semantics_correct",
+        "route_classification_correct",
+        "safety_classification_correct",
+        "expected_memory_ids_correct",
+        "no_overlap_with_existing_tests",
+        "deterministic_expectations_valid"
+      ],
+      "properties": {
+        "natural_language_quality": {
+          "type": "boolean",
+          "description": "Hindi/Hinglish text is natural and professionally fluent."
+        },
+        "memory_semantics_correct": {
+          "type": "boolean",
+          "description": "The expected memory labels, kinds, and content patterns match what the real code produces."
+        },
+        "route_classification_correct": {
+          "type": "boolean",
+          "description": "The expected query route (if specified) matches the routing logic."
+        },
+        "safety_classification_correct": {
+          "type": "boolean",
+          "description": "Safety assertions correctly reflect the crisis/safety exclusion rules."
+        },
+        "expected_memory_ids_correct": {
+          "type": "boolean",
+          "description": "The expected labels and IDs match deterministic code behaviour for the given inputs."
+        },
+        "no_overlap_with_existing_tests": {
+          "type": "boolean",
+          "description": "This fixture does not duplicate an existing direct test in app_database_memory_test.dart or test_context.py."
+        },
+        "deterministic_expectations_valid": {
+          "type": "boolean",
+          "description": "All expectations (storage_expect, query.expect, agent_context_expect) produce correct pass/fail under deterministic replay."
+        }
+      }
+    },
+    "ambiguity_findings": {
+      "type": "string",
+      "description": "Anything the reviewer was unsure about — language nuance, edge-case classification, ID stability."
+    },
+    "changes_requested": {
+      "type": "string",
+      "description": "What must change before this fixture is accepted."
+    },
+    "review_pilot_round": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Review round number (1 = initial 10-fixture pilot)."
+    }
+  }
+}

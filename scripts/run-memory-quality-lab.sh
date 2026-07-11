@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+# =============================================================================
+# Memory Quality Lab — deterministic regression gate for Hindi/Hinglish memory.
+#
+# Usage:
+#   scripts/run-memory-quality-lab.sh           # full run
+#   scripts/run-memory-quality-lab.sh --dry-run # list what would run
+#   scripts/run-memory-quality-lab.sh --ci      # silent, exit code only
+#   scripts/run-memory-quality-lab.sh --baseline  # save current as baseline
+#   scripts/run-memory-quality-lab.sh --compare <baseline.json>  # diff
+#
+# CI integration:
+#   - Schedule only after verifying stability locally for ≥10 consecutive runs.
+#   - Keep fast gate (run-memory-eval.sh) on every push; lab on PR only.
+#   - Retention: 7 days for reports, 30 days for baselines in CI artifacts.
+#   - Restrict access to repository maintainers only.
+#   - The lab must never replace the fast deterministic gate.
+#
+# Performance:
+#   - Fast gate (run-memory-eval.sh):        target <10s  (measured ~7s)
+#   - Full lab (run-memory-quality-lab.sh):  target <90s  (measured ~52s)
+#   - If full lab exceeds 120s, CI should flag but not block.
+# =============================================================================
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -574,6 +596,11 @@ echo "MD:   $report_md"
 echo ""
 echo "Ready: $([ "$ready" -eq 1 ] && echo 'yes' || echo 'no')"
 echo "Pass: $total_pass  Fail: $total_fail  Total: $((total_pass + total_fail))"
+
+# Performance guardrail: warn if lab is unexpectedly slow
+if [[ $total_duration_ms -gt 120000 ]]; then
+  echo "WARNING: lab took ${total_duration_ms}ms, exceeds 120s guardrail." >&2
+fi
 
 # Cleanup temp
 rm -rf "$tmp_dir"
