@@ -16,9 +16,14 @@ PYTHON="python3"
 # CLI
 # ---------------------------------------------------------------------------
 DRY_RUN=false
+MODE="run"
+BASELINE_REPORT=""
+COMPARE_BASELINE=""
 while (($# > 0)); do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
+    --baseline) MODE="baseline" ;;
+    --compare) MODE="compare"; COMPARE_BASELINE="$2"; shift ;;
     *) echo "Unknown flag: $1"; exit 2 ;;
   esac
   shift
@@ -424,7 +429,146 @@ echo "" >> "$report_md"
 echo "Report contains no transcript, memory, packet, or prompt text." >> "$report_md"
 
 # ---------------------------------------------------------------------------
-# Output
+# Baseline mode: save report as named baseline
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "baseline" ]]; then
+  baseline_name="baseline_$(date -u +%Y%m%d_%H%M%S)"
+  baseline_file="$report_dir/$baseline_name.json"
+  cp "$report_json" "$baseline_file"
+  echo ""
+  echo "Baseline saved: $baseline_file"
+  rm -rf "$tmp_dir"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Compare mode: diff against a baseline report
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "compare" ]]; then
+  if [[ ! -f "$COMPARE_BASELINE" ]]; then
+    echo "ERROR: baseline file not found: $COMPARE_BASELINE" >&2
+    rm -rf "$tmp_dir"
+    exit 4
+  fi
+
+  comparison_json="$report_dir/comparison_$(date -u +%Y%m%d_%H%M%S).json"
+  $PYTHON -c "
+import json
+
+with open('$COMPARE_BASELINE', encoding='utf-8') as f:
+    baseline = json.load(f)
+with open('$report_json', encoding='utf-8') as f:
+    candidate = json.load(f)
+
+baseline_results = {r['fixture_id']: r for r in baseline.get('results', [])}
+candidate_results = {r['fixture_id']: r for r in candidate.get('results', [])}
+
+all_ids = sorted(set(list(baseline_results.keys()) + list(candidate_results.keys())))
+
+regressions = []
+improvements = []
+unchanged = []
+new_fixtures = []
+removed_fixtures = []
+
+for fid in all_ids:
+    bl = baseline_results.get(fid)
+    cd = candidate_results.get(fid)
+    if bl is None:
+        new_fixtures.append(fid)
+    elif cd is None:
+        removed_fixtures.append(fid)
+    elif bl.get('passed') and not cd.get('passed'):
+        regressions.append(fid)
+    elif not bl.get('passed') and cd.get('passed'):
+        improvements.append(fid)
+    else:
+        unchanged.append(fid)
+
+comparison = {
+    'baseline': {
+        'run_id': baseline.get('run_id'),
+        'git_revision': baseline.get('git_revision'),
+        'total': baseline['summary']['total'],
+        'pass': baseline['summary']['pass'],
+        'fail': baseline['summary']['fail'],
+        'ready': baseline['summary']['ready'],
+    },
+    'candidate': {
+        'run_id': candidate.get('run_id'),
+        'git_revision': candidate.get('git_revision'),
+        'total': candidate['summary']['total'],
+        'pass': candidate['summary']['pass'],
+        'fail': candidate['summary']['fail'],
+        'ready': candidate['summary']['ready'],
+    },
+    'regressions': regressions,
+    'improvements': improvements,
+    'unchanged': unchanged,
+    'new_fixtures': new_fixtures,
+    'removed_fixtures': removed_fixtures,
+    'regression_count': len(regressions),
+    'improvement_count': len(improvements),
+    'verdict': 'reject' if regressions else ('improved' if improvements else 'unchanged'),
+}
+
+with open('$comparison_json', 'w', encoding='utf-8') as f:
+    json.dump(comparison, f, indent=2, ensure_ascii=False)
+"
+
+  echo ""
+  echo "=== Baseline vs Candidate ==="
+  echo "Baseline: $COMPARE_BASELINE"
+  echo "Candidate: $report_json"
+  echo "Comparison: $comparison_json"
+  echo ""
+
+  $PYTHON -c "
+import json
+with open('$comparison_json', encoding='utf-8') as f:
+    c = json.load(f)
+
+bl = c['baseline']
+cd = c['candidate']
+print(f\"Baseline: {bl['pass']}P/{bl['fail']}F/{bl['total']}T  (ready: {bl['ready']})\")
+print(f\"Candidate: {cd['pass']}P/{cd['fail']}F/{cd['total']}T  (ready: {cd['ready']})\")
+print()
+print(f\"Regressions: {c['regression_count']}\")
+for r in c['regressions']:
+    print(f'  FAIL (was pass): {r}')
+print(f\"Improvements: {c['improvement_count']}\")
+for i in c['improvements']:
+    print(f'  PASS (was fail): {i}')
+print(f\"Unchanged: {len(c['unchanged'])}\")
+if c['new_fixtures']:
+    print(f\"New fixtures: {len(c['new_fixtures'])}\")
+    for n in c['new_fixtures']:
+        print(f'  NEW: {n}')
+if c['removed_fixtures']:
+    print(f\"Removed fixtures: {len(c['removed_fixtures'])}\")
+    for r in c['removed_fixtures']:
+        print(f'  REMOVED: {r}')
+print()
+print(f\"Verdict: {c['verdict'].upper()}\")
+"
+
+  rm -rf "$tmp_dir"
+
+  if $PYTHON -c "
+import json, sys
+with open('$comparison_json', encoding='utf-8') as f:
+    c = json.load(f)
+sys.exit(0 if c['regression_count'] == 0 else 1)
+" 2>/dev/null; then
+    exit 0
+  else
+    echo "FAILED: candidate has regressions."
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Output (default run mode)
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Report ==="

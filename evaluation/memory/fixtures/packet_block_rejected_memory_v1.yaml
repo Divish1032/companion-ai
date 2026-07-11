@@ -1,0 +1,46 @@
+schema_version: 1
+id: packet_block_rejected_memory_v1
+protected: true
+tags: [packet, rejected, exclusion, protocol, P0]
+sessions:
+  - session_key: s1
+    turns:
+      - turn_key: u1
+        role: user
+        transcript_status: final
+        stt_confidence: 0.96
+        offset_ms: 0
+        text: "office mein manager bahut pressure deta hai"
+      - turn_key: a1
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Samjha, office pressure tough hota hai."
+      - turn_key: u2
+        role: user
+        transcript_status: final
+        stt_confidence: 0.96
+        offset_ms: 5000
+        text: "nahi yaad mat rakhna"
+      - turn_key: a2
+        role: assistant
+        status: final
+        offset_ms: 6000
+        text: "Theek hai, nahi rakhoonga."
+storage_expect:
+  must_exist_labels: [recurring_work_stressor]
+  must_not_exist_labels: []
+query:
+  text: "office ka din kaisa tha?"
+  expect:
+    must_not_include_labels: [recurring_work_stressor]
+    must_include_labels: []
+    max_packets: 4
+    latest_user_authoritative: true
+agent_context_expect:
+  must_contain_labels: []
+  must_contain_text: []
+  must_not_contain_labels: [recurring_work_stressor]
+  must_not_contain_text: []
+  max_memory_blocks: 0
+  max_context_chars: 500
