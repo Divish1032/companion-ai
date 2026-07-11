@@ -3,13 +3,21 @@ import json
 import time
 
 from app.config import Settings
-from app.audio_pipeline import CanonicalAudioFrame, pcm_silence_frame, pcm_sine_frame
+from app.audio_pipeline import (
+    CanonicalAudioFrame,
+    EndpointEvent,
+    pcm_silence_frame,
+    pcm_sine_frame,
+)
 from app.lifecycle import (
     AgentAssignment,
     MemoryAgentTransport,
     RealtimeAgentSession,
+    _looks_like_question_echo,
+    _sanitize_llm_output,
     _wait_until_started,
 )
+
 from app.providers.interfaces import (
     LLMMessage,
     LLMProvider,
@@ -20,6 +28,12 @@ from app.providers.interfaces import (
     TranscriptEvent,
 )
 from app.providers.mock import MockSTTProvider
+
+
+def test_query_echo_guard_only_matches_question_restatement() -> None:
+    assert _looks_like_question_echo("मेरा नाम क्या है", "मेरा नाम क्या है?")
+    assert not _looks_like_question_echo("मेरा नाम क्या है", "मुझे आपका नाम अभी पता नहीं है।")
+    assert not _looks_like_question_echo("दुनिया कैसे बनी", "यह एक बड़ा वैज्ञानिक सवाल है।")
 
 
 def test_agent_emits_state_sequence_and_filler_before_fake_audio() -> None:
@@ -544,13 +558,13 @@ def test_llm_context_preserves_assistant_roles_and_updates_in_session_history() 
     first_roles = [(message.role, message.content) for message in llm.calls[0]]
     second_roles = [(message.role, message.content) for message in llm.calls[1]]
 
-    assert ("assistant", "[recent_turns] pehla assistant reply") in first_roles
-    assert ("assistant", "[recent_turns] legacy ai reply") in first_roles
-    assert ("assistant", "[recent_turns] recorded reply") in second_roles
-    assert second_roles[-1] == ("user", "[latest_user] dusra user turn")
+    assert ("assistant", "pehla assistant reply") in first_roles
+    assert ("assistant", "legacy ai reply") in first_roles
+    assert ("assistant", "recorded reply") in second_roles
+    assert second_roles[-1] == ("user", "dusra user turn")
 
 
-def test_query_time_memory_lookup_response_reaches_llm_context() -> None:
+def test_query_time_memory_lookup_response_reaches_llm_context(capsys) -> None:  # noqa: ANN001
     transport = MemoryAgentTransport()
     llm = RecordingLLMProvider()
     session = RealtimeAgentSession(
@@ -565,6 +579,8 @@ def test_query_time_memory_lookup_response_reaches_llm_context() -> None:
             session._respond_to_final_transcript("session_test:turn:0005", "office bad day tha")
         )
         request = await _wait_for_decoded_event_type(transport, "memory_lookup_request")
+        assert request["memory_retrieval_strategy"] == "hybrid_vector"
+        assert request["memory_reranker_strategy"] == "deterministic"
         await session._handle_client_data_event(
             json.dumps(
                 {
@@ -584,6 +600,12 @@ def test_query_time_memory_lookup_response_reaches_llm_context() -> None:
     context_text = "\n".join(message.content for message in llm.calls[0])
     assert "[semantic_memory]" in context_text
     assert "manager pressure" in context_text
+    logs = capsys.readouterr().out
+    assert "memory_lookup_metrics" in logs
+    assert "candidates_returned" in logs
+    assert "candidates_injected" in logs
+    assert "context_char_budget" in logs
+    assert "retrieval_strategy" in logs
 
 
 def test_query_time_memory_lookup_can_carry_pending_receipt_prompt() -> None:
@@ -653,7 +675,13 @@ def test_query_time_memory_lookup_timeout_falls_back_without_memory() -> None:
     assert len(llm.calls) == 1
     context_text = "\n".join(message.content for message in llm.calls[0])
     assert "manager pressure" not in context_text
-    assert context_text.endswith("[latest_user] office bad day tha")
+    assert context_text.endswith("office bad day tha")
+
+
+def test_llm_output_sanitizes_internal_context_markers() -> None:
+    assert _sanitize_llm_output(
+        "[recent_turns] Haan, main sun raha hoon. [latest_user]"
+    ) == "Haan, main sun raha hoon."
 
 
 def test_stale_memory_lookup_response_is_ignored_until_matching_response_arrives() -> None:
@@ -810,6 +838,62 @@ def test_new_final_transcript_cancels_overlapping_response_task() -> None:
     assert asyncio.run(scenario()) is True
 
 
+def test_continuation_before_response_is_coalesced_into_original_turn() -> None:
+    transport = MemoryAgentTransport()
+    llm = CancelThenReplyLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(vad_provider="energy"),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._handle_final_transcript(
+            "session_test:turn:0001",
+            TranscriptEvent(
+                text="पहला वाक्य",
+                is_final=True,
+                confidence=0.99,
+                provider="test-static",
+                model="test",
+            ),
+        )
+        await llm.first_call_started.wait()
+
+        await session._handle_endpoint_event(
+            EndpointEvent(
+                type="speech_start",
+                turn_id="session_test:turn:0002",
+                elapsed_ms=100,
+            )
+        )
+        await session._handle_final_transcript(
+            "session_test:turn:0002",
+            TranscriptEvent(
+                text="दूसरा वाक्य",
+                is_final=True,
+                confidence=0.99,
+                provider="test-static",
+                model="test",
+            ),
+        )
+        await _wait_for_event_type(transport, "assistant_transcript_final")
+        if session._current_turn is not None:
+            await session._current_turn
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    finals = [event for event in events if event["type"] == "transcript_final"]
+    assert finals[-1]["turn_id"] == "session_test:turn:0001"
+    assert finals[-1]["text"] == "पहला वाक्य दूसरा वाक्य"
+    assert finals[-1]["coalesced"] is True
+    assert finals[-1]["coalesced_segments"] == 2
+    assert llm.cancelled_first_call is True
+    assert len(llm.calls) == 2
+
+
 def test_wait_until_started_does_not_cancel_agent_task() -> None:
     async def scenario() -> bool:
         started = asyncio.Event()
@@ -841,14 +925,20 @@ def _assignment(
 
 
 def _settings(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "livekit_api_key": "devkey",
+        "livekit_api_secret": "secret",
+        "enable_livekit_rtc": False,
+        "max_idle_seconds": 1,
+        "fake_audio_ms": 20,
+        "tts_provider": "mock",
+        # Keep lifecycle tests fast; endpointing-specific tests cover the
+        # production coalescing window explicitly.
+        "vad_coalescing_silence_ms": 600,
+    }
+    values.update(overrides)
     return Settings(
-        livekit_api_key="devkey",
-        livekit_api_secret="secret",
-        enable_livekit_rtc=False,
-        max_idle_seconds=1,
-        fake_audio_ms=20,
-        tts_provider="mock",
-        **overrides,
+        **values,
     )
 
 
@@ -1000,6 +1090,30 @@ class CountingLLMProvider(LLMProvider):
     ):
         self.calls += 1
         yield LLMToken(text="normal reply", provider="test-counting", model="test")
+
+
+class CancelThenReplyLLMProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls: list[list[LLMMessage]] = []
+        self.first_call_started = asyncio.Event()
+        self.cancelled_first_call = False
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        language: str,
+        *,
+        max_output_chars: int,
+    ):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            self.first_call_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled_first_call = True
+                raise
+        yield LLMToken(text="combined reply", provider="test-coalesced", model="test")
 
 
 class RecordingLLMProvider(LLMProvider):

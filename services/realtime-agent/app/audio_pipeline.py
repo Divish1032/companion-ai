@@ -27,6 +27,7 @@ class VadConfig:
     pre_speech_buffer_ms: int = 240
     endpoint_silence_ms: int = 600
     continuation_silence_ms: int = 1100
+    coalescing_silence_ms: int = 1500
     forced_endpoint_ms: int = 9000
 
 
@@ -185,9 +186,12 @@ class EndpointingStateMachine:
                 events.extend(self._commit(reason="forced_endpoint"))
             elif self.state == EndpointState.ENDPOINT_CANDIDATE:
                 required_silence = (
-                    self.config.continuation_silence_ms
+                    max(
+                        self.config.continuation_silence_ms,
+                        self.config.coalescing_silence_ms,
+                    )
                     if _suggests_continuation(partial_transcript)
-                    else self.config.endpoint_silence_ms
+                    else self.config.coalescing_silence_ms
                 )
                 if self._silence_ms >= required_silence:
                     events.extend(self._commit(reason="silence"))

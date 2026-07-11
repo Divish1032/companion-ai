@@ -98,7 +98,10 @@ class SessionStore:
                 (device_id, now_ms),
             ).fetchone()
             if active is not None:
-                raise ActiveSessionExists(_row_to_session(active))
+                # Session creation is idempotent for the anonymous device. The
+                # caller will re-assign the room agent, which allows recovery
+                # after an app or agent restart without creating a second room.
+                return _row_to_session(active)
 
             counter_value = self._increment_counter(
                 connection,

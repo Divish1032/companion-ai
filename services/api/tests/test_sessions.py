@@ -5,6 +5,7 @@ from livekit import api
 
 from app import main
 from app.agent_assignment import AgentAssignmentFailed
+from app.embedding_service import ModelServingUnavailable, parse_retrieval_plan
 from app.session_store import SessionStore
 
 
@@ -72,8 +73,8 @@ def test_one_active_session_per_device_until_end(tmp_path: Path) -> None:
     assert first.status_code == 200
 
     second = client.post("/v1/session", json={"device_id": "anon_test_device"})
-    assert second.status_code == 409
-    assert second.json()["detail"]["code"] == "active_session_exists"
+    assert second.status_code == 200
+    assert second.json()["session_id"] == first.json()["session_id"]
 
     ended = client.post(
         "/v1/session/end",
@@ -116,17 +117,16 @@ def test_session_counter_is_durable(tmp_path: Path) -> None:
     )
 
     second_store = SessionStore(str(store_path))
-    try:
-        second_store.create_session(
-            device_id="anon_test_device",
-            max_session_seconds=1200,
-            recent_context=[],
-            session_create_limit_per_day=50,
-        )
-    except Exception as error:
-        assert error.__class__.__name__ == "ActiveSessionExists"
-    else:
-        raise AssertionError("expected persisted active session to block duplicate")
+    second = second_store.create_session(
+        device_id="anon_test_device",
+        max_session_seconds=1200,
+        recent_context=[],
+        session_create_limit_per_day=50,
+    )
+    assert second.session_id == first_store.get_active_session(
+        session_id=second.session_id,
+        device_id="anon_test_device",
+    ).session_id
 
 
 def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -> None:
@@ -148,16 +148,18 @@ def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -
 
 def test_stateless_embeddings_and_rerank_do_not_require_session(tmp_path: Path) -> None:
     client, _store = _client(tmp_path)
+    serving = _FakeModelServing()
+    main.app.dependency_overrides[main.get_model_serving] = lambda: serving
 
     embedding_response = client.post(
         "/v1/embeddings",
-        json={"texts": ["office manager pressure"], "dimension": 64},
+        json={"texts": ["office manager pressure"], "dimension": 768},
     )
     assert embedding_response.status_code == 200
     embedding_body = embedding_response.json()
-    assert embedding_body["dimension"] == 64
+    assert embedding_body["dimension"] == 768
     assert len(embedding_body["embeddings"]) == 1
-    assert len(embedding_body["embeddings"][0]) == 64
+    assert len(embedding_body["embeddings"][0]) == 768
 
     rerank_response = client.post(
         "/v1/rerank",
@@ -172,6 +174,39 @@ def test_stateless_embeddings_and_rerank_do_not_require_session(tmp_path: Path) 
     assert rerank_response.status_code == 200
     assert rerank_response.json()["results"][0]["id"] == "work"
 
+    planner_response = client.post("/v1/memory-plan", json={"text": "office ka din kaisa tha"})
+    assert planner_response.status_code == 200
+    assert planner_response.json()["route"] == "semantic"
+
+
+def test_model_endpoints_are_explicitly_unavailable_when_disabled(tmp_path: Path) -> None:
+    client, _store = _client(tmp_path)
+    main.app.dependency_overrides[main.get_model_serving] = lambda: main.model_serving
+
+    response = client.post("/v1/embeddings", json={"texts": ["test"]})
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "embedding_unavailable"
+
+
+def test_retrieval_plan_parser_rejects_prose_and_unbounded_values() -> None:
+    valid = parse_retrieval_plan(
+        '{"need_memory":true,"route":"episodic","memory_types":["episodic"],'
+        '"entities":["office"],"time_hint":"recent","top_k":4}'
+    )
+    assert valid.route == "episodic"
+
+    for raw in (
+        "Here is the plan: {}",
+        '{"need_memory":true,"route":"episodic","memory_types":[],"entities":[],'
+        '"time_hint":"recent","top_k":9}',
+    ):
+        try:
+            parse_retrieval_plan(raw)
+        except ModelServingUnavailable:
+            continue
+        raise AssertionError("invalid planner output must be rejected")
+
 
 def _client(
     tmp_path: Path,
@@ -183,6 +218,7 @@ def _client(
     main.app.dependency_overrides[main.get_agent_assigner] = lambda: (
         assigner or _FakeAgentAssigner()
     )
+    main.app.dependency_overrides.pop(main.get_model_serving, None)
     main.settings.max_recent_context_messages = 12
     main.settings.max_memory_context_blocks = 6
     main.settings.session_create_limit_per_day = 50
@@ -236,3 +272,23 @@ class _FakeAgentAssigner:
 class _FailingAgentAssigner:
     async def assign(self, *, session) -> None:  # noqa: ANN001
         raise AgentAssignmentFailed("boom")
+
+
+class _FakeModelServing:
+    async def embed(self, texts, *, input_type):  # noqa: ANN001
+        return [[1.0] + [0.0] * 767 for _ in texts]
+
+    async def rerank(self, query, candidates):  # noqa: ANN001
+        return [0.9 if "office" in candidate else 0.1 for candidate in candidates]
+
+    async def plan(self, text):  # noqa: ANN001
+        from app.embedding_service import RetrievalPlan
+
+        return RetrievalPlan(
+            need_memory=True,
+            route="semantic",
+            memory_types=("semantic",),
+            entities=("office",),
+            time_hint="recent",
+            top_k=4,
+        )

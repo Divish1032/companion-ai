@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     max_concurrent_agents: int = 10
     max_agent_memory_mb: int = 512
     max_idle_seconds: int = 120
+    memory_api_base_url: str = "http://api:8000"
+    enable_memory_planner: bool = False
+    memory_planner_model: str = "Qwen/Qwen3-0.6B"
+    memory_planner_timeout_seconds: float = 0.1
+    memory_lookup_timeout_seconds: float = 0.2
     enable_livekit_rtc: bool = True
     enable_fake_audio: bool = True
     fake_audio_ms: int = 550
@@ -52,6 +57,7 @@ class Settings(BaseSettings):
     vad_pre_speech_buffer_ms: int = 240
     vad_endpoint_silence_ms: int = 600
     vad_continuation_silence_ms: int = 1100
+    vad_coalescing_silence_ms: int = 1500
     vad_forced_endpoint_ms: int = 9000
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="AGENT_")
@@ -66,6 +72,7 @@ class Settings(BaseSettings):
             pre_speech_buffer_ms=self.vad_pre_speech_buffer_ms,
             endpoint_silence_ms=self.vad_endpoint_silence_ms,
             continuation_silence_ms=self.vad_continuation_silence_ms,
+            coalescing_silence_ms=self.vad_coalescing_silence_ms,
             forced_endpoint_ms=self.vad_forced_endpoint_ms,
         )
 

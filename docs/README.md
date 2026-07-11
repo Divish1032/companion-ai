@@ -16,6 +16,10 @@ Use this map to avoid loading the entire master PRD for every task.
 - `architecture/safety_privacy.md`: safety pipeline, crisis handling, DPDP/privacy requirements.
 - `architecture/observability_metrics.md`: latency, quality, and cost metrics.
 - `architecture/unit_economics.md`: cost assumptions, pricing cautions, and measurement requirements.
+- `architecture/long_term_memory.md`: phone-owned memory, query-time retrieval,
+  model-serving contracts, privacy boundaries, and remaining validation.
+- `deployment/ubuntu.md`: Ubuntu deployment, model-cache, warm-up, readiness,
+  and rollback runbook for public-network testing.
 
 ## Spike Outputs
 

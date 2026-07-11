@@ -48,17 +48,55 @@ void main() {
       ),
     );
 
-    final memories = await database.readMemoryContext(
+    final nameMemories = await database.readMemoryContext(
       latestUserText: 'मेरा नाम क्या है?',
       limit: 6,
     );
+    final languageMemories = await database.readMemoryContext(
+      latestUserText: 'मुझे किस language में reply पसंद है?',
+      limit: 6,
+    );
 
-    expect(memories.map((memory) => memory.label), contains('preferred_name'));
-    expect(memories.map((memory) => memory.label), contains('language_style'));
-    expect(memories.any((memory) => memory.content.contains('राहुल')), isTrue);
     expect(
-      memories.any((memory) => memory.content.contains('English replies')),
+      nameMemories.map((memory) => memory.label),
+      contains('preferred_name'),
+    );
+    expect(
+      languageMemories.map((memory) => memory.label),
+      contains('language_style'),
+    );
+    expect(
+      nameMemories.any((memory) => memory.content.contains('राहुल')),
       isTrue,
+    );
+    expect(
+      languageMemories.any(
+        (memory) => memory.content.contains('English replies'),
+      ),
+      isTrue,
+    );
+  });
+
+  test('general turns do not inject unrelated profile memory', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    await database.upsertUserMessageAndExtractMemory(
+      _message(
+        id: 'profile',
+        turnId: 'turn_profile',
+        text: 'mera naam Rahul hai',
+        confidence: 0.99,
+      ),
+    );
+
+    final memories = await database.readMemoryContext(
+      latestUserText: 'aaj mood thoda off hai',
+      limit: 4,
+    );
+
+    expect(
+      memories.where((memory) => memory.label == 'preferred_name'),
+      isEmpty,
     );
   });
 
@@ -811,6 +849,38 @@ void main() {
         jsonDecode(memory.sourceTurnIdsJson),
         contains('turn_receipt_yes'),
       );
+
+      final chatRows = await database.select(database.chatMessages).get();
+      expect(chatRows.map((row) => row.turnId), contains('turn_receipt_yes'));
+      expect(
+        (await database.select(database.memoryRecords).get())
+            .where((row) => row.label == 'previous_session')
+            .map((row) => row.originalText)
+            .join('\n'),
+        isNot(contains('haan yaad rakhna')),
+      );
+    },
+  );
+
+  test(
+    'receipt control without a pending memory is saved but creates no memory',
+    () async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: 'u_receipt_without_pending',
+          turnId: 'turn_receipt_without_pending',
+          text: 'haan yaad rakhna',
+          confidence: 0.96,
+          createdAt: 1,
+        ),
+      );
+
+      final chatRows = await database.select(database.chatMessages).get();
+      expect(chatRows, hasLength(1));
+      expect(await database.select(database.memoryRecords).get(), isEmpty);
     },
   );
 
@@ -860,6 +930,23 @@ void main() {
         embeddable.map((memory) => memory.id),
         isNot(contains('memory_semantic_work_stress_manager')),
       );
+
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: 'u_receipt_recall_after_rejection',
+          turnId: 'turn_receipt_recall_after_rejection',
+          text: 'office mein manager bahut pressure deta hai',
+          confidence: 0.96,
+          createdAt: 3,
+        ),
+      );
+      final afterRecall =
+          await (database.select(database.memoryRecords)..where(
+                (row) => row.id.equals('memory_semantic_work_stress_manager'),
+              ))
+              .getSingle();
+      expect(afterRecall.receiptState, 'rejected');
+      expect(afterRecall.temporalStatus, 'expired');
     },
   );
 

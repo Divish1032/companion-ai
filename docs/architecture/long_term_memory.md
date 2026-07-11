@@ -3,8 +3,11 @@
 This document is the implementation handoff for making Companion AI's memory
 long-term, meaningful, privacy-preserving, and low-latency.
 
-Current status: a foundation slice has been implemented, but the full Phase 1-5
-plan is **not complete end to end**. Treat the "Implemented so far" and
+Current status: Phases 1-4 are implemented for the current MVP scope. Hindi/Hinglish
+uses an explicitly selected EmbeddingGemma-plus-deterministic memory policy. The
+full Phase 1-5 plan is **not complete end to end** until Phase 5
+phone retesting and its documentation gate are finished.
+Treat the "Implemented so far" and
 "Remaining work" sections as the source of truth before continuing.
 
 Verified status:
@@ -15,8 +18,12 @@ Verified status:
 - [x] Phase 3 consolidation and graph intelligence dev implementation for the
   deterministic/local MVP slice. Manual Android validation is still required
   before treating it as field-tested.
-- [ ] Phase 4 real model serving and ambiguity handling.
+- [x] Phase 4 model-serving and backend selection. EmbeddingGemma is used for
+  embedding creation, while deterministic reranking and planning remain the
+  Hindi/Hinglish default. GPU-dependent Qwen work is deferred.
 - [ ] Phase 5 evaluation, tuning, and Android validation.
+  Automated Hindi/Hinglish evaluation and the redacted fixed-code Android
+  scenarios are complete; the repository docs gate has an unrelated blocker.
 
 ## Goals
 
@@ -201,13 +208,14 @@ Target flow for a final STT transcript:
 ```text
 backend receives final user transcript
   -> input safety classification
-  -> deterministic memory router
+  -> deterministic memory router + resolve one language-scoped memory strategy
   -> if memory not needed, continue to LLM without long-term memory
-  -> if memory needed, compute query embedding through stateless /v1/embeddings
   -> send reliable memory_lookup_request to mobile
-  -> mobile retrieves from SQLite + FTS + ObjectBox + graph
+  -> mobile applies the selected strategy:
+       deterministic: SQLite metadata + canonical/alias matching + graph
+       hybrid_vector: deterministic candidates + ObjectBox vector candidates
   -> mobile sends reliable memory_lookup_response
-  -> backend optionally reranks through stateless /v1/rerank
+  -> optional configured reranker only when that language selected one
   -> prompt builder injects top memory packets only
   -> LLM response
   -> output safety classification
@@ -217,9 +225,10 @@ backend receives final user transcript
 Timeout budgets:
 
 - Mobile memory lookup: 200 ms.
-- Reranker: 120 ms.
-- Planner: 100 ms.
-- On timeout or invalid output, continue without long-term memory.
+- Optional model-serving budgets are experimental only and are not acceptance
+  criteria for the Hindi/Hinglish MVP. The deterministic mobile lookup budget
+  remains 200 ms; on timeout or invalid output, continue without long-term
+  memory.
 
 ### Query Router
 
@@ -233,7 +242,9 @@ Routes:
 - `episodic`: temporal or event recall.
 - `summary`: broad memory summary questions.
 - `safety`: crisis/safety path.
-- `broad_safe`: ambiguous fallback with strict budget.
+- `broad_safe`: ambiguous fallback with a zero-memory budget. This route is
+  deliberately abstention-safe so a topic change cannot retrieve an unrelated
+  session summary.
 
 Only use a small planner model when deterministic confidence is low. The planner
 must return strict JSON only, such as:
@@ -251,6 +262,43 @@ must return strict JSON only, such as:
 
 The planner must not directly access memory or call tools. The app/backend
 executes the plan deterministically.
+
+### Language-Scoped Strategy Selection
+
+Every active room resolves exactly one configuration for each pipeline leg from
+the persona's language route. This includes STT, LLM, TTS, and memory stages.
+Memory stages are independent and intentionally named rather than inferred:
+
+```toml
+[memory.languages."hi-IN"]
+retrieval = "hybrid_vector"
+reranker = "deterministic"
+planner = "deterministic"
+```
+
+Allowed memory strategy names are:
+
+- retrieval: `deterministic`, `hybrid_vector`
+- reranker: `deterministic`, `qwen3_reranker`
+- planner: `deterministic`, `qwen3_planner`
+
+The room agent resolves this configuration once and sends the selected retrieval
+and reranker names in the reliable memory lookup request. The phone applies only
+that selected strategy; it must not independently select or fail over to a
+remote model. Unknown or invalid strategy names fail closed to all-deterministic.
+
+Hindi/Hinglish MVP policy uses EmbeddingGemma for embedding creation and
+deterministic safety/receipt/temporal filters, explicit aliases, graph
+expansion, candidate merging, reranking, and planning. Core-profile and
+procedural records are retrieved only for an explicit matching recall intent;
+they are excluded from general turns. It must abstain rather than add vague
+personal context. Qwen strategies remain disabled future experiments.
+
+The mobile defaults use EmbeddingGemma-backed vector retrieval with deterministic
+fallback, reranking, and planning. Qwen reranking and planning remain disabled.
+A future language must explicitly select a non-deterministic strategy and enable
+its corresponding model flag; omitting the strategy cannot activate Qwen
+implicitly.
 
 ## Context Injection Rules
 
@@ -452,6 +500,25 @@ Implemented in the foundation slice:
   - stale/out-of-order response ignored
   - returned memory packets injected into prompt context for that turn only
   - safety and greeting/no-memory routes bypass lookup
+- Added language-scoped memory strategy selection alongside existing per-language
+  STT/LLM/TTS provider routing:
+  - persona config resolves exactly one retrieval, reranker, and planner strategy
+    for the active room language
+  - allowed names are validated and unknown values fail closed to all-deterministic
+  - the agent sends selected retrieval/reranker strategy names in the reliable
+    lookup request; mobile does not independently choose a remote model
+  - Hindi/Hinglish (`hi-IN`) explicitly selects `hybrid_vector` retrieval with
+    deterministic reranking and planning
+  - `qwen3_reranker` and `qwen3_planner` remain opt-in future language
+    strategies, with one active strategy per stage and session
+- Tightened deterministic Hindi/Hinglish recall precision:
+  - generic turns cannot inject unrelated `core_profile` or `procedural` memory
+  - identity, language-style, and preference records require their matching
+    explicit recall intent
+  - the Devanagari spelling of `naam` is recognized alongside Roman `naam` and
+    English `name`
+  - explicit canonical aliases and graph expansion remain available for grounded
+    queries such as office/manager work stress
 - Added tests for:
   - typed memory metadata
   - graph-expanded office/manager recall
@@ -470,6 +537,19 @@ Implemented in the foundation slice:
   - tiny session-start memory context
   - query-time memory lookup success, timeout, stale response, and safety/greeting
     bypass
+  - language-scoped memory strategy resolution and safe default fallback
+  - Hindi/Hinglish deterministic lookup with failing embedding/rerank clients,
+    proving it does not invoke either model path
+  - no unrelated preferred-name injection on a general emotional turn
+- Added Phase 5 deterministic evaluation and observability:
+  - `scripts/run-memory-eval.sh` runs the focused mobile and realtime-agent
+    memory regression suite from the repository root
+  - `docs/evals/hindi_hinglish_memory_eval.md` defines automated scenarios,
+    pass criteria, and the real-phone protocol
+  - realtime-agent emits a redacted `memory_lookup_metrics` record containing
+    route, lookup attempt/latency, returned and injected counts, no-memory
+    decision, context budget/usage, and resolved strategies; it never logs the
+    query or memory content in this record
 - Added an incremental Phase 3 local consolidation/graph slice:
   - public local `consolidateLocalMemory` entrypoint that operates on durable
     phone-owned SQLite memory records only
@@ -495,6 +575,11 @@ Implemented in the foundation slice:
   - explicit voice-transcript receipt handling for `confirmed` and `rejected`
     results using narrow phrases such as "haan yaad rakhna" or "yaad mat
     rakhna"
+  - receipt-control turns remain in local chat history and update the pending
+    candidate state, but are excluded from stable-memory admission, graph
+    extraction, embedding sync as new facts, and standalone session summaries
+  - a receipt phrase without a pending candidate is still saved as chat but
+    creates no long-term memory
   - rejected receipt memories are expired and excluded from retrieval and
     embedding sync
   - query-time voice receipt prompt plumbing:
@@ -543,15 +628,16 @@ cd services/realtime-agent && uv run ruff check app tests && uv run pytest
 
 - No remaining Phase 1 implementation tasks for the current dev-endpoint-backed
   MVP slice.
-- When real EmbeddingGemma is selected in Phase 4, regenerate ObjectBox model
-  code if the production embedding dimension differs from the current configured
-  dimension.
+- No ObjectBox regeneration is required: EmbeddingGemma uses the existing
+  configured 768-dimensional vector schema.
 
 ### Phase 2 Remaining: Query-Time Retrieval
 
-- No remaining Phase 2 implementation tasks for the current dev-endpoint-backed
-  MVP slice.
-- Real reranker/model-serving replacement remains Phase 4 work.
+- No remaining Phase 2 implementation tasks for the current deterministic
+  Hindi/Hinglish MVP slice.
+- EmbeddingGemma ONNX serving is enabled for Hindi/Hinglish after local
+  real-weight validation. Qwen adapters remain disabled and are not a fallback;
+  a future language must explicitly select any applicable strategy.
 
 ### Phase 3 Remaining: Consolidation And Graph Intelligence
 
@@ -588,42 +674,127 @@ cd services/realtime-agent && uv run ruff check app tests && uv run pytest
   - realtime-agent `memory_lookup_response`
   - realtime-agent `memory_lookup_timeout`, if any
 
-### Phase 4 Remaining: Precision And Ambiguity
+### Phase 4: Complete
 
-- Replace deterministic dev `/v1/embeddings` internals with real
-  EmbeddingGemma serving.
-- Replace deterministic dev `/v1/rerank` internals with real
-  Qwen3-Reranker-0.6B serving.
-- Add optional strict-JSON Qwen3-0.6B planner only for low-confidence routing.
-- Planner must output retrieval plans only; it must not access memory directly.
-- Add strict validation and timeout fallback for planner output.
-- Add config flags:
-  - enable/disable embeddings
-  - enable/disable reranker
-  - enable/disable planner
-  - timeout budgets
-  - model names/dimensions
+- EmbeddingGemma-backed vector retrieval with deterministic reranking and
+  planning is complete and is the default enabled path for Hindi/Hinglish. The
+  API fails closed to deterministic mobile retrieval if ONNX is unavailable.
+- The isolated EmbeddingGemma experiment is complete: the API endpoint accepted
+  a non-sensitive Hindi test request and returned one 768-dimensional vector;
+  the isolated warm endpoint request took 205.936 ms. EmbeddingGemma is enabled
+  for normal embedding creation; reranking and planning remain deterministic.
+- The complete FP32 ONNX Sentence Transformer artifact is persisted at the
+  configured model-cache path and is the default backend on Mac and Ubuntu.
+  PyTorch is used only by the offline artifact-preparation tool. It is not
+  loaded as an API fallback.
+- `/v1/embeddings`, `/v1/rerank`, and `/v1/memory-plan` enforce configured
+  model/dimension contracts when an optional experiment is explicitly enabled.
+  Disabled, unavailable, invalid, or timed-out model execution returns an
+  explicit non-success response. Mobile/agent callers retain their existing
+  deterministic fallback behavior and do not block a voice turn.
+- Qwen reranking and planning are explicitly deferred until GPU hardware is
+  available. No Qwen latency, precision, or enablement gate is required now.
+- Phase 4 has no remaining implementation or validation work. Ubuntu deployment
+  and operational benchmarking are scheduled under Sprint 9.
 
-### Phase 5 Remaining: Evaluation And Tuning
+#### Phase 4 serving-host validation (2026-07-11)
 
-- Add a Hindi/Hinglish memory eval harness.
-- Include scenarios:
-  - exact recall
-  - cross-language recall
-  - vague query abstention
-  - office/manager graph-expanded recall
-  - contradiction and supersession
-  - temporal past/current distinction
-  - sensitive memory exclusion
-  - no over-personalization from one ambiguous turn
-  - low-latency timeout fallback
-  - context budget enforcement
-- Add Android validation:
-  - same-session recall
-  - previous-session recall
-  - graph-expanded recall
-  - "hi" no-overretrieval
-- Add redacted metrics:
+- The API image now installs CPU-only PyTorch wheels and persists Hugging Face
+  cache data in the `memory-model-cache` Docker volume. It does not pull unusable
+  CUDA packages on Docker Desktop for Apple Silicon.
+- Hugging Face access was subsequently configured with a fine-grained read token
+  after accepting the Gemma licence. An isolated Mac Docker smoke test loaded
+  `google/embeddinggemma-300m` successfully and produced a 768-dimensional
+  vector for one non-sensitive Hindi test sentence. Cold load took 373,656 ms,
+  warm inference took 216 ms, observed process RSS was 1,266,168 kB, and the
+  cache reached approximately 1.7 GiB. These are compatibility measurements,
+  not production latency evidence; no request text or token was retained.
+- Qwen reranker and planner loading was explored only as a deferred hardware
+  experiment. Both remain disabled and are not part of current acceptance.
+- EmbeddingGemma is now enabled for embedding creation in the API/mobile
+  configuration. Deterministic SQLite/graph retrieval remains the fallback when
+  the model endpoint is unavailable or times out.
+- API startup warms the enabled embedding model in the background from the
+  persistent Hugging Face cache. `/health` remains a liveness check while
+  `/readiness` reports `loading`, `ready`, or `failed`; embedding requests are
+  rejected during loading/after failure so mobile uses deterministic fallback
+  rather than triggering duplicate cold loads. No PyTorch runtime fallback is
+  attempted.
+- Reranker and planner remain deterministic and disabled for Qwen. The running
+  phone stack uses EmbeddingGemma-backed vector retrieval with deterministic
+  reranking and planning.
+
+Phase 4 is complete. The Hindi/Hinglish product path uses EmbeddingGemma for
+embedding creation with deterministic reranking, planning, and fallback. Qwen
+work is deferred until future GPU hardware and is not a current acceptance item.
+
+#### Embedding backend benchmark (2026-07-11)
+
+The current PyTorch Sentence Transformers backend was compared with persisted
+ONNX variants using non-sensitive Hindi/Hinglish samples:
+
+| Backend | Warm p50 | Warm p95 | Quality check | Result |
+| --- | ---: | ---: | --- | --- |
+| PyTorch CPU baseline | 163.86 ms | 247.84 ms | Baseline | Current runtime |
+| ONNX Runtime full precision | 46.64 ms | 56.81 ms | Cosine min/mean/max 1.0/1.0/1.0 across 8 samples | Adopted default |
+| ONNX Runtime dynamic INT8 ARM64 | 45.20 ms | 62.95 ms | Cosine min/mean 0.9885/0.9905; top-1 agreement 6/6 | Not adopted yet |
+
+The previous PyTorch endpoint container observed approximately 743 MiB resident memory.
+The ONNX export process had a much higher temporary peak during conversion, so
+export-time memory is tracked separately from steady-state serving memory. The
+INT8 result was not treated as lossless despite preserving the small retrieval
+sample's top-1 ranking. The official TEI ARM64 image tag documented for this
+release was unavailable from the registry; the available x86 image under ARM
+emulation was not used as a latency benchmark. Full-precision ONNX is now the
+adopted backend; its persistent artifact and startup readiness are validated
+locally. Ubuntu still needs its own host-level capacity validation.
+
+### Phase 5 Validation Evidence (2026-07-11)
+
+The Android measurements below are historical evidence from the earlier
+deterministic-retrieval APK. They remain useful for admission, receipts, graph,
+and privacy behavior, but Phase 5 must be rerun on the rebuilt APK with the
+current EmbeddingGemma/ONNX backend and latest voice-turn fixes before closure.
+
+- Completed automated evaluation:
+  - `scripts/run-memory-eval.sh` is the required deterministic Hindi/Hinglish
+    regression gate
+  - the automated suite covers:
+    - exact recall
+    - cross-language recall
+    - vague query abstention
+    - office/manager graph-expanded recall
+    - contradiction and supersession
+    - temporal past/current distinction
+    - sensitive memory exclusion
+    - no over-personalization from one ambiguous turn
+    - low-latency timeout fallback
+    - context budget enforcement
+    - language-strategy isolation: Hindi/Hinglish uses EmbeddingGemma for
+      embeddings and makes zero Qwen reranker/planner calls
+    - profile-abstention: vague turns do not inject name/language-style context
+    - redacted lookup metrics and context-budget reporting
+- Android evidence collected with redacted logs:
+  - Hindi-only profile admission and recall: pass; deterministic lookup was
+    48 ms for admission and 21 ms for recall, with 1/1 and 2/2 candidates.
+  - Hindi-only office-stressor admission and receipt confirmation: pass;
+    47 ms lookup, 3/3 candidates, 713 context characters, then confirmed.
+  - Hindi-only graph-expanded office recall: pass; 40 ms lookup, 2/2
+    candidates, 1,996 context characters.
+  - Vague emotional turn: pass; broad-safe route, 38 ms, 0/0 candidates,
+    no-memory decision, and no new profile memory.
+  - Greeting no-overretrieval: pass in the connected phone run; `none` route,
+    lookup not attempted, 0/0 candidates, 836 context characters.
+  - Previous-session recall: pass; a new session ID retrieved 2/2 candidates
+    in 37 ms with 733 context characters.
+  - Explicit receipt rejection and post-rejection exclusion: pass on the
+    fixed APK; the record remained `rejected/expired` and was not re-admitted
+    or injected. The query returned two unrelated past session summaries,
+    which were excluded from the rejection decision.
+- All Android acceptance scenarios now have evidence. Phase 5 is functionally
+  complete, but the checklist remains open until the repository docs gate is
+  repaired outside this scoped change.
+- Redacted metrics implemented:
   - memory route
   - lookup latency
   - candidates returned
@@ -631,18 +802,41 @@ cd services/realtime-agent && uv run ruff check app tests && uv run pytest
   - timeout count
   - no-memory decisions
   - context character budget
+  - resolved retrieval/reranker/planner strategy
+  - Implemented in realtime-agent `memory_lookup_metrics`; collect and assess
+    these records during Android validation.
 
 ## Known Gaps And Constraints
 
 - Real ObjectBox HNSW wrapper is wired and admitted memories are synced to it
-  through the stateless embeddings endpoint, but the endpoint still uses a
-  deterministic dev embedding implementation.
-- Real EmbeddingGemma inference is not wired yet.
-- Real Qwen reranker/planner inference is not wired yet.
-- Query-time backend wait on mobile memory response is wired for deterministic
-  routes, mobile lookup can use local vector hits, and reranking is wired against
-  the stateless dev rerank endpoint.
-- Current graph extraction is intentionally narrow and deterministic.
-- Current embedding/rerank API implementations are deterministic dev stubs.
+  through the stateless EmbeddingGemma endpoint, with deterministic SQLite/graph
+  fallback when the endpoint is unavailable.
+- EmbeddingGemma was loaded and exercised locally. Ubuntu production deployment
+  is tracked in Sprint 9; ONNX failure uses deterministic mobile retrieval and
+  Qwen inference adapters remain intentionally deferred until GPU hardware exists.
+- Query-time backend wait on mobile memory response is wired for vector routes,
+  mobile lookup can use local EmbeddingGemma vector hits, and reranking remains
+  deterministic.
+- Current graph extraction and reranking/planning are intentionally narrow and
+  deterministic.
+- Current default embedding API behavior uses EmbeddingGemma, while reranking
+  and planning remain deterministic and Qwen flags remain disabled.
+- A rejected deterministic work-stressor memory is now protected from automatic
+  re-admission; this is covered by the Flutter database regression test.
 - Do not claim full Phase 1-5 completion until all remaining work is done and
   verified.
+
+## Handoff Into Sprints 8-10
+
+The local memory implementation is part of the completed Sprint 7.5 product
+slice. The remaining sprint work is validation and operations, not a new
+server-side memory store:
+
+- Sprint 8 measures memory route/lookup/model latency, fallback behavior, and
+  the amortized cost of self-hosted model serving.
+- Sprint 9 deploys the stateless model endpoints with a persistent Hugging Face
+  cache, explicit warm-up/readiness, model revision/licence records, and an
+  Ubuntu rollback path. Weights are not downloaded on a user's first turn.
+- Sprint 10 validates resource limits, endpoint rate limits, redaction,
+  deterministic fallback, restart/cache-loss behavior, and Hindi/Hinglish
+  memory quality on real devices.

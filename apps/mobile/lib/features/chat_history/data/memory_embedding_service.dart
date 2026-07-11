@@ -28,24 +28,32 @@ final memoryRerankClientProvider = Provider<MemoryRerankClient>((ref) {
 });
 
 final memoryEmbeddingSyncProvider = Provider<MemoryEmbeddingSync>((ref) {
+  final config = ref.watch(appConfigProvider);
   return MemoryEmbeddingSync(
     database: ref.watch(appDatabaseProvider),
     embeddingClient: ref.watch(memoryEmbeddingClientProvider),
     vectorIndexLoader: () => ref.read(memoryVectorIndexProvider.future),
+    enabled: config.enableMemoryEmbeddings,
   );
 });
 
 final memoryLookupServiceProvider = Provider<MemoryLookupService>((ref) {
+  final config = ref.watch(appConfigProvider);
   return MemoryLookupService(
     database: ref.watch(appDatabaseProvider),
     embeddingClient: ref.watch(memoryEmbeddingClientProvider),
     rerankClient: ref.watch(memoryRerankClientProvider),
     vectorIndexLoader: () => ref.read(memoryVectorIndexProvider.future),
+    embeddingsEnabled: config.enableMemoryEmbeddings,
+    rerankerEnabled: config.enableMemoryReranker,
   );
 });
 
 abstract interface class MemoryEmbeddingClient {
-  Future<List<List<double>>> embedTexts(List<String> texts);
+  Future<List<List<double>>> embedTexts(
+    List<String> texts, {
+    String inputType = 'document',
+  });
 }
 
 abstract interface class MemoryRerankClient {
@@ -69,7 +77,10 @@ class HttpMemoryEmbeddingClient implements MemoryEmbeddingClient {
   final http.Client? _client;
 
   @override
-  Future<List<List<double>>> embedTexts(List<String> texts) async {
+  Future<List<List<double>>> embedTexts(
+    List<String> texts, {
+    String inputType = 'document',
+  }) async {
     final client = _client ?? http.Client();
     final shouldCloseClient = _client == null;
     try {
@@ -80,6 +91,7 @@ class HttpMemoryEmbeddingClient implements MemoryEmbeddingClient {
           'texts': texts,
           'model': model,
           'dimension': dimension,
+          'input_type': inputType,
         }),
       );
       if (response.statusCode != 200) {
@@ -180,13 +192,16 @@ class MemoryEmbeddingSync {
     required this.database,
     required this.embeddingClient,
     required this.vectorIndexLoader,
+    this.enabled = true,
   });
 
   final AppDatabase database;
   final MemoryEmbeddingClient embeddingClient;
   final Future<MemoryVectorIndex> Function() vectorIndexLoader;
+  final bool enabled;
 
   Future<void> syncTurnMemories(String turnId) async {
+    if (!enabled) return;
     final memories = await database.readMemoryRecordsForTurn(turnId: turnId);
     final embeddable = [
       for (final memory in memories)
@@ -223,6 +238,7 @@ class MemoryEmbeddingSync {
   }
 
   Future<int> rebuildIndexFromLocalMemory() async {
+    if (!enabled) return 0;
     final memories = [
       for (final memory in await database.readEmbeddableMemoryRecords())
         if (_embeddable(memory)) memory,
@@ -257,30 +273,59 @@ class MemoryLookupService {
     required this.embeddingClient,
     required this.rerankClient,
     required this.vectorIndexLoader,
+    this.embeddingsEnabled = false,
+    this.rerankerEnabled = false,
   });
 
   final AppDatabase database;
   final MemoryEmbeddingClient embeddingClient;
   final MemoryRerankClient rerankClient;
   final Future<MemoryVectorIndex> Function() vectorIndexLoader;
+  final bool embeddingsEnabled;
+  final bool rerankerEnabled;
   bool _rebuildAttempted = false;
 
   Future<List<MemoryRecord>> lookup({
     required String latestUserText,
     required int limit,
+    String retrievalStrategy = 'deterministic',
+    String rerankerStrategy = 'deterministic',
+    String? route,
   }) async {
     if (limit <= 0) {
       return const [];
     }
+    final useVector = retrievalStrategy == 'hybrid_vector' && embeddingsEnabled;
+    final useQwenReranker =
+        rerankerStrategy == 'qwen3_reranker' && rerankerEnabled;
+    if (!useVector) {
+      final deterministic = await database.readMemoryContext(
+        latestUserText: latestUserText,
+        limit: limit,
+        route: route,
+      );
+      return _rerankOrFallback(
+        latestUserText,
+        deterministic,
+        useQwenReranker: useQwenReranker,
+      );
+    }
     try {
       await _rebuildEmptyVectorIndexOnce();
-      final embeddings = await embeddingClient.embedTexts([latestUserText]);
+      final embeddings = await embeddingClient.embedTexts([
+        latestUserText,
+      ], inputType: 'query');
       if (embeddings.isEmpty) {
         final deterministic = await database.readMemoryContext(
           latestUserText: latestUserText,
           limit: limit,
+          route: route,
         );
-        return _rerankOrFallback(latestUserText, deterministic);
+        return _rerankOrFallback(
+          latestUserText,
+          deterministic,
+          useQwenReranker: useQwenReranker,
+        );
       }
       final vectorIndex = await vectorIndexLoader();
       final vectorHits = await vectorIndex.search(
@@ -291,8 +336,13 @@ class MemoryLookupService {
         latestUserText: latestUserText,
         limit: limit,
         vectorHits: vectorHits,
+        route: route,
       );
-      return _rerankOrFallback(latestUserText, candidates);
+      return _rerankOrFallback(
+        latestUserText,
+        candidates,
+        useQwenReranker: useQwenReranker,
+      );
     } catch (error) {
       developer.log(
         'memory_lookup_vector_fallback '
@@ -302,8 +352,13 @@ class MemoryLookupService {
       final deterministic = await database.readMemoryContext(
         latestUserText: latestUserText,
         limit: limit,
+        route: route,
       );
-      return _rerankOrFallback(latestUserText, deterministic);
+      return _rerankOrFallback(
+        latestUserText,
+        deterministic,
+        useQwenReranker: useQwenReranker,
+      );
     }
   }
 
@@ -339,9 +394,13 @@ class MemoryLookupService {
 
   Future<List<MemoryRecord>> _rerankOrFallback(
     String latestUserText,
-    List<MemoryRecord> candidates,
-  ) async {
+    List<MemoryRecord> candidates, {
+    required bool useQwenReranker,
+  }) async {
     if (candidates.length <= 1) {
+      return candidates;
+    }
+    if (!useQwenReranker) {
       return candidates;
     }
     try {

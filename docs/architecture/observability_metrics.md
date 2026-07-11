@@ -2,7 +2,7 @@
 
 Use this file for latency, quality, cost, and logging instrumentation.
 
-Related sprints: Sprint 5, Sprint 7, Sprint 8, Sprint 10, Sprint 11.
+Related sprints: Sprint 5, Sprint 7, Sprint 7.5, Sprint 8, Sprint 9, Sprint 10, Sprint 11.
 
 ## 13. Observability and Metrics
 
@@ -38,6 +38,21 @@ Cost metrics:
 - Estimated INR cost per session.
 - Provider fallback/retry count.
 
+Memory and model-serving metrics per turn or memory operation:
+
+- Deterministic memory route and memory-needed decision.
+- Embedding, local ObjectBox lookup, reranker, and planner latency.
+- Configured and active embedding backend (`onnx` or `pytorch`) and fallback
+  reason, if any.
+- Cold model-load/download time separately from warm inference time.
+- Candidate count, vector-hit count, reranked count, injected count, and
+  memory lookup timeout count.
+- Model unavailable/invalid-response count and deterministic fallback count.
+- Configured model names, embedding dimension, enabled flags, and service
+  revision for the test run.
+- Model cache size, resident memory, CPU/GPU utilization, and warm readiness
+  during Ubuntu load tests.
+
 Quality metrics:
 
 - Turn count.
@@ -61,7 +76,14 @@ Production logs should include:
 - State transitions.
 - Error codes.
 - Provider latency.
+- Memory route, model status, candidate/injected counts, and redacted model
+  latency/fallback events.
 
 Avoid raw transcript logging by default.
+
+Embedding, reranker, and planner logs must not include request text, memory
+text, vectors, or an anonymous device ID next to user content. A model
+download/cache path may be logged only as an artifact identifier, revision, or
+size/status measurement.
 
 ---

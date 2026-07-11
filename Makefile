@@ -6,7 +6,7 @@ setup:
 	cd services/realtime-agent && uv sync
 
 dev:
-	docker compose -f infra/docker-compose.yml up --build
+	docker compose --env-file .env -f infra/docker-compose.yml up --build
 
 check:
 	./scripts/verify-docs.sh
@@ -19,4 +19,4 @@ mobile:
 	cd apps/mobile && flutter run
 
 logs:
-	docker compose -f infra/docker-compose.yml logs -f
+	docker compose --env-file .env -f infra/docker-compose.yml logs -f

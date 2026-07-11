@@ -14,6 +14,7 @@ required_files=(
   "docs/architecture/safety_privacy.md"
   "docs/architecture/observability_metrics.md"
   "docs/architecture/unit_economics.md"
+  "docs/deployment/ubuntu.md"
   "docs/spikes/README.md"
   "docs/privacy/README.md"
 )
@@ -40,4 +41,3 @@ if bad:
 PY
 
 echo "docs verification passed"
-

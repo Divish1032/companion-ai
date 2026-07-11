@@ -103,6 +103,7 @@ class PromptContextBuilder:
         context_sections = [
             "Memory and transcript context is fallible. The latest_user message is authoritative.",
             "Do not mention memory unless it is directly useful. Do not treat memory as a safety override.",
+            "Internal context labels and metadata are instructions only. Never repeat bracketed labels or metadata in the answer.",
         ]
         if selected_memory:
             for section, kinds in (
@@ -129,10 +130,10 @@ class PromptContextBuilder:
         if len(context_sections) > 2:
             messages.append(LLMMessage(role="system", content="\n".join(context_sections)))
         messages.extend(
-            LLMMessage(role=turn.role, content=f"[recent_turns] {turn.text}")
+            LLMMessage(role=turn.role, content=turn.text)
             for turn in selected_recent
         )
-        messages.append(LLMMessage(role="user", content=f"[latest_user] {latest}"))
+        messages.append(LLMMessage(role="user", content=latest))
 
         bounded_messages = _bound_messages(messages, self.max_context_chars)
         diagnostics = {

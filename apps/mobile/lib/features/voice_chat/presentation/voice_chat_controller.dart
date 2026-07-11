@@ -87,41 +87,59 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       await ref.read(audioSessionServiceProvider).configureForVoiceCompanion();
       state = state.copyWith(phase: VoiceSessionPhase.connecting);
 
-      final apiClient = ref.read(sessionApiClientProvider);
-      final session = await apiClient.createSession(deviceId: deviceId);
-      final token = await apiClient.mintToken(
-        deviceId: deviceId,
-        sessionId: session.sessionId,
-      );
       final liveKitService = ref.read(liveKitConnectionServiceProvider);
-      final handle = await liveKitService.connect(
-        session: session,
-        token: token,
-      );
+      final apiClient = ref.read(sessionApiClientProvider);
+      LiveKitSessionInfo? createdSession;
+      try {
+        createdSession = await apiClient.createSession(deviceId: deviceId);
+        final token = await apiClient.mintToken(
+          deviceId: deviceId,
+          sessionId: createdSession.sessionId,
+        );
+        final handle = await liveKitService.connect(
+          session: createdSession,
+          token: token,
+        );
 
-      await _connectionSubscription?.cancel();
-      _connectionSubscription = handle.connectionUpdates.listen(
-        _applyConnectionStatus,
-      );
-      await _eventSubscription?.cancel();
-      _eventSubscription = handle.events.listen((event) {
-        unawaited(_applyLiveKitEvent(event));
-      });
-      await liveKitService.sendReliable(
-        _sequencer.next(
-          type: 'client_session_started',
-          sessionId: session.sessionId,
-          payload: {'room_name': session.roomName},
-        ),
-      );
+        await _connectionSubscription?.cancel();
+        _connectionSubscription = handle.connectionUpdates.listen(
+          _applyConnectionStatus,
+        );
+        await _eventSubscription?.cancel();
+        _eventSubscription = handle.events.listen((event) {
+          unawaited(_applyLiveKitEvent(event));
+        });
+        await liveKitService.sendReliable(
+          _sequencer.next(
+            type: 'client_session_started',
+            sessionId: createdSession.sessionId,
+            payload: {'room_name': createdSession.roomName},
+          ),
+        );
 
-      _activeDeviceId = deviceId;
-      state = state.copyWith(
-        isBusy: false,
-        phase: VoiceSessionPhase.listening,
-        activeSessionId: session.sessionId,
-      );
-      return StartSessionResult.started;
+        _activeDeviceId = deviceId;
+        state = state.copyWith(
+          isBusy: false,
+          phase: VoiceSessionPhase.listening,
+          activeSessionId: createdSession.sessionId,
+        );
+        return StartSessionResult.started;
+      } catch (_) {
+        if (createdSession != null) {
+          try {
+            await apiClient.endSession(
+              deviceId: deviceId,
+              sessionId: createdSession.sessionId,
+            );
+          } catch (_) {
+            // The API's idempotent session recovery handles a later retry.
+          }
+        }
+        await _connectionSubscription?.cancel();
+        await _eventSubscription?.cancel();
+        await liveKitService.disconnect();
+        rethrow;
+      }
     } catch (error) {
       state = state.copyWith(
         isBusy: false,
@@ -322,12 +340,25 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       0,
       6,
     );
+    final retrievalStrategy =
+        (event.payload['memory_retrieval_strategy'] as String?) ??
+        'deterministic';
+    final rerankerStrategy =
+        (event.payload['memory_reranker_strategy'] as String?) ??
+        'deterministic';
+    final route = event.payload['route'] as String?;
     final pendingReceipts = await ref
         .read(appDatabaseProvider)
         .readPendingMemoryReceipts(limit: 1);
     final memories = await ref
         .read(memoryLookupServiceProvider)
-        .lookup(latestUserText: query, limit: limit);
+        .lookup(
+          latestUserText: query,
+          limit: limit,
+          retrievalStrategy: retrievalStrategy,
+          rerankerStrategy: rerankerStrategy,
+          route: route,
+        );
     final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAt;
     _logVoiceMemoryDiagnostic('memory_lookup_response_mobile', {
       'turn_id': event.turnId,
@@ -336,6 +367,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       'memory_packets': memories.length,
       'pending_receipts': pendingReceipts.length,
       'memory_labels': [for (final memory in memories) memory.label],
+      'memory_retrieval_strategy': retrievalStrategy,
+      'memory_reranker_strategy': rerankerStrategy,
     });
     await ref
         .read(liveKitConnectionServiceProvider)

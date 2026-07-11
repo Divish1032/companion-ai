@@ -2,7 +2,7 @@
 
 Use this file for API service, LiveKit session/token flow, realtime agent lifecycle, provider interfaces, and Ubuntu deployment.
 
-Related sprints: Sprint -1, Sprint 0, Sprint 2, Sprint 3, Sprint 5, Sprint 7, Sprint 9, Sprint 10.
+Related sprints: Sprint -1, Sprint 0, Sprint 2, Sprint 3, Sprint 5, Sprint 7, Sprint 7.5, Sprint 9, Sprint 10.
 
 ## 11. Backend Requirements
 
@@ -15,7 +15,17 @@ GET /health
 POST /v1/session
 POST /v1/livekit/token
 GET /v1/config
+POST /v1/embeddings
+POST /v1/rerank
+POST /v1/memory-plan
 ```
+
+The memory endpoints are stateless compute adapters used by the phone-owned
+long-term-memory flow. They may run deterministic development implementations
+or optional local model-serving implementations. They must not persist
+transcript text, memory text, vectors, or user identifiers beyond redacted
+operational metrics. Their model, dimension, payload, and timeout contracts
+are defined in `architecture/long_term_memory.md`.
 
 `POST /v1/session`:
 
@@ -129,6 +139,17 @@ PERSONA_CONFIG_PATH
 MAX_CONCURRENT_AGENTS
 MAX_AGENT_MEMORY_MB
 MAX_SESSION_SECONDS
+ENABLE_MEMORY_EMBEDDINGS
+MEMORY_EMBEDDING_MODEL
+MEMORY_EMBEDDING_DIMENSION
+EMBEDDING_TIMEOUT_SECONDS
+ENABLE_MEMORY_RERANKER
+MEMORY_RERANKER_MODEL
+RERANKER_TIMEOUT_SECONDS
+ENABLE_MEMORY_PLANNER
+MEMORY_PLANNER_MODEL
+PLANNER_TIMEOUT_SECONDS
+HF_HOME
 ```
 
 Configuration requirements:
@@ -179,6 +200,13 @@ realtime-agent-service
 caddy or nginx
 ```
 
+When local memory model serving is enabled, the API also needs a persistent
+Hugging Face cache volume. The cache stores model artifacts only; SQLite
+session state and phone-owned memory remain separate. Model weights must be
+downloaded and warmed before accepting real sessions, and model readiness must
+be reported independently from the basic API process health check. See
+`docs/deployment/ubuntu.md`.
+
 Optional:
 
 ```text
@@ -197,6 +225,10 @@ Required:
 - TURN TLS/TCP fallback.
 - Health checks.
 - Firewall rules.
+- Persistent model-cache storage sized from measured model artifacts, with
+  permissions restricted to the API container.
+- A readiness check that fails closed for selected model flags until the
+  configured artifacts are present and warm-up succeeds.
 
 TURN requirements:
 

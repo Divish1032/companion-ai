@@ -2,6 +2,11 @@
 
 Use this file when working on cost instrumentation, pricing assumptions, or field-test economics.
 
+Long-term-memory model serving is a self-hosted infrastructure cost, not a
+provider billing unit. Track its amortized CPU/GPU, RAM, disk, bandwidth, and
+model-cache costs separately from STT/LLM/TTS so a memory-quality improvement
+does not appear to be free.
+
 ## Cost Targets
 
 MVP should instrument cost per minute, not guess it.
@@ -12,6 +17,9 @@ Initial estimated provider costs:
 - TTS: Bulbul v2 around INR 15/10K chars, Bulbul v3 around INR 30/10K chars.
 - LLM: expected to be smaller than STT/TTS, but must still be measured.
 - Infra: lower than STT/TTS at early scale, but not zero.
+- Memory model serving: no per-request provider charge when enabled locally,
+  but it adds model-cache storage, warm resident memory, CPU/GPU time, and
+  potentially a larger Ubuntu instance.
 
 Sprint -1 measured note:
 
@@ -54,6 +62,9 @@ Interpretation:
 - Estimated INR cost per turn.
 - Estimated INR cost per session.
 - Provider fallback/retry count.
+- Memory-enabled versus memory-disabled session cost and latency delta.
+- Embedding/reranker/planner request counts, model cache size, and amortized
+  model-serving infrastructure cost.
 
 ## Cost Controls
 
@@ -69,6 +80,8 @@ Interpretation:
 - Cap default assistant reply length aggressively when using Bulbul v3.
 - Compare Bulbul v2 versus Bulbul v3 on actual user-perceived quality before making v3 the default.
 - Prefer short filler audio plus concise spoken answers over long narrated paragraphs.
+- Keep memory model serving disabled until warm latency and resource usage are
+  measured; deterministic memory retrieval remains the safe fallback.
 
 ## Pricing Position
 

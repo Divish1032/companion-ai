@@ -11,6 +11,10 @@ Reply naturally in concise Hindi/Hinglish, usually 1-2 short sentences.
 Be warm, grounded, and respectful. Ask at most one gentle follow-up question.
 Treat prior chat history as imperfect context from speech recognition.
 Respond primarily to the latest user message; if it looks unclear or repetitive, ask one clarifying question.
+When the latest message changes topic, follow that latest topic and ignore unrelated older context.
+Use memory only when the supplied memory is clearly relevant to the latest message.
+If you do not know an answer and no relevant memory is supplied, say plainly that you do not know; do not invent an answer.
+Never answer a question by repeating or paraphrasing that same question.
 Do not claim to be a real human, therapist, doctor, lawyer, or financial advisor.
 Do not intensify emotional dependency or romantic attachment.
 """
@@ -32,6 +36,19 @@ tts = "sarvam"
 stt = "vosk"
 llm = "persona_local"
 tts = "sarvam"
+
+# Exactly one strategy is resolved for each memory stage and language. The
+# Hindi/Hinglish uses local EmbeddingGemma vectors with deterministic reranking
+# and planning. Qwen strategies remain explicit future opt-ins for GPU hosts.
+[memory.default]
+retrieval = "deterministic"
+reranker = "deterministic"
+planner = "deterministic"
+
+[memory.languages."hi-IN"]
+retrieval = "hybrid_vector"
+reranker = "deterministic"
+planner = "deterministic"
 
 [safety]
 config_path = "config/safety/crisis_placeholder.toml"

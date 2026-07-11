@@ -248,7 +248,10 @@ class AppDatabase extends _$AppDatabase {
                 )
                 ..limit(1))
               .getSingleOrNull();
-      if (user != null && _eligibleForMemory(user)) {
+      if (user != null &&
+          _eligibleForMemory(user) &&
+          _classifyMemoryReceiptReply(user.messageText) ==
+              _MemoryReceiptDecision.none) {
         await _upsertSessionSummary(user, assistant);
         consolidationNow = assistant.createdAt;
       }
@@ -286,6 +289,7 @@ class AppDatabase extends _$AppDatabase {
     required String latestUserText,
     required int limit,
     List<VectorSearchHit> vectorHits = const [],
+    String? route,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final intent = _classifyMemoryQuery(latestUserText);
@@ -302,7 +306,7 @@ class AppDatabase extends _$AppDatabase {
             .get();
     final ranked = [
       for (final row in rows)
-        if (_memoryRelevant(row, latestUserText))
+        if (_memoryRelevant(row, latestUserText, intent))
           _RankedMemory(row, _memoryRank(row, latestUserText, intent)),
       for (final row in rows)
         if (vectorScores.containsKey(row.id) &&
@@ -326,6 +330,7 @@ class AppDatabase extends _$AppDatabase {
     }
     _logMemoryDiagnostic('memory_lookup_local', {
       'intent': intent.name,
+      'route': route ?? 'unspecified',
       'candidate_count': rows.length,
       'vector_hit_count': vectorHits.length,
       'selected_count': selected.length,
@@ -486,7 +491,9 @@ class AppDatabase extends _$AppDatabase {
     if (!_eligibleForMemory(message) || message.role != 'user') {
       return;
     }
-    if (await _applyMemoryReceiptReply(message)) {
+    final receiptDecision = _classifyMemoryReceiptReply(message.messageText);
+    if (receiptDecision != _MemoryReceiptDecision.none) {
+      await _applyMemoryReceiptReply(message);
       return;
     }
     await _upsertGraphSignals(message);
@@ -686,6 +693,9 @@ class AppDatabase extends _$AppDatabase {
     final existing = await (select(
       memoryRecords,
     )..where((row) => row.id.equals(id))).getSingleOrNull();
+    if (existing?.receiptState == 'rejected') {
+      return;
+    }
     final sourceTurnIds = existing == null
         ? [message.turnId]
         : {
@@ -1674,7 +1684,9 @@ _UtteranceType _classifyUtterance(String text) {
 
 _MemoryQueryIntent _classifyMemoryQuery(String text) {
   final normalized = _normalizeForMemory(text);
-  if ((normalized.contains('naam') || normalized.contains('name')) &&
+  if ((normalized.contains('naam') ||
+          normalized.contains('name') ||
+          normalized.contains('नाम')) &&
       _isQuestionLikeMemoryTurn(normalized)) {
     return _MemoryQueryIntent.identityRecall;
   }
@@ -1798,12 +1810,25 @@ _MemoryReceiptDecision _classifyMemoryReceiptReply(String text) {
   return _MemoryReceiptDecision.none;
 }
 
-bool _memoryRelevant(MemoryRecord row, String latestUserText) {
+bool _memoryRelevant(
+  MemoryRecord row,
+  String latestUserText,
+  _MemoryQueryIntent intent,
+) {
   if (!_memoryAllowedForRetrieval(row, latestUserText)) {
     return false;
   }
   if ({'stable_fact', 'core_profile', 'procedural'}.contains(row.kind)) {
-    return true;
+    // Stable personalisation must be explicitly requested. Generic emotional or
+    // contextual turns should not be made more personal merely because a profile
+    // record exists.
+    return switch (intent) {
+      _MemoryQueryIntent.identityRecall => row.label == 'preferred_name',
+      _MemoryQueryIntent.languageRecall => row.label == 'language_style',
+      _MemoryQueryIntent.preferenceRecall =>
+        row.label == 'safe_preference' || row.label == 'language_style',
+      _MemoryQueryIntent.general => false,
+    };
   }
   final latest = _canonicalMemoryText(latestUserText);
   final content = '${row.canonicalText} ${row.content}'.toLowerCase();
@@ -1836,7 +1861,7 @@ double _memoryRank(
   String latestUserText,
   _MemoryQueryIntent intent,
 ) {
-  final relevance = _memoryRelevant(row, latestUserText) ? 0.2 : 0.0;
+  final relevance = _memoryRelevant(row, latestUserText, intent) ? 0.2 : 0.0;
   final recency = row.updatedAt / 10000000000000;
   final typeBoost = switch ((intent, row.label, row.kind)) {
     (_MemoryQueryIntent.identityRecall, 'preferred_name', 'stable_fact') => 1.0,

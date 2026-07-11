@@ -24,7 +24,7 @@ def test_prompt_builder_excludes_noisy_replaced_and_duplicate_turns() -> None:
     assert "old noisy text" not in contents
     assert contents.count("same reply") == 1
     assert messages[-1].role == "user"
-    assert messages[-1].content == "[latest_user] naam yaad hai?"
+    assert messages[-1].content == "naam yaad hai?"
     assert diagnostics["recent_turns_selected"] == 2
 
 
@@ -66,7 +66,7 @@ def test_prompt_builder_selects_relevant_memory_before_recent_turns() -> None:
 
     assert "User prefers to be called Rahul." in joined
     assert "suicide" not in joined
-    assert joined.index("[core_profile]") < joined.index("[recent_turns]")
+    assert joined.index("User prefers to be called Rahul.") < joined.index("kal ka halka sa turn")
     assert diagnostics["memory_blocks_selected"] == 2
 
 
@@ -159,7 +159,7 @@ def test_prompt_builder_keeps_context_bounded_and_latest_user_authoritative() ->
     messages, diagnostics = builder.build("latest sawaal")
 
     assert sum(len(message.content) for message in messages) <= 900
-    assert messages[-1].content == "[latest_user] latest sawaal"
+    assert messages[-1].content == "latest sawaal"
     assert diagnostics["message_count"] == len(messages)
 
 
@@ -170,9 +170,9 @@ def test_prompt_builder_updates_same_session_history_after_complete_turn() -> No
     messages, _diagnostics = builder.build("naam yaad hai?")
     contents = "\n".join(message.content for message in messages)
 
-    assert "[recent_turns] mera naam rahul hai" in contents
-    assert "[recent_turns] Namaste Rahul" in contents
-    assert messages[-1].content == "[latest_user] naam yaad hai?"
+    assert "mera naam rahul hai" in contents
+    assert "Namaste Rahul" in contents
+    assert messages[-1].content == "naam yaad hai?"
 
 
 def test_prompt_builder_adds_bounded_memory_receipt_prompt() -> None:
@@ -198,7 +198,7 @@ def test_prompt_builder_adds_bounded_memory_receipt_prompt() -> None:
     assert "ask at most one short voice-only confirmation question" in joined
     assert "Potential memory" in joined
     assert diagnostics["memory_receipts_available"] == 1
-    assert messages[-1].content == "[latest_user] aaj office ka din heavy tha"
+    assert messages[-1].content == "aaj office ka din heavy tha"
 
 
 def test_prompt_builder_excludes_rejected_memory_blocks() -> None:

@@ -2,7 +2,14 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import Settings, load_provider_routing
-from app.lifecycle import AgentAssignment, AgentAssignmentError, AgentSupervisor
+from app.lifecycle import (
+    AgentAssignment,
+    AgentAssignmentError,
+    AgentSupervisor,
+    selected_llm_provider_name,
+    selected_stt_provider_name,
+    selected_tts_provider_name,
+)
 
 settings = Settings()
 supervisor = AgentSupervisor(settings)
@@ -60,11 +67,19 @@ async def cancel_agent(request: AgentCancelRequest) -> dict[str, bool]:
 
 @app.get("/debug/provider-route/{language}")
 async def provider_route(language: str) -> dict[str, str]:
-    route = load_provider_routing().for_language(language)
+    routing = load_provider_routing()
+    route = routing.for_language(language)
+    memory = routing.memory_for_language(language)
 
     return {
         "language": language,
         "stt": route.stt,
         "llm": route.llm,
         "tts": route.tts,
+        "effective_stt": selected_stt_provider_name(settings),
+        "effective_llm": selected_llm_provider_name(settings),
+        "effective_tts": selected_tts_provider_name(settings),
+        "memory_retrieval": memory.retrieval,
+        "memory_reranker": memory.reranker,
+        "memory_planner": memory.planner,
     }

@@ -53,7 +53,7 @@ InSpeech
   -> ForcedEndpoint after max utterance duration
 EndpointCandidate
   -> InSpeech if speech resumes
-  -> CommitTurn if silence holds and transcript/partial does not suggest continuation
+  -> CommitTurn if coalescing silence holds and transcript/partial does not suggest continuation
 CommitTurn
   -> Thinking/LLM pipeline
 ```
@@ -64,6 +64,9 @@ Initial configurable parameters:
 - Pre-speech buffer forwarded to STT: 150-300ms to avoid clipping first syllables.
 - Silence duration before endpoint candidate: 600ms.
 - Extended silence for low-confidence/continuation partials: 900-1200ms.
+- Turn-coalescing silence before committing a normal endpoint: 1500ms in the
+  current Hindi/Hinglish route. A shorter pause keeps the same logical turn
+  open so continuation does not create a second message.
 - Forced endpoint timeout: 8-10s for MVP to cap cost and runaway sessions.
 - Do not commit on trailing continuation particles such as "toh", "aur", "phir", "matlab", "haan..." when STT partials indicate continuation.
 - Empty or very low-confidence turns should ask for repeat rather than call LLM.
@@ -156,7 +159,24 @@ Barge-in requirements:
 - If the user repeatedly interrupts rapidly, after 3 rapid barge-ins the assistant should stop responding and say a short listening prompt such as "Aap pehle boliye, main sun raha hoon."
 - Log barge-in stage: before TTS, during TTS, after TTS, false/ignored.
 
-### 8.3 TTS Chunking
+### 8.3 Pre-response continuation coalescing
+
+If speech resumes after an endpoint has committed but before the assistant final
+response is committed, the agent:
+
+1. Cancels the pending memory lookup, LLM stream, and TTS work.
+2. Keeps the earlier logical turn ID and transcript text.
+3. Appends the resumed transcript to that turn.
+4. Emits one replacement final transcript event using the original turn ID.
+5. Runs memory lookup and LLM inference once against the coalesced turn.
+
+Once an assistant final transcript has been emitted, later speech is handled as
+a normal barge-in/new turn. This prevents an already spoken answer from being
+retroactively associated with a different user utterance. The agent emits only
+redacted coalescing diagnostics: `turn_coalescing_started`, `coalesced`, and
+`coalesced_segments`.
+
+### 8.4 TTS Chunking
 
 TTS should not wait for the entire LLM answer.
 

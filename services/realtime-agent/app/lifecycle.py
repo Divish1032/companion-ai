@@ -21,8 +21,10 @@ from app.context import PromptContextBuilder
 from app.events import EventSequencer, TurnIdFactory
 from app.memory_router import route_memory_query
 from app.memory_router import MemoryRoutingDecision
+from app.memory_planner import HttpMemoryPlanner, MemoryPlanner
 from app.providers import (
     LLMProvider,
+    MemoryStrategyRoute,
     PersonaLLMProvider,
     ProviderRouting,
     SarvamBulbulTTSProvider,
@@ -35,9 +37,6 @@ from app.providers import (
 from app.providers.interfaces import LLMMessage, LLMToken, TTSAudioFrame, TranscriptEvent
 from app.providers.mock import MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
-
-
-MEMORY_LOOKUP_TIMEOUT_SECONDS = 0.2
 
 
 class AgentAssignmentError(Exception):
@@ -292,6 +291,7 @@ class RealtimeAgentSession:
         llm_provider: LLMProvider | None = None,
         tts_provider: TTSProvider | None = None,
         safety_classifier: SafetyClassifier | None = None,
+        memory_planner: MemoryPlanner | None = None,
     ) -> None:
         self.assignment = assignment
         self.settings = settings
@@ -300,6 +300,12 @@ class RealtimeAgentSession:
         self.llm_provider = llm_provider or create_llm_provider(settings)
         self.tts_provider = tts_provider or create_tts_provider(settings)
         self.safety_classifier = safety_classifier or SafetyClassifier()
+        self.memory_strategy = selected_memory_strategy(settings)
+        self.memory_planner = memory_planner or HttpMemoryPlanner(
+            base_url=settings.memory_api_base_url,
+            model=settings.memory_planner_model,
+            timeout_seconds=settings.memory_planner_timeout_seconds,
+        )
         self.persona = load_persona_settings(settings)
         self.context_builder = PromptContextBuilder(
             system_prompt=self.persona.system_prompt,
@@ -317,10 +323,17 @@ class RealtimeAgentSession:
             stt_audio_sink=self._record_stt_audio,
         )
         self._current_turn: asyncio.Task[None] | None = None
-        self._pending_memory_requests: dict[tuple[str, int], asyncio.Future[list[dict[str, object]]]] = {}
+        self._pending_memory_requests: dict[
+            tuple[str, int], asyncio.Future[tuple[list[dict[str, object]], list[dict[str, object]]]]
+        ] = {}
+        self._memory_lookup_latency_ms: dict[str, int] = {}
         self._stopped = asyncio.Event()
         self.started = asyncio.Event()
         self._assistant_speaking = False
+        self._active_response_turn_id: str | None = None
+        self._response_user_text: dict[str, str] = {}
+        self._response_committed_turns: set[str] = set()
+        self._pending_coalesced_turn: tuple[str, str] | None = None
 
     async def run(self) -> None:
         try:
@@ -460,6 +473,27 @@ class RealtimeAgentSession:
 
     async def _handle_endpoint_event(self, event: EndpointEvent) -> None:
         if event.type == "speech_start":
+            if (
+                self._current_turn is not None
+                and not self._current_turn.done()
+                and self._active_response_turn_id is not None
+                and self._active_response_turn_id not in self._response_committed_turns
+            ):
+                previous_text = self._response_user_text.get(self._active_response_turn_id)
+                if previous_text:
+                    self._pending_coalesced_turn = (
+                        self._active_response_turn_id,
+                        previous_text,
+                    )
+                    print(
+                        "turn_coalescing_started",
+                        {
+                            "session_id": self.assignment.session_id,
+                            "turn_id": self._active_response_turn_id,
+                            "continuation_turn_id": event.turn_id,
+                        },
+                        flush=True,
+                    )
             if self._assistant_speaking or (
                 self._current_turn is not None and not self._current_turn.done()
             ):
@@ -581,15 +615,28 @@ class RealtimeAgentSession:
             status = "low_confidence"
             repeat_reason = "low_confidence"
 
+        coalesced = False
+        coalesced_segments = 1
+        effective_text = event.text
+        pending_coalesced = self._pending_coalesced_turn
+        if pending_coalesced is not None and repeat_reason is None and event.text:
+            turn_id, previous_text = pending_coalesced
+            effective_text = f"{previous_text} {event.text}".strip()
+            coalesced = True
+            coalesced_segments = 2
+            self._pending_coalesced_turn = None
+
         await self.transport.publish_reliable(
             self.sequencer.encode(
                 event_type="transcript_final",
                 turn_id=turn_id,
                 payload={
-                    "text": event.text,
+                    "text": effective_text,
                     "status": status,
                     "language": self.settings.language,
                     "confidence": event.confidence,
+                    "coalesced": coalesced,
+                    "coalesced_segments": coalesced_segments,
                     **metrics,
                 },
             )
@@ -602,6 +649,8 @@ class RealtimeAgentSession:
                 **metrics,
                 "empty": not event.text,
                 "low_confidence": status == "low_confidence",
+                "coalesced": coalesced,
+                "coalesced_segments": coalesced_segments,
             },
             flush=True,
         )
@@ -610,14 +659,18 @@ class RealtimeAgentSession:
             return
 
         self.cancel_current_turn()
+        self._active_response_turn_id = turn_id
+        self._response_user_text[turn_id] = effective_text
+        self._response_committed_turns.discard(turn_id)
         self._current_turn = asyncio.create_task(
-            self._respond_to_final_transcript(turn_id, event.text)
+            self._respond_to_final_transcript(turn_id, effective_text)
         )
 
     async def _respond_to_final_transcript(self, turn_id: str, user_text: str) -> None:
         await self._emit_state("thinking", turn_id=turn_id)
         decision = self.safety_classifier.classify_input(user_text)
         if decision.response_override is not None:
+            self._response_committed_turns.add(turn_id)
             await self._emit_assistant_final(
                 turn_id,
                 decision.response_override,
@@ -660,6 +713,7 @@ class RealtimeAgentSession:
         if output_decision.response_override is not None:
             text = output_decision.response_override
             clipped = False
+        self._response_committed_turns.add(turn_id)
         await self._emit_assistant_final(
             turn_id,
             text,
@@ -687,18 +741,44 @@ class RealtimeAgentSession:
         ):
             chunks.append(token.text)
             last_token = token
-            partial = "".join(chunks).strip()
-            if partial:
+            partial = _sanitize_llm_output("".join(chunks).strip())
+            if partial and not _looks_like_internal_marker_fragment(partial):
                 await self._emit_assistant_partial(turn_id, partial, token)
         text = "".join(chunks).strip()
+        text = _sanitize_llm_output(text)
+        if not text:
+            text = self.persona.fallback_response
+        if _looks_like_question_echo(user_text, text):
+            print(
+                "llm_query_echo_guard",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "user_chars": len(user_text),
+                    "response_chars": len(text),
+                },
+                flush=True,
+            )
+            text = "Mujhe is baat ka abhi pakka jawab nahi pata."
         clipped_text, clipped = _clip_response_text(text, max_chars=self.persona.max_output_chars)
         return clipped_text, clipped, last_token
 
     async def _llm_messages(self, turn_id: str, user_text: str) -> list[LLMMessage]:
         memory_route = route_memory_query(user_text)
+        if (
+            self.memory_strategy.planner == "qwen3_planner"
+            and self.settings.enable_memory_planner
+            and memory_route.route == "broad_safe"
+            and memory_route.confidence < 0.6
+        ):
+            planned_route = await self.memory_planner.plan(user_text)
+            if planned_route is not None:
+                memory_route = planned_route
         turn_memory_packets: list[dict[str, object]] = []
         turn_memory_receipts: list[dict[str, object]] = []
+        lookup_attempted = False
         if memory_route.route not in {"none", "safety"} and memory_route.max_blocks > 0:
+            lookup_attempted = True
             turn_memory_packets, turn_memory_receipts = await self._lookup_turn_memory(
                 turn_id,
                 user_text,
@@ -709,6 +789,26 @@ class RealtimeAgentSession:
             turn_memory_packets=turn_memory_packets,
             turn_memory_receipts=turn_memory_receipts,
         )
+        lookup_latency_ms = self._memory_lookup_latency_ms.pop(turn_id, None)
+        print(
+            "memory_lookup_metrics",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                "route": memory_route.route,
+                "lookup_attempted": lookup_attempted,
+                "lookup_latency_ms": lookup_latency_ms,
+                "candidates_returned": len(turn_memory_packets),
+                "candidates_injected": diagnostics["memory_blocks_selected"],
+                "no_memory_decision": not turn_memory_packets,
+                "context_char_budget": self.context_builder.max_context_chars,
+                "context_chars": diagnostics["context_chars"],
+                "retrieval_strategy": self.memory_strategy.retrieval,
+                "reranker_strategy": self.memory_strategy.reranker,
+                "planner_strategy": self.memory_strategy.planner,
+            },
+            flush=True,
+        )
         print(
             "prompt_context",
             {
@@ -716,6 +816,9 @@ class RealtimeAgentSession:
                 "memory_route": memory_route.route,
                 "memory_route_confidence": memory_route.confidence,
                 "memory_route_reason": memory_route.reason,
+                "memory_retrieval_strategy": self.memory_strategy.retrieval,
+                "memory_reranker_strategy": self.memory_strategy.reranker,
+                "memory_planner_strategy": self.memory_strategy.planner,
                 **diagnostics,
             },
             flush=True,
@@ -737,6 +840,8 @@ class RealtimeAgentSession:
                 "route_confidence": memory_route.confidence,
                 "route_reason": memory_route.reason,
                 "max_blocks": memory_route.max_blocks,
+                "memory_retrieval_strategy": self.memory_strategy.retrieval,
+                "memory_reranker_strategy": self.memory_strategy.reranker,
             },
         )
         sequence = event["sequence"]
@@ -752,7 +857,7 @@ class RealtimeAgentSession:
             json.dumps(event, separators=(",", ":")).encode("utf-8")
         )
         try:
-            return await asyncio.wait_for(future, MEMORY_LOOKUP_TIMEOUT_SECONDS)
+            return await asyncio.wait_for(future, self.settings.memory_lookup_timeout_seconds)
         except TimeoutError:
             print(
                 "memory_lookup_timeout",
@@ -761,7 +866,7 @@ class RealtimeAgentSession:
                     "turn_id": turn_id,
                     "request_sequence": sequence,
                     "memory_route": memory_route.route,
-                    "timeout_ms": round(MEMORY_LOOKUP_TIMEOUT_SECONDS * 1000),
+                    "timeout_ms": round(self.settings.memory_lookup_timeout_seconds * 1000),
                 },
                 flush=True,
             )
@@ -808,6 +913,9 @@ class RealtimeAgentSession:
             for receipt in raw_receipts
             if isinstance(receipt, dict)
         ][:1] if isinstance(raw_receipts, list) else []
+        elapsed_ms = event.get("elapsed_ms")
+        if isinstance(elapsed_ms, int) and elapsed_ms >= 0:
+            self._memory_lookup_latency_ms[turn_id] = elapsed_ms
         future.set_result((packets, receipts))
         print(
             "memory_lookup_response",
@@ -1133,6 +1241,25 @@ def selected_tts_provider_name(settings: Settings) -> str:
         return "mock"
 
 
+def selected_memory_strategy(settings: Settings) -> MemoryStrategyRoute:
+    try:
+        routing = ProviderRouting.from_dict(_load_persona_config(settings))
+        strategy = routing.memory_for_language(settings.language)
+        if strategy.retrieval not in {"deterministic", "hybrid_vector"}:
+            raise ValueError("unsupported memory retrieval strategy")
+        if strategy.reranker not in {"deterministic", "qwen3_reranker"}:
+            raise ValueError("unsupported memory reranker strategy")
+        if strategy.planner not in {"deterministic", "qwen3_planner"}:
+            raise ValueError("unsupported memory planner strategy")
+        return strategy
+    except Exception:
+        return MemoryStrategyRoute(
+            retrieval="deterministic",
+            reranker="deterministic",
+            planner="deterministic",
+        )
+
+
 def _load_persona_config(settings: Settings) -> dict[str, object]:
     import tomllib
     from pathlib import Path
@@ -1175,6 +1302,52 @@ def _clip_response_text(text: str, *, max_chars: int) -> tuple[str, bool]:
     if boundary <= 0:
         boundary = max_chars
     return text[:boundary].strip(), True
+
+
+_INTERNAL_CONTEXT_MARKERS = (
+    "[recent_turns]",
+    "[latest_user]",
+    "[core_profile]",
+    "[procedural_memory]",
+    "[semantic_memory]",
+    "[episodic_memory]",
+    "[session_summary]",
+    "[memory_receipt]",
+)
+
+
+def _sanitize_llm_output(text: str) -> str:
+    sanitized = text
+    for marker in _INTERNAL_CONTEXT_MARKERS:
+        sanitized = sanitized.replace(marker, "")
+    return " ".join(sanitized.split()).strip()
+
+
+def _looks_like_internal_marker_fragment(text: str) -> bool:
+    lowered = text.casefold()
+    return any(
+        fragment in lowered
+        for fragment in ("[recent", "[latest", "[core", "[procedural", "[semantic", "[episodic", "[session", "[memory")
+    )
+
+
+def _looks_like_question_echo(user_text: str, response_text: str) -> bool:
+    """Catch the narrow failure where the model returns the user's question."""
+    user_tokens = _response_tokens(user_text)
+    response_tokens = _response_tokens(response_text)
+    if len(user_tokens) < 2 or len(response_tokens) < 2:
+        return False
+    overlap = len(user_tokens & response_tokens) / len(user_tokens)
+    response_is_question = any(mark in response_text for mark in ("?", "？", "क्या", "कौन", "कैसे", "कब", "कहाँ"))
+    return response_is_question and overlap >= 0.65 and len(response_tokens) <= len(user_tokens) + 5
+
+
+def _response_tokens(text: str) -> set[str]:
+    return {
+        token.strip(".,!?;:()[]{}।?؟")
+        for token in text.casefold().split()
+        if len(token.strip(".,!?;:()[]{}।?؟")) > 1
+    }
 
 
 class _UnavailableSTTProvider(STTProvider):

@@ -183,10 +183,13 @@ void main() {
         embeddingClient: _FakeEmbeddingClient(),
         rerankClient: _NoopRerankClient(),
         vectorIndexLoader: () async => vectorIndex,
+        embeddingsEnabled: true,
       );
       final memories = await lookup.lookup(
         latestUserText: 'mountain wali purani baat yaad hai?',
         limit: 4,
+        retrievalStrategy: 'hybrid_vector',
+        rerankerStrategy: 'deterministic',
       );
 
       expect(memories.map((memory) => memory.id), contains('memory_trip'));
@@ -225,6 +228,35 @@ void main() {
       );
     },
   );
+
+  test('default strategy never calls embeddings or the reranker', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    await database.upsertUserMessageAndExtractMemory(
+      _message(
+        id: 'u_deterministic',
+        turnId: 'turn_deterministic',
+        text: 'office mein manager pressure deta hai',
+      ),
+    );
+    final lookup = MemoryLookupService(
+      database: database,
+      embeddingClient: _FailingEmbeddingClient(),
+      rerankClient: _FailingRerankClient(),
+      vectorIndexLoader: () async => InMemoryMemoryVectorIndex(),
+    );
+
+    final memories = await lookup.lookup(
+      latestUserText: 'aaj office se aaya, bad day tha',
+      limit: 4,
+      route: 'semantic',
+    );
+
+    expect(
+      memories.map((memory) => memory.id),
+      contains('memory_semantic_work_stress_manager'),
+    );
+  });
 
   test(
     'lookup excludes sensitive and stale memories even with vector hits',
@@ -303,8 +335,14 @@ void main() {
         embeddingClient: _FakeEmbeddingClient(),
         rerankClient: _NoopRerankClient(),
         vectorIndexLoader: () async => vectorIndex,
+        embeddingsEnabled: true,
       );
-      await lookup.lookup(latestUserText: 'purani trip wali baat', limit: 4);
+      await lookup.lookup(
+        latestUserText: 'purani trip wali baat',
+        limit: 4,
+        retrievalStrategy: 'hybrid_vector',
+        rerankerStrategy: 'deterministic',
+      );
 
       expect(await vectorIndex.count(), 1);
     },
@@ -351,10 +389,14 @@ void main() {
         embeddingClient: _FakeEmbeddingClient(),
         rerankClient: _OrderingRerankClient(['memory_second', 'memory_first']),
         vectorIndexLoader: () async => vectorIndex,
+        embeddingsEnabled: true,
+        rerankerEnabled: true,
       );
       final reranked = await rerankedLookup.lookup(
         latestUserText: 'related memory',
         limit: 4,
+        retrievalStrategy: 'hybrid_vector',
+        rerankerStrategy: 'qwen3_reranker',
       );
 
       expect(reranked.map((memory) => memory.id).take(2), [
@@ -367,10 +409,14 @@ void main() {
         embeddingClient: _FakeEmbeddingClient(),
         rerankClient: _FailingRerankClient(),
         vectorIndexLoader: () async => vectorIndex,
+        embeddingsEnabled: true,
+        rerankerEnabled: true,
       );
       final fallback = await fallbackLookup.lookup(
         latestUserText: 'related memory',
         limit: 4,
+        retrievalStrategy: 'hybrid_vector',
+        rerankerStrategy: 'qwen3_reranker',
       );
 
       expect(fallback.map((memory) => memory.id), contains('memory_first'));
@@ -381,14 +427,20 @@ void main() {
 
 class _FakeEmbeddingClient implements MemoryEmbeddingClient {
   @override
-  Future<List<List<double>>> embedTexts(List<String> texts) async {
+  Future<List<List<double>>> embedTexts(
+    List<String> texts, {
+    String inputType = 'document',
+  }) async {
     return [for (var i = 0; i < texts.length; i += 1) _embedding(first: 1)];
   }
 }
 
 class _FailingEmbeddingClient implements MemoryEmbeddingClient {
   @override
-  Future<List<List<double>>> embedTexts(List<String> texts) async {
+  Future<List<List<double>>> embedTexts(
+    List<String> texts, {
+    String inputType = 'document',
+  }) async {
     throw const MemoryEmbeddingException(503, '{"code":"unavailable"}');
   }
 }

@@ -343,7 +343,10 @@ class _FakeSessionApiClient implements SessionApiClient {
 
 class _FakeMemoryEmbeddingClient implements MemoryEmbeddingClient {
   @override
-  Future<List<List<double>>> embedTexts(List<String> texts) async {
+  Future<List<List<double>>> embedTexts(
+    List<String> texts, {
+    String inputType = 'document',
+  }) async {
     return [
       for (var i = 0; i < texts.length; i += 1)
         [1.0, for (var j = 1; j < memoryEmbeddingDimensions; j += 1) 0.0],

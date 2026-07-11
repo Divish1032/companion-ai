@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Annotated
 
@@ -8,17 +10,40 @@ from pydantic import BaseModel, Field
 from app.agent_assignment import AgentAssigner, AgentAssignmentFailed
 from app.config import Settings
 from app.embedding_service import (
-    DEFAULT_EMBEDDING_DIMENSION,
-    DEFAULT_EMBEDDING_MODEL,
-    embed_texts,
-    rerank,
+    EmbeddingInputType,
+    ModelServingService,
+    ModelServingUnavailable,
+    RetrievalPlan,
 )
-from app.session_store import ActiveSessionExists, RateLimitExceeded, SessionStore
+from app.session_store import RateLimitExceeded, SessionStore
 
 settings = Settings()
-app = FastAPI(title="Companion AI API", version="0.1.0")
 store = SessionStore(settings.durable_store_path)
 agent_assigner = AgentAssigner(settings)
+model_serving = ModelServingService(
+    embedding_enabled=settings.enable_memory_embeddings,
+    embedding_model_name=settings.memory_embedding_model,
+    embedding_dimension=settings.memory_embedding_dimension,
+    embedding_backend=settings.memory_embedding_backend,
+    embedding_model_path=settings.memory_embedding_model_path,
+    reranker_enabled=settings.enable_memory_reranker,
+    reranker_model_name=settings.memory_reranker_model,
+    planner_enabled=settings.enable_memory_planner,
+    planner_model_name=settings.memory_planner_model,
+)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    warmup_task = asyncio.create_task(model_serving.warm_up())
+    try:
+        yield
+    finally:
+        warmup_task.cancel()
+        await asyncio.gather(warmup_task, return_exceptions=True)
+
+
+app = FastAPI(title="Companion AI API", version="0.1.0", lifespan=lifespan)
 
 
 class RecentTranscriptItem(BaseModel):
@@ -90,8 +115,9 @@ class EndSessionRequest(BaseModel):
 
 class EmbeddingsRequest(BaseModel):
     texts: list[str] = Field(min_length=1, max_length=32)
-    model: str = Field(default=DEFAULT_EMBEDDING_MODEL, max_length=120)
-    dimension: int = Field(default=DEFAULT_EMBEDDING_DIMENSION, ge=32, le=1024)
+    model: str | None = Field(default=None, max_length=120)
+    dimension: int | None = Field(default=None, ge=128, le=768)
+    input_type: EmbeddingInputType = "document"
 
 
 class EmbeddingsResponse(BaseModel):
@@ -108,7 +134,7 @@ class RerankCandidate(BaseModel):
 class RerankRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     candidates: list[RerankCandidate] = Field(min_length=1, max_length=64)
-    model: str = Field(default="qwen3-reranker-0.6b-stateless-dev", max_length=120)
+    model: str | None = Field(default=None, max_length=120)
 
 
 class RerankResult(BaseModel):
@@ -121,6 +147,20 @@ class RerankResponse(BaseModel):
     results: list[RerankResult]
 
 
+class PlannerRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    model: str | None = Field(default=None, max_length=120)
+
+
+class PlannerResponse(BaseModel):
+    need_memory: bool
+    route: str
+    memory_types: list[str]
+    entities: list[str]
+    time_hint: str
+    top_k: int
+
+
 def get_store() -> SessionStore:
     return store
 
@@ -129,9 +169,21 @@ def get_agent_assigner() -> AgentAssigner:
     return agent_assigner
 
 
+def get_model_serving() -> ModelServingService:
+    return model_serving
+
+
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, object]:
     return {"status": "ok", "service": settings.service_name}
+
+
+@app.get("/readiness")
+async def readiness() -> dict[str, object]:
+    embedding = model_serving.embedding_readiness()
+    if embedding["enabled"] and embedding["state"] != "ready":
+        raise HTTPException(status_code=503, detail={"status": "not_ready", **embedding})
+    return {"status": "ready", "embedding": embedding}
 
 
 @app.get("/v1/config")
@@ -143,18 +195,46 @@ async def config() -> dict[str, str]:
 
 
 @app.post("/v1/embeddings", response_model=EmbeddingsResponse)
-async def embeddings(request: EmbeddingsRequest) -> EmbeddingsResponse:
-    vectors = embed_texts(request.texts, dimension=request.dimension)
+async def embeddings(
+    request: EmbeddingsRequest,
+    serving: Annotated[ModelServingService, Depends(get_model_serving)],
+) -> EmbeddingsResponse:
+    if request.model not in {None, settings.memory_embedding_model}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_embedding_model"})
+    if request.dimension not in {None, settings.memory_embedding_dimension}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_embedding_dimension"})
+    try:
+        vectors = await asyncio.wait_for(
+            serving.embed(request.texts, input_type=request.input_type),
+            timeout=settings.embedding_timeout_seconds,
+        )
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail={"code": "embedding_timeout"}) from error
+    except ModelServingUnavailable as error:
+        raise HTTPException(status_code=503, detail={"code": "embedding_unavailable"}) from error
     return EmbeddingsResponse(
-        model=request.model,
-        dimension=request.dimension,
+        model=settings.memory_embedding_model,
+        dimension=settings.memory_embedding_dimension,
         embeddings=vectors,
     )
 
 
 @app.post("/v1/rerank", response_model=RerankResponse)
-async def rerank_candidates(request: RerankRequest) -> RerankResponse:
-    scores = rerank(request.query, [candidate.text for candidate in request.candidates])
+async def rerank_candidates(
+    request: RerankRequest,
+    serving: Annotated[ModelServingService, Depends(get_model_serving)],
+) -> RerankResponse:
+    if request.model not in {None, settings.memory_reranker_model}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_reranker_model"})
+    try:
+        scores = await asyncio.wait_for(
+            serving.rerank(request.query, [candidate.text for candidate in request.candidates]),
+            timeout=settings.reranker_timeout_seconds,
+        )
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail={"code": "reranker_timeout"}) from error
+    except ModelServingUnavailable as error:
+        raise HTTPException(status_code=503, detail={"code": "reranker_unavailable"}) from error
     ranked = sorted(
         [
             RerankResult(id=candidate.id, score=score)
@@ -163,7 +243,32 @@ async def rerank_candidates(request: RerankRequest) -> RerankResponse:
         key=lambda result: result.score,
         reverse=True,
     )
-    return RerankResponse(model=request.model, results=ranked)
+    return RerankResponse(model=settings.memory_reranker_model, results=ranked)
+
+
+@app.post("/v1/memory-plan", response_model=PlannerResponse)
+async def memory_plan(
+    request: PlannerRequest,
+    serving: Annotated[ModelServingService, Depends(get_model_serving)],
+) -> PlannerResponse:
+    if request.model not in {None, settings.memory_planner_model}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_planner_model"})
+    try:
+        plan: RetrievalPlan = await asyncio.wait_for(
+            serving.plan(request.text), timeout=settings.planner_timeout_seconds
+        )
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail={"code": "planner_timeout"}) from error
+    except ModelServingUnavailable as error:
+        raise HTTPException(status_code=503, detail={"code": "planner_unavailable"}) from error
+    return PlannerResponse(
+        need_memory=plan.need_memory,
+        route=plan.route,
+        memory_types=list(plan.memory_types),
+        entities=list(plan.entities),
+        time_hint=plan.time_hint,
+        top_k=plan.top_k,
+    )
 
 
 @app.post("/v1/session", response_model=CreateSessionResponse)
@@ -189,15 +294,6 @@ async def create_session(
             },
             session_create_limit_per_day=settings.session_create_limit_per_day,
         )
-    except ActiveSessionExists as error:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "active_session_exists",
-                "session_id": error.session.session_id,
-                "room_name": error.session.room_name,
-            },
-        ) from error
     except RateLimitExceeded as error:
         raise HTTPException(status_code=429, detail={"code": "rate_limited"}) from error
 

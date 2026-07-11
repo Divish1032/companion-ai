@@ -1,3 +1,3 @@
-const defaultMemoryEmbeddingModel = 'embeddinggemma-stateless-dev';
+const defaultMemoryEmbeddingModel = 'google/embeddinggemma-300m';
 const memoryEmbeddingDimensions = 768;
-const defaultMemoryRerankModel = 'qwen3-reranker-0.6b-stateless-dev';
+const defaultMemoryRerankModel = 'Qwen/Qwen3-Reranker-0.6B';

@@ -4,7 +4,9 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 COPY services/api/pyproject.toml ./pyproject.toml
-RUN uv pip install --system .
+# Docker Desktop on Apple Silicon exposes no CUDA device to Linux containers.
+# Select PyTorch CPU wheels explicitly so model-serving does not pull CUDA runtimes.
+RUN uv pip install --system --torch-backend cpu '.[model-serving]'
 
 COPY services/api/app ./app
 

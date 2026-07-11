@@ -25,12 +25,17 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
 ## Current Project Status
 
 - Sprint -1 validation gates are complete enough to proceed.
-- Sprints 0 through 5 are complete and green.
+- Sprints 0 through 7.5 are complete for the local MVP implementation and are
+  green under the documented checks.
 - Sprint 5 phone validation passed on Android over Wi-Fi with backend-local Vosk Hindi STT.
 - Sprint 6 added LLM integration, persona config, safety override before response playback,
   assistant transcript events, local assistant transcript persistence, and Sarvam-30B
   validation.
-- Sprint 7.5 is reserved for conversation memory and context quality after Sprint 7.
+- Sprint 7.5 delivered the local conversation-memory and context-quality slice
+  after Sprint 7.
+- The long-term-memory foundation and query-time local retrieval are implemented.
+  Real model-serving weights, Ubuntu capacity/latency validation, and the final
+  Hindi/Hinglish memory evaluation remain part of Sprints 8-10 hardening.
 
 ## Sprint Reading Guide
 
@@ -43,10 +48,10 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
 - Sprint 5: `SPRINTS.md`, `architecture/backend_agent_livekit.md`, `architecture/observability_metrics.md`
 - Sprint 6: `SPRINTS.md`, `architecture/safety_privacy.md`
 - Sprint 7: `SPRINTS.md`, `architecture/voice_pipeline.md`, `architecture/backend_agent_livekit.md`
-- Sprint 7.5: `SPRINTS.md`, `architecture/safety_privacy.md`, `architecture/backend_agent_livekit.md`, `architecture/observability_metrics.md`
-- Sprint 8: `SPRINTS.md`, `architecture/observability_metrics.md`, `architecture/unit_economics.md`
-- Sprint 9: `SPRINTS.md`, `architecture/backend_agent_livekit.md`
-- Sprint 10: `SPRINTS.md`, all architecture files as needed
+- Sprint 7.5: `SPRINTS.md`, `architecture/long_term_memory.md`, `architecture/safety_privacy.md`, `architecture/backend_agent_livekit.md`, `architecture/observability_metrics.md`
+- Sprint 8: `SPRINTS.md`, `architecture/long_term_memory.md`, `architecture/observability_metrics.md`, `architecture/unit_economics.md`
+- Sprint 9: `SPRINTS.md`, `architecture/long_term_memory.md`, `architecture/backend_agent_livekit.md`, `deployment/ubuntu.md`
+- Sprint 10: `SPRINTS.md`, `architecture/long_term_memory.md`, `architecture/backend_agent_livekit.md`, `architecture/observability_metrics.md`, `architecture/safety_privacy.md`, `deployment/ubuntu.md`
 - Sprint 11: `SPRINTS.md`, `PRD_MASTER.md`, `architecture/unit_economics.md`, `architecture/safety_privacy.md`
 
 ## First Implementation Prompt

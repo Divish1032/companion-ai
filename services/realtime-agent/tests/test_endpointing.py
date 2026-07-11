@@ -22,7 +22,7 @@ def test_clean_hinglish_sample_produces_speech_boundaries() -> None:
         [
             *_silence(150),
             *_speech(600),
-            *_silence(630),
+            *_silence(1540),
         ],
     )
 
@@ -46,10 +46,28 @@ def test_long_pause_with_continuation_particle_waits_for_extended_silence() -> N
 
     assert _event_types(events) == ["speech_start"]
 
-    events.extend(_run_sample(machine, _silence(480), partial_transcript="haan matlab"))
+    events.extend(_run_sample(machine, _silence(900), partial_transcript="haan matlab"))
 
     assert _event_types(events) == ["speech_start", "speech_end", "endpoint_commit"]
     assert events[-1].elapsed_ms >= 1500
+
+
+def test_one_second_mid_sentence_pause_keeps_the_same_turn_open() -> None:
+    machine = _machine()
+
+    events = _run_sample(
+        machine,
+        [
+            *_speech(420),
+            *_silence(900),
+        ],
+    )
+    assert _event_types(events) == ["speech_start"]
+
+    events.extend(_run_sample(machine, [*_speech(300), *_silence(1540)]))
+
+    assert _event_types(events) == ["speech_start", "speech_end", "endpoint_commit"]
+    assert events[-1].turn_id == events[0].turn_id
 
 
 def test_cough_noise_sample_does_not_commit_turn() -> None:

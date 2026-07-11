@@ -225,6 +225,18 @@ MVP context rules:
 - Do not store uploaded recent history permanently on the backend in MVP.
 - Include a client-visible privacy note that voice/transcript content is sent to AI providers for processing.
 
+Long-term-memory context rules:
+
+- Durable memory, graph metadata, receipts, and vectors are phone-owned in
+  Drift/SQLite plus a rebuildable local ObjectBox index.
+- Retrieval is query-time and intent-aware; session start may send only a tiny
+  bounded core-profile/procedural slice.
+- The API's embedding, reranker, and optional planner endpoints are stateless
+  compute adapters. They must not persist memory, transcript, vectors, or user
+  identifiers, and every model path must have a deterministic fallback.
+- See `docs/architecture/long_term_memory.md` for memory admission, safety,
+  deletion, model contracts, and timeout budgets.
+
 ### 4.6 Anonymous Device Identity
 
 No auth does not mean no identity at all.
@@ -480,6 +492,7 @@ api-service:
   - LiveKit token minting
   - config endpoint
   - health checks
+  - stateless memory embedding/rerank/planner adapters
 
 realtime-agent-service:
   - joins LiveKit rooms as AI participant
@@ -535,6 +548,17 @@ In-process agent memory:
 
 SQLite on device:
   - chat history
+  - durable long-term memory and graph metadata
+  - local ObjectBox vector index rebuilt from SQLite when needed
+```
+
+Stateless API model compute:
+
+```text
+  - embedding generation for local phone indexing/query
+  - candidate reranking
+  - optional strict-JSON retrieval planning
+  - persistent Hugging Face cache only for model artifacts, never user memory
 ```
 
 Optional backend persistence:
@@ -840,6 +864,8 @@ Use Ubuntu instance when testing:
 - Reconnect behavior.
 - Multi-device access.
 - Long-running agent sessions.
+- Warm memory model serving, model-cache reuse, and deterministic fallback after
+  model/API restart.
 
 Recommended prototype Ubuntu:
 

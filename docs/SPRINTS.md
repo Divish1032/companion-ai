@@ -452,11 +452,24 @@ Tasks:
 - Add client playback timestamp reporting.
 - Add estimated cost calculator.
 - Include LLM token cost in the cost calculator.
+- Add memory pipeline metrics: deterministic route, memory-needed decision,
+  embedding latency, local vector lookup latency, reranker latency, planner
+  latency, candidate count, injected count, timeout/unavailable count, and
+  deterministic fallback count.
+- Separate cold model-load/warm-up latency from warm per-turn inference
+  latency; never hide model loading inside the normal first-response metric.
+- Record configured memory model names, embedding dimension, service version,
+  and whether embeddings/reranking/planning were enabled for each test run.
 - Add debug diagnostics panel in dev builds.
 - Export session metrics as JSON/CSV.
 - Add basic dashboard logs.
 - Add explicit audio-format logging for capture/transport/provider conversion.
 - Add cost assumption comparison and >50% overage flag.
+- Include self-hosted memory model serving in the cost view as amortized
+  Ubuntu compute/storage cost and model-download/cache size; embeddings,
+  reranking, and planning have no per-request provider bill when served locally.
+- Keep memory diagnostics redacted: counts, model IDs, timings, statuses, and
+  budgets only; do not export transcript or memory text by default.
 
 Deliverables:
 
@@ -467,12 +480,29 @@ Acceptance:
 - Can inspect p50/p95 latency from test sessions.
 - Can inspect INR/session estimate.
 - Cost overage warnings appear when assumptions are exceeded.
+- Can inspect warm p50/p95 memory lookup and model inference latency separately
+  from cold model download/load time.
+- A model timeout, unavailable response, invalid response, or disabled flag is
+  visible as a fallback event and the voice turn remains measurable.
+- Memory-enabled and memory-disabled sessions can be compared without
+  exposing transcript text in diagnostics.
 
 ### Sprint 9: Ubuntu Deployment
 
 Goal:
 
 Deploy prototype stack to Ubuntu instance for real phone testing.
+
+This sprint owns the remaining Phase 4 operational work:
+
+- Deploy the prepared FP32 ONNX EmbeddingGemma artifact to Ubuntu with a
+  persistent Hugging Face cache.
+- Keep EmbeddingGemma enabled for embedding creation and keep Qwen reranking and
+  planning disabled.
+- Measure Ubuntu CPU warm p50/p95 latency, cold startup time, resident memory,
+  and concurrent-session behavior.
+- Restart the API and confirm cached artifact reuse, readiness transitions, and
+  deterministic mobile fallback if ONNX loading fails.
 
 Tasks:
 
@@ -482,9 +512,27 @@ Tasks:
 - Configure authenticated TURN credentials and relay port range.
 - Configure API service domain/TLS.
 - Add deployment README.
+- Add the stateless optional memory model-serving setup to the deployment
+  runbook: install the API `model-serving` extra, persist the Hugging Face cache
+  on a host volume, and document model revisions and licence acceptance. This
+  must not change the deterministic Hindi/Hinglish path.
+- Add a one-shot or admin-only model warm-up/check command for
+  `/v1/embeddings`, `/v1/rerank`, and `/v1/memory-plan`; do not make the first
+  real user turn pay the model download/load cost.
+- Add model-serving readiness/health output that distinguishes disabled,
+  downloading/loading, ready, and failed states.
+- Benchmark an optional model-serving footprint only after the relevant
+  hardware is available. Do not enable optional flags based only on the generic
+  4 vCPU/8 GB recommendation.
+- Keep model endpoints bounded and rate-limited; retain only redacted
+  operational logs and no request text, vectors, or durable user memory.
 - Add health checks.
 - Add log rotation.
 - Add restart policy.
+- Ensure the model-cache volume survives API container replacement but is not
+  included in application backups or exposed through the public web server.
+- Document rollback: disable memory model flags and return to deterministic
+  embedding/rerank plus no-planner fallback without changing the mobile schema.
 - Run real mobile-network test before treating latency numbers as valid.
 
 Deliverables:
@@ -498,6 +546,13 @@ Acceptance:
 - Real iPhone completes voice conversation over Wi-Fi and mobile data where available.
 - TURN fallback works when UDP is blocked.
 - At least one restrictive/mobile-network TURN test is documented.
+- A fresh Ubuntu deployment can reproduce the model cache and pass embedding,
+  rerank, and planner smoke checks before flags are enabled for real sessions.
+- After a container restart, cached weights are reused and the service reports
+  readiness only after the selected models are usable.
+- If model download, loading, licensing, capacity, or latency validation fails,
+  the deployment remains on deterministic fallback and voice sessions still
+  work.
 
 ### Sprint 10: MVP Hardening
 
@@ -511,6 +566,18 @@ Tasks:
 - Add offline/network error UI.
 - Add provider timeout handling.
 - Add rate limiting.
+- Add memory endpoint rate limits and payload limits for embeddings, reranking,
+  and planning; verify that model endpoints cannot be used as an unbounded
+  unauthenticated compute or storage surface.
+- Test memory fallback paths for disabled/unavailable optional models, invalid
+  model/dimension contracts, stale responses, and
+  ObjectBox rebuild failures.
+- Run 5-concurrent-session tests with memory flags enabled and disabled; track
+  API/model-serving RSS separately from per-agent RSS and define the measured
+  memory guardrail.
+- Validate cold-start behavior after API restart, cache loss, and partial model
+  failure. A memory failure must omit memory for that turn, not fail the voice
+  session or bypass safety ordering.
 - Add crash/error reporting if selected.
 - Validate Android audio focus, route changes, and foreground-service need.
 - Validate iOS `AVAudioSession`, route changes, interruption events, and background-audio need.
@@ -524,6 +591,12 @@ Tasks:
 - Tune endpointing.
 - Tune response length prompt.
 - Tune TTS chunking.
+- Run the Hindi/Hinglish memory evaluation fixture: exact recall, previous-
+  session recall, graph-expanded recall, greeting no-overretrieval, vague-query
+  abstention, contradiction/supersession, sensitive-memory exclusion, and
+  timeout fallback.
+- Validate that model-serving and memory diagnostics contain no transcript,
+  memory content, embeddings, or device identifier next to user content.
 - Add privacy copy and clear history.
 - Run 5-concurrent-session stress test.
 - Monitor per-agent RSS/memory usage during stress test.
@@ -545,6 +618,10 @@ Acceptance:
 - All 5 concurrent stress-test sessions complete at least 3 turns each.
 - No agent is killed by OOM and no agent exceeds configured memory guardrail without an explicit follow-up issue.
 - No cross-room audio, transcript, or state leakage is observed.
+- Memory model failure, cache rebuild, or API restart does not cause cross-user
+  memory leakage or block a normal voice turn.
+- With memory serving enabled, all model requests stay within the measured
+  host resource guardrail and the deterministic fallback remains available.
 
 ### Sprint 11: Hindi Field Test
 

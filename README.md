@@ -4,19 +4,20 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 ## Status
 
-Active phase: Sprint 6 LLM integration and persona complete.
+Active phase: Sprint 7.5 local long-term-memory implementation complete; Sprints 8-10 validation and deployment hardening pending.
 
-Sprint -1 through Sprint 7 are complete and green. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds local-only conversation memory for bounded prompt context across sessions. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
+Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, and stateless API embedding/rerank contracts. Real model-weight, Ubuntu capacity, public-network, and final memory-quality validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
 
 ## Repo Layout
 
 - `apps/mobile`: Flutter Android/iOS app shell.
-- `services/api`: FastAPI service for future room/session/config endpoints.
+- `services/api`: FastAPI service for session/config endpoints and stateless memory model adapters.
 - `services/realtime-agent`: FastAPI agent supervisor plus STT/LLM/TTS provider interfaces, mocked providers, safety stub, and LiveKit RTC skeleton.
 - `infra/docker-compose.yml`: Redis with persistence, local LiveKit, and placeholder services for local development.
 - `config/personas/hindi_companion_v1.toml`: Hindi companion persona and provider routing.
 - `config/safety/crisis_placeholder.toml`: placeholder crisis phrase/resource config.
 - `docs`: product, sprint, architecture, privacy, and spike docs.
+- `docs/deployment/ubuntu.md`: Ubuntu, model-cache, warm-up, readiness, and rollback handoff.
 
 ## Requirements
 
@@ -70,7 +71,7 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 For physical Android phone testing over Wi-Fi, start Docker with a LAN LiveKit URL and run Flutter with the Mac LAN API URL:
 
 ```bash
-API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 docker compose -f infra/docker-compose.yml up -d --build
+API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 cd apps/mobile
 flutter run --dart-define=API_BASE_URL=http://<Mac LAN IP>:8000
 ```
@@ -98,6 +99,8 @@ Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi tra
 Sprint 6 assistant text responses use the persona prompt, short history window, and response length limits in `config/personas/hindi_companion_v1.toml`. To use Sarvam chat completions, set `AGENT_LLM_PROVIDER=sarvam` and provide `AGENT_SARVAM_API_KEY` or root `SARVAM_API_KEY`; without a working provider the turn emits the configured graceful fallback response. The Sarvam-30B adapter was live-key smoke tested through `/v1/chat/completions`; it disables reasoning for short voice-turn responses so assistant content is returned within the small token cap.
 
 Sprint 7.5 memory remains on device in the mobile Drift database. The app extracts conservative stable facts and previous-session summaries from complete final turns, excludes low-confidence/replaced/sensitive/noisy items, and sends only bounded structured `recent_turns` plus `memory_blocks` when starting a new voice session. The API stores that bundle only with the active session assignment, and the realtime agent builds redacted, source-labelled LLM prompt context with latest user text as authoritative.
+
+Long-term-memory model serving is optional and disabled by default. The API image includes the model-serving dependencies and uses a persistent Hugging Face cache when enabled, but model weights must be downloaded, warmed, and capacity-tested on Ubuntu before real sessions. See `docs/deployment/ubuntu.md`; deterministic retrieval remains the fallback when model serving is unavailable.
 
 ## Git Hooks
 

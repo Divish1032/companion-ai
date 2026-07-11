@@ -13,10 +13,14 @@ class AppConfig {
     this.memoryEmbeddingModel = defaultMemoryEmbeddingModel,
     this.memoryEmbeddingDimension = memoryEmbeddingDimensions,
     this.memoryRerankModel = defaultMemoryRerankModel,
+    this.enableMemoryEmbeddings = true,
+    this.enableMemoryReranker = false,
   });
 
   final String apiBaseUrl;
   final String memoryEmbeddingModel;
   final int memoryEmbeddingDimension;
   final String memoryRerankModel;
+  final bool enableMemoryEmbeddings;
+  final bool enableMemoryReranker;
 }

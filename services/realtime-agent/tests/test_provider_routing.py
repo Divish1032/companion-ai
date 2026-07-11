@@ -1,4 +1,5 @@
 from app.providers import ProviderRouting
+from app.memory_router import route_memory_query
 from app.providers.interfaces import LLMMessage
 from app.providers.llm import PersonaLLMProvider, SarvamChatLLMProvider
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
@@ -31,6 +32,58 @@ def test_provider_routing_supports_language_override() -> None:
     assert hindi_route.llm == "sarvam"
     assert hindi_route.tts == "sarvam"
     assert fallback_route.stt == "sarvam"
+
+
+def test_memory_strategies_are_language_scoped_and_default_safe() -> None:
+    routing = ProviderRouting.from_dict(
+        {
+            "providers": {
+                "default": {"stt": "sarvam", "llm": "sarvam", "tts": "sarvam"},
+            },
+            "memory": {
+                "default": {
+                    "retrieval": "deterministic",
+                    "reranker": "deterministic",
+                    "planner": "deterministic",
+                },
+                "languages": {
+                    "hi-IN": {
+                        "retrieval": "hybrid_vector",
+                        "reranker": "deterministic",
+                        "planner": "deterministic",
+                    },
+                    "future-IN": {
+                        "retrieval": "hybrid_vector",
+                        "reranker": "qwen3_reranker",
+                        "planner": "qwen3_planner",
+                    },
+                },
+            },
+        }
+    )
+
+    hindi = routing.memory_for_language("hi-IN")
+    future = routing.memory_for_language("future-IN")
+
+    assert hindi.retrieval == "hybrid_vector"
+    assert hindi.reranker == "deterministic"
+    assert future.retrieval == "hybrid_vector"
+    assert future.reranker == "qwen3_reranker"
+    assert future.planner == "qwen3_planner"
+
+
+def test_hindi_devanagari_profile_recall_uses_core_profile_route() -> None:
+    decision = route_memory_query("मेरा नाम क्या है?")
+
+    assert decision.route == "core_profile"
+    assert decision.reason == "profile_or_preference_recall"
+
+
+def test_ambiguous_topic_turn_does_not_request_memory_lookup() -> None:
+    decision = route_memory_query("दुनिया कैसे बनी?")
+
+    assert decision.route == "broad_safe"
+    assert decision.max_blocks == 0
 
 
 async def _empty_audio():
