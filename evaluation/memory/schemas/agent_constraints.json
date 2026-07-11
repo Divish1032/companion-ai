@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/agent-constraints-v1",
+  "title": "Agent Constraints for Memory Quality Lab Triage",
+  "description": "Defines what an AI coding agent may and may not do during triage and fix proposal.",
+  "agent_permissions": {
+    "may": [
+      "Read redacted quality-lab reports, fixture YAML, and relevant product source files.",
+      "Identify the most likely failure category (ADMISSION, CONSOLIDATION, ROUTING, RETRIEVAL, PROTOCOL, PROMPT, FALLBACK, SAFETY_PRIVACY) and relevant code area.",
+      "Propose a minimal new test fixture that isolates the observed defect.",
+      "Propose a narrowly scoped code patch description (not auto-apply).",
+      "Run scripts/run-memory-eval.sh as the existing deterministic gate.",
+      "Run scripts/run-memory-quality-lab.sh on baseline (current) and candidate (proposed fix) and produce a comparison report.",
+      "Read fixture files, report files, schemas, test files, and production source under apps/mobile/lib/ and services/realtime-agent/app/.",
+      "Suggest a rollback plan when a candidate is rejected."
+    ],
+    "may_not": [
+      "Change, merge, deploy, or auto-apply code without human approval.",
+      "Change persona prompts in config/personas/.",
+      "Change provider/model flags, retrieval thresholds, safety phrases, crisis rules, dependency rules, or VAD/endpointing configuration.",
+      "Use a real user dataset or send app/user content to any external model or API.",
+      "Claim a fix works without a green comparison between baseline and candidate.",
+      "Mark a proposal as improved unless scripts/run-memory-eval.sh passes AND all protected fixtures pass AND no P0/P1 regression appears.",
+      "Modify evaluation/memory/reports/ directly (reports are generated artifacts).",
+      "Access production databases, production logs, production rooms, production credentials, or real device/user identifiers.",
+      "Promote a fixture from proposed to protected without human maintainer acceptance.",
+      "Bypass the safe execution checks in run-memory-quality-lab.sh (production-target rejection, dry-run validation)."
+    ]
+  },
+  "improvement_gate": {
+    "description": "A candidate fix is accepted as an improvement only when ALL of these pass.",
+    "conditions": [
+      "Target failing fixture passes in the candidate run.",
+      "scripts/run-memory-eval.sh passes (existing deterministic gate).",
+      "All fixtures marked protected: true pass in the candidate run.",
+      "No P0 or P1 regression appears in the baseline-vs-candidate comparison.",
+      "A human maintainer reviews and approves the code/config change."
+    ]
+  },
+  "file_access": {
+    "read_only": [
+      "evaluation/memory/reports/*.json",
+      "evaluation/memory/fixtures/*.yaml",
+      "evaluation/memory/schemas/*.json",
+      "docs/architecture/long_term_memory.md",
+      "docs/evals/hindi_hinglish_memory_eval.md"
+    ],
+    "read_write_proposal_only": [
+      "evaluation/memory/reports/triage_*.json"
+    ],
+    "read_write_code_with_approval": [
+      "apps/mobile/lib/features/chat_history/data/app_database.dart",
+      "apps/mobile/test/*memory*.dart",
+      "services/realtime-agent/app/context.py",
+      "services/realtime-agent/app/memory_planner.py",
+      "services/realtime-agent/app/memory_router.py",
+      "services/realtime-agent/tests/test_context.py",
+      "services/realtime-agent/tests/test_lifecycle.py"
+    ],
+    "off_limits": [
+      "config/personas/",
+      "services/realtime-agent/app/config.py",
+      "services/realtime-agent/app/safety.py",
+      "services/realtime-agent/app/audio_pipeline.py",
+      "apps/mobile/lib/core/",
+      "apps/mobile/lib/features/livekit_session/",
+      "apps/mobile/lib/features/voice_chat/presentation/"
+    ]
+  }
+}

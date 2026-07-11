@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/triage-schema-v1",
+  "title": "Memory Quality Lab Triage Proposal",
+  "description": "Agent-generated triage proposal for a failed fixture. Never contains transcript or memory text.",
+  "type": "object",
+  "required": ["triage_id", "run_id", "fixture_id", "failure", "proposal", "status"],
+  "properties": {
+    "triage_id": {
+      "type": "string",
+      "pattern": "^triage_[a-z0-9_]+$",
+      "description": "Unique triage identifier."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "The failing lab run ID from the report."
+    },
+    "fixture_id": {
+      "type": "string",
+      "description": "The failing fixture identifier."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 when this triage was created."
+    },
+    "failure": {
+      "type": "object",
+      "required": ["category", "severity", "assertion"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["ADMISSION", "CONSOLIDATION", "ROUTING", "RETRIEVAL",
+                   "PROTOCOL", "PROMPT", "FALLBACK", "SAFETY_PRIVACY"]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "assertion": {
+          "type": "string",
+          "description": "Which assertion failed (no content text)."
+        },
+        "actual_vs_expected": {
+          "type": "object",
+          "properties": {
+            "expected_labels": {
+              "type": "array", "items": {"type": "string"}
+            },
+            "actual_labels": {
+              "type": "array", "items": {"type": "string"}
+            },
+            "expected_memory_ids": {
+              "type": "array", "items": {"type": "string"}
+            },
+            "actual_memory_ids": {
+              "type": "array", "items": {"type": "string"}
+            },
+            "route": {"type": "string"},
+            "packet_count": {"type": "integer"},
+            "fallback": {"type": "boolean"},
+            "context_chars": {"type": "integer"}
+          }
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "required": ["hypothesis", "suggested_fix_area", "files_to_change", "risk"],
+      "properties": {
+        "hypothesis": {
+          "type": "string",
+          "description": "What the agent believes caused the failure."
+        },
+        "suggested_fix_area": {
+          "type": "string",
+          "description": "File path and approximate line range, e.g. apps/mobile/lib/.../app_database.dart:1874"
+        },
+        "minimal_reproducer_fixture": {
+          "type": "object",
+          "description": "Proposed new fixture that isolates the defect.",
+          "properties": {
+            "id": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "description": {"type": "string"},
+            "expected_behavior": {"type": "string"}
+          }
+        },
+        "patch_description": {
+          "type": "string",
+          "description": "Narrative of the proposed code change (not the actual patch)."
+        },
+        "files_to_change": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "Source files that need modification."
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["Low", "Medium", "High"],
+          "description": "Risk of the proposed change."
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "baseline_run_id": {
+          "type": "string",
+          "description": "Run ID of the baseline (failing) run."
+        },
+        "candidate_run_id": {
+          "type": "string",
+          "description": "Run ID of the candidate (fixed) run."
+        },
+        "target_fixture_passes": {"type": "boolean"},
+        "existing_gate_passes": {"type": "boolean"},
+        "all_protected_pass": {"type": "boolean"},
+        "no_regressions": {"type": "boolean"},
+        "comparison_report": {
+          "type": "string",
+          "description": "Path to the baseline-vs-candidate comparison JSON."
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "verified", "accepted", "rejected"],
+      "description": "Current review status."
+    },
+    "human_review": {
+      "type": "object",
+      "properties": {
+        "required": {"type": "boolean", "default": true},
+        "reviewer": {"type": "string"},
+        "review_date": {"type": "string", "format": "date-time"},
+        "review_notes": {"type": "string"}
+      }
+    }
+  }
+}

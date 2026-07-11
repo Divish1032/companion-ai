@@ -24,6 +24,7 @@ while (($# > 0)); do
     --dry-run) DRY_RUN=true ;;
     --baseline) MODE="baseline" ;;
     --compare) MODE="compare"; COMPARE_BASELINE="$2"; shift ;;
+    --ci) MODE="ci" ;;
     *) echo "Unknown flag: $1"; exit 2 ;;
   esac
   shift
@@ -560,8 +561,12 @@ sys.exit(0 if c.get('regression_count', 0) == 0 else 1)
 fi
 
 # ---------------------------------------------------------------------------
-# Output
+# Output / CI mode
 # ---------------------------------------------------------------------------
+if [[ "$MODE" == "ci" ]]; then
+  rm -rf "$tmp_dir"
+  if [[ "$ready" -eq 1 ]]; then exit 0; else exit 1; fi
+fi
 echo ""
 echo "=== Report ==="
 echo "JSON: $report_json"
