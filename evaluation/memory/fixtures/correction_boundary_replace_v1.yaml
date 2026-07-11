@@ -1,42 +1,46 @@
 schema_version: 1
-id: mixed_script_correction_v1
+id: correction_boundary_replace_v1
 protected: true
-tags: [correction, mixed_script, language_preference]
+tags: [correction, boundary, supersession]
 sessions:
   - session_key: s1
     turns:
       - turn_key: u1
         role: user
         transcript_status: final
-        stt_confidence: 0.97
+        stt_confidence: 0.95
         offset_ms: 0
-        text: "mujhe English mein jawab pasand hai"
+        text: "late night calls mat karna"
       - turn_key: a1
         role: assistant
         status: final
         offset_ms: 1000
-        text: "Ok, main English mein reply karoonga."
+        text: "Theek hai, late night calls avoid karoonga."
       - turn_key: u2
         role: user
         transcript_status: final
-        stt_confidence: 0.98
+        stt_confidence: 0.95
         offset_ms: 2000
-        text: "मुझे हिन्दी में जवाब पसंद है"
+        text: "actually weekend calls mat karna"
+      - turn_key: a2
+        role: assistant
+        status: final
+        offset_ms: 3000
+        text: "Samjha, weekend calls bhi avoid karoonga."
 storage_expect:
-  must_exist_labels: [language_style]
-  must_be_superseded_labels: []
+  must_exist_labels: [boundary]
   must_not_exist_labels: []
 query:
-  text: "मुझे किस भाषा में जवाब पसंद है?"
+  text: "meri boundary kya hai?"
   expect:
-    must_include_labels: []
+    must_include_labels: [boundary]
     must_not_include_labels: []
     max_packets: 4
     latest_user_authoritative: true
 agent_context_expect:
-  must_contain_labels: [safe_preference]
+  must_contain_labels: [boundary]
   must_contain_text: []
   must_not_contain_labels: []
   must_not_contain_text: []
   max_memory_blocks: 2
-  max_context_chars: 1200
+  max_context_chars: 900
