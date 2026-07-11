@@ -21,6 +21,8 @@ vosk = [
 dev = [
     "pytest>=8.4.0",
     "ruff>=0.12.0",
+    "pyyaml>=6.0",
+    "jsonschema>=4.20",
 ]
 
 [tool.ruff]

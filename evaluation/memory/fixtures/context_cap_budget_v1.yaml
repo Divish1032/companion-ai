@@ -1,0 +1,132 @@
+schema_version: 1
+id: context_cap_budget_v1
+protected: false
+tags: [context, budget, limit]
+sessions:
+  - session_key: s1
+    turns:
+      - turn_key: u1
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 0
+        text: "mera naam Rahul hai"
+      - turn_key: a1
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Namaste Rahul, yaad rakhoonga."
+      - turn_key: u2
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "meri behen Neha hai"
+      - turn_key: a2
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Achha, aapki behen ka naam Neha hai."
+      - turn_key: u3
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "main roz subah walk karta hoon"
+      - turn_key: a3
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Walk karna bahut achi aadat hai."
+      - turn_key: u4
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "mera goal fitness improve karna hai"
+      - turn_key: a4
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Fitness goal rakhna bahut acha hai."
+      - turn_key: u5
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "late night calls mat karna"
+      - turn_key: a5
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Theek hai, late night calls nahi karoonga."
+      - turn_key: u6
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "advice se pehle bas sunna"
+      - turn_key: a6
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Samjha, pehle sununga."
+      - turn_key: u7
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "har sunday main chai ritual karta hoon"
+      - turn_key: a7
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Chai ritual bahut relaxing hota hai."
+      - turn_key: u8
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "politics ke baare mein baat mat karna"
+      - turn_key: a8
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Theek hai, politics topic avoid karoonga."
+      - turn_key: u9
+        role: user
+        transcript_status: final
+        stt_confidence: 0.95
+        offset_ms: 1000
+        text: "traffic se stress hota hai"
+      - turn_key: a9
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Traffic wakai stress deta hai."
+storage_expect:
+  must_exist_labels:
+    - preferred_name
+    - family_relationship
+    - routine
+    - goal
+    - boundary
+    - comfort_style
+    - ritual
+    - taboo_topic
+    - recurring_stressor
+  must_not_exist_labels: []
+query:
+  text: "kuch batao kya yaad hai"
+  expect:
+    must_include_labels: []
+    must_not_include_labels: []
+    max_packets: 6
+    latest_user_authoritative: true
+agent_context_expect:
+  must_contain_labels: []
+  must_contain_text: []
+  must_not_contain_labels: []
+  must_not_contain_text: []
+  max_memory_blocks: 6
+  max_context_chars: 2200

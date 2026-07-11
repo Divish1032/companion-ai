@@ -1,0 +1,41 @@
+schema_version: 1
+id: same_session_recall_v1
+protected: true
+tags: [recall, same_session, identity]
+sessions:
+  - session_key: s1
+    turns:
+      - turn_key: u1
+        role: user
+        transcript_status: final
+        stt_confidence: 0.98
+        offset_ms: 0
+        text: "Namaste mera naam Rahul hai"
+      - turn_key: a1
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Namaste Rahul, yaad rakhoonga."
+      - turn_key: u2
+        role: user
+        transcript_status: final
+        stt_confidence: 0.97
+        offset_ms: 5000
+        text: "mera naam yaad hai?"
+storage_expect:
+  must_exist_labels: [preferred_name]
+  must_not_exist_labels: []
+query:
+  text: "mera naam yaad hai?"
+  expect:
+    must_include_labels: [preferred_name]
+    must_not_include_labels: []
+    max_packets: 6
+    latest_user_authoritative: true
+agent_context_expect:
+  must_contain_labels: [preferred_name]
+  must_contain_text: []
+  must_not_contain_labels: []
+  must_not_contain_text: []
+  max_memory_blocks: 2
+  max_context_chars: 900

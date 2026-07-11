@@ -1,0 +1,42 @@
+schema_version: 1
+id: mixed_script_correction_v1
+protected: true
+tags: [correction, mixed_script, language_preference]
+sessions:
+  - session_key: s1
+    turns:
+      - turn_key: u1
+        role: user
+        transcript_status: final
+        stt_confidence: 0.97
+        offset_ms: 0
+        text: "mujhe English mein jawab pasand hai"
+      - turn_key: a1
+        role: assistant
+        status: final
+        offset_ms: 1000
+        text: "Ok, main English mein reply karoonga."
+      - turn_key: u2
+        role: user
+        transcript_status: final
+        stt_confidence: 0.98
+        offset_ms: 2000
+        text: "मुझे हिन्दी में जवाब पसंद है"
+storage_expect:
+  must_exist_labels: [language_style]
+  must_be_superseded_labels: []
+  must_not_exist_labels: []
+query:
+  text: "मुझे किस भाषा में जवाब पसंद है?"
+  expect:
+    must_include_labels: [language_style]
+    must_not_include_labels: []
+    max_packets: 4
+    latest_user_authoritative: true
+agent_context_expect:
+  must_contain_labels: [language_style]
+  must_contain_text: []
+  must_not_contain_labels: []
+  must_not_contain_text: []
+  max_memory_blocks: 2
+  max_context_chars: 1200

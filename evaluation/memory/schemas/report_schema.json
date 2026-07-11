@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/report-schema-v1",
+  "title": "Memory Quality Lab Report",
+  "description": "Machine-readable redacted evaluation report. Contains IDs, counts, and routes, never transcript text.",
+  "type": "object",
+  "required": ["run_id", "git_revision", "schema_version", "started_at", "results"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Unique run identifier."
+    },
+    "git_revision": {
+      "type": "string",
+      "description": "Git commit hash."
+    },
+    "git_dirty": {
+      "type": "boolean",
+      "description": "Whether the working tree had uncommitted changes."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "fixture_schema_hash": {
+      "type": "string",
+      "description": "SHA-256 of the fixture schema file used for this run."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 run start time."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "description": "Total wall-clock duration in milliseconds."
+    },
+    "suite_durations_ms": {
+      "type": "object",
+      "properties": {
+        "existing_gate": {"type": "integer"},
+        "fixture_runner": {"type": "integer"},
+        "agent_tests": {"type": "integer"},
+        "report_generation": {"type": "integer"}
+      }
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "results": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/result"}
+    }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": ["pass", "fail", "total", "ready"],
+      "properties": {
+        "pass": {"type": "integer"},
+        "fail": {"type": "integer"},
+        "total": {"type": "integer"},
+        "ready": {
+          "type": "boolean",
+          "description": "False if any P0/P1 failure; overrides aggregate score."
+        },
+        "p0_failures": {"type": "integer"},
+        "p1_failures": {"type": "integer"},
+        "p2_failures": {"type": "integer"},
+        "p3_observations": {"type": "integer"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["fixture_id", "passed", "severity"],
+      "properties": {
+        "fixture_id": {"type": "string"},
+        "passed": {"type": "boolean"},
+        "severity": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "failure_category": {
+          "type": "string",
+          "enum": ["ADMISSION", "CONSOLIDATION", "ROUTING", "RETRIEVAL",
+                   "PROTOCOL", "PROMPT", "FALLBACK", "SAFETY_PRIVACY", null]
+        },
+        "expected_labels": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "actual_labels": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "expected_memory_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "actual_memory_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "route": {"type": "string"},
+        "packet_count": {"type": "integer"},
+        "fallback": {"type": "boolean"},
+        "timing_ms": {"type": "integer"},
+        "relevant_code_area": {
+          "type": "string",
+          "description": "Suggested file or module for investigation."
+        },
+        "assertion": {
+          "type": "string",
+          "description": "Which assertion failed (no content text)."
+        }
+      }
+    }
+  }
+}

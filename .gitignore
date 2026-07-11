@@ -79,3 +79,6 @@ redis-data/
 postgres-data/
 
 temp/
+
+# Memory Quality Lab artifacts (reports only; fixtures and schemas are committed)
+evaluation/memory/reports/

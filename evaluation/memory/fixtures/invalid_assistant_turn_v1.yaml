@@ -1,0 +1,28 @@
+schema_version: 1
+id: invalid_assistant_turn_v1
+protected: true
+tags: [admission, invalid, assistant_turn]
+sessions:
+  - session_key: s1
+    turns:
+      - turn_key: u1
+        role: user
+        transcript_status: final
+        stt_confidence: 0.96
+        offset_ms: 0
+        text: "aaj main walk pe gaya tha"
+      - turn_key: a1
+        role: assistant
+        status: safety_override
+        offset_ms: 1000
+        text: "Main is nirdesh ka paalan nahi kar sakta."
+storage_expect:
+  must_not_exist_labels: [session_summary]
+  must_exist_labels: []
+query:
+  text: "kuch yaad hai?"
+  expect:
+    must_include_labels: []
+    must_not_include_labels: [session_summary]
+    max_packets: 4
+    latest_user_authoritative: true

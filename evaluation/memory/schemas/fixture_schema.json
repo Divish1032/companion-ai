@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/fixture-schema-v1",
+  "title": "Memory Quality Lab Fixture",
+  "description": "A deterministic memory evaluation scenario for the Companion AI Hindi/Hinglish MVP.",
+  "type": "object",
+  "required": ["schema_version", "id", "tags", "sessions", "query"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "description": "Unique fixture identifier, e.g. same_session_recall_v1"
+    },
+    "protected": {
+      "type": "boolean",
+      "default": false,
+      "description": "Protected fixtures are P0/P1; failure blocks readiness."
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "Semantic tags for grouping and triage."
+    },
+    "sessions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/session"},
+      "minItems": 1
+    },
+    "storage_expect": {
+      "$ref": "#/$defs/storage_expect"
+    },
+    "query": {
+      "$ref": "#/$defs/query"
+    },
+    "agent_context_expect": {
+      "$ref": "#/$defs/agent_context_expect"
+    }
+  },
+  "$defs": {
+    "turn": {
+      "type": "object",
+      "required": ["turn_key", "role", "text"],
+      "properties": {
+        "turn_key": {"type": "string", "description": "Unique key within the scenario, e.g. u1, a2."},
+        "role": {"type": "string", "enum": ["user", "assistant"]},
+        "transcript_status": {
+          "type": "string",
+          "enum": ["final", "final_corrected", "final_replaced", "safety_override"],
+          "default": "final"
+        },
+        "stt_confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "offset_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Millisecond offset from scenario start for fixed-clock replay."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Synthetic Hindi/Hinglish turn text."
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": ["session_key", "turns"],
+      "properties": {
+        "session_key": {
+          "type": "string",
+          "description": "Session identifier, e.g. s1, s2."
+        },
+        "turns": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/turn"},
+          "minItems": 1
+        }
+      }
+    },
+    "storage_expect": {
+      "type": "object",
+      "properties": {
+        "must_exist_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must exist after replay."
+        },
+        "must_be_superseded_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels whose records must all be superseded."
+        },
+        "must_not_exist_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must not exist."
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Query text for memory retrieval."
+        },
+        "expect": {
+          "$ref": "#/$defs/query_expect"
+        }
+      }
+    },
+    "query_expect": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "type": "string",
+          "description": "Expected memory routing decision."
+        },
+        "must_include_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must appear in retrieval results."
+        },
+        "must_not_include_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must not appear in retrieval results."
+        },
+        "max_packets": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum expected memory blocks returned."
+        },
+        "latest_user_authoritative": {
+          "type": "boolean",
+          "description": "Latest user message must remain authoritative in the prompt."
+        }
+      }
+    },
+    "agent_context_expect": {
+      "type": "object",
+      "properties": {
+        "must_contain_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must appear in the assembled prompt context."
+        },
+        "must_not_contain_labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Memory labels that must not appear in the assembled prompt context."
+        },
+        "must_contain_text": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Text fragments that must appear in prompt (redacted check, just presence)."
+        },
+        "must_not_contain_text": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Text fragments that must not appear in prompt."
+        },
+        "max_memory_blocks": {
+          "type": "integer",
+          "description": "Maximum expected memory blocks in prompt."
+        },
+        "max_context_chars": {
+          "type": "integer",
+          "description": "Maximum expected character count in prompt."
+        }
+      }
+    }
+  }
+}
