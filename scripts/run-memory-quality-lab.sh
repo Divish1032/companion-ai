@@ -41,12 +41,14 @@ DRY_RUN=false
 MODE="run"
 BASELINE_REPORT=""
 COMPARE_BASELINE=""
+RUN_BENCHMARK=false
 while (($# > 0)); do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
     --baseline) MODE="baseline" ;;
     --compare) MODE="compare"; COMPARE_BASELINE="$2"; shift ;;
     --ci) MODE="ci" ;;
+    --benchmark) RUN_BENCHMARK=true ;;
     *) echo "Unknown flag: $1"; exit 2 ;;
   esac
   shift
@@ -86,6 +88,7 @@ if $DRY_RUN; then
   echo "  [5] Report:            $report_dir/report-<run_id>.json"
   echo "  [6] Baseline:          --baseline saves current report as baseline"
   echo "  [7] Compare:           --compare <baseline.json> diffs against saved baseline"
+  echo "  [8] Benchmark:          --benchmark adds retrieval precision/recall/MRR metrics"
   echo ""
   echo "Fixtures to run ($(find "$fixture_dir" -name '*.yaml' -type f 2>/dev/null | wc -l | tr -d ' ') files):"
   find "$fixture_dir" -name '*.yaml' -type f | sort | while read -r f; do
@@ -349,6 +352,55 @@ if ! (cd "$agent_dir" && uv run --no-sync pytest -q tests/test_context.py tests/
 fi
 agent_duration_ms=$(( ($SECONDS - agent_start_sec) * 1000 ))
 
+# ---------------------------------------------------------------------------
+# Stage 4: Retrieval benchmark (precision/recall/MRR per category)
+# ---------------------------------------------------------------------------
+benchmark_json_path="$repo_root/evaluation/memory/benchmark/benchmark_config.json"
+benchmark_output_json=""
+benchmark_start_sec=0
+benchmark_duration_ms=0
+benchmark_passed=true
+
+if $RUN_BENCHMARK; then
+  echo ""
+  echo "=== Stage 4: Retrieval benchmark ==="
+  if [[ ! -f "$benchmark_json_path" ]]; then
+    echo "  SKIP: benchmark config not found at $benchmark_json_path"
+  else
+    benchmark_start_sec=$SECONDS
+    benchmark_output_json="$tmp_dir/benchmark_output.json"
+    echo -n "  [benchmark] "
+    benchmark_output=$(
+      cd "$mobile_dir" && \
+      BENCHMARK_JSON="$benchmark_json_path" flutter test test/memory_benchmark_runner_test.dart --reporter compact 2>&1
+    ) || true
+
+    benchmark_clean=$(echo "$benchmark_output" | tr -d '\r')
+    if echo "$benchmark_clean" | grep -q 'All tests passed'; then
+      contract_match=$(echo "$benchmark_clean" | grep '{"query_results"' | head -1 || true)
+      if [[ -n "$contract_match" ]]; then
+        echo "$contract_match" | $PYTHON -c "
+import sys, re, json
+line = sys.stdin.read()
+m = re.search(r'\{.*\}', line)
+if m:
+    with open('$benchmark_output_json', 'w') as f:
+        json.dump(json.loads(m.group(0)), f, indent=2)
+    print('OK')
+" 2>/dev/null
+        benchmark_passed=true
+      else
+        echo "FAILED (no output)"
+        benchmark_passed=false
+      fi
+    else
+      echo "FAILED"
+      benchmark_passed=false
+    fi
+    benchmark_duration_ms=$(( ($SECONDS - benchmark_start_sec) * 1000 ))
+  fi
+fi
+
 total_duration_ms=$(( ($SECONDS - overall_start_sec) * 1000 ))
 
 # ---------------------------------------------------------------------------
@@ -400,6 +452,24 @@ with open('$report_json', 'w', encoding='utf-8') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 "
 
+# Inject benchmark section into report if benchmark ran
+if $RUN_BENCHMARK && [[ -n "$benchmark_output_json" ]] && [[ -f "$benchmark_output_json" ]]; then
+  $PYTHON "$repo_root/scripts/benchmark-metrics.py" "$benchmark_output_json" > "$tmp_dir/benchmark_metrics.json" 2>/dev/null
+  if [[ -s "$tmp_dir/benchmark_metrics.json" ]]; then
+    $PYTHON -c "
+import json
+with open('$report_json', encoding='utf-8') as f:
+    report = json.load(f)
+with open('$tmp_dir/benchmark_metrics.json', encoding='utf-8') as f:
+    benchmark = json.load(f)
+report['suite_durations_ms']['benchmark'] = $benchmark_duration_ms
+report['benchmark'] = benchmark
+with open('$report_json', 'w', encoding='utf-8') as f:
+    json.dump(report, f, indent=2, ensure_ascii=False)
+" 2>/dev/null
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Markdown report
 # ---------------------------------------------------------------------------
@@ -432,6 +502,7 @@ cat > "$report_md" <<MDREPORT
 | Existing gate | $gate_duration_ms |
 | Fixture runner | $fixture_duration_ms |
 | Agent tests | $agent_duration_ms |
+$([ "$RUN_BENCHMARK" = true ] && echo "| Benchmark | $benchmark_duration_ms |" || true)
 
 ## Results
 
@@ -452,6 +523,27 @@ for r in results:
 
 echo "" >> "$report_md"
 echo "Report contains no transcript, memory, packet, or prompt text." >> "$report_md"
+
+# Append benchmark metrics to markdown if available
+if $RUN_BENCHMARK && [[ -s "$tmp_dir/benchmark_metrics.json" ]]; then
+  echo "" >> "$report_md"
+  echo "## Retrieval Benchmark" >> "$report_md"
+  echo "" >> "$report_md"
+  echo "| Category | Precision | Recall | F1 | MRR | Intrusions | Passed |" >> "$report_md"
+  echo "|----------|-----------|--------|-----|-----|------------|--------|" >> "$report_md"
+  $PYTHON -c "
+import json
+with open('$tmp_dir/benchmark_metrics.json', encoding='utf-8') as f:
+    m = json.load(f)
+by_cat = m.get('by_category', {})
+for cat, v in sorted(by_cat.items()):
+    p = v['precision']; r = v['recall']; f1 = v['f1']; mrr = v['mrr']
+    intr = v['irrelevant_intrusions']; qp = v['queries_passed']
+    print(f'| {cat} | {p:.3f} | {r:.3f} | {f1:.3f} | {mrr:.3f} | {intr} | {qp} |')
+overall = m.get('overall', {})
+print(f'| **Overall** | {overall[\"precision\"]:.3f} | {overall[\"recall\"]:.3f} | {overall[\"f1\"]:.3f} | {overall[\"mrr\"]:.3f} | {overall[\"irrelevant_intrusions\"]} | {overall[\"queries_passed\"]} |')
+" >> "$report_md"
+fi
 
 # ---------------------------------------------------------------------------
 # Baseline mode: save report as named baseline

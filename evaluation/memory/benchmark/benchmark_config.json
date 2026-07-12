@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "categories": {
+    "identity": {
+      "description": "Name recall — preferred_name must rank first for naam queries.",
+      "relevant_labels": ["preferred_name"]
+    },
+    "language_preference": {
+      "description": "Response language — language_style must surface for language queries.",
+      "relevant_labels": ["language_style"]
+    },
+    "preference": {
+      "description": "Safe preferences — comfort_style and safe_preference for preference queries.",
+      "relevant_labels": ["safe_preference", "comfort_style"]
+    },
+    "boundary": {
+      "description": "User boundaries — boundary label must surface for boundary queries.",
+      "relevant_labels": ["boundary"]
+    },
+    "work_stress": {
+      "description": "Work/office stress — recurring_work_stressor must surface for office queries.",
+      "relevant_labels": ["recurring_work_stressor"]
+    },
+    "general": {
+      "description": "Open-ended queries — should not surface irrelevant profile data.",
+      "relevant_labels": []
+    }
+  },
+  "seed_sessions": [
+    {
+      "session_key": "seed_s1",
+      "turns": [
+        {"role": "user", "text": "mera naam Rahul hai", "stt_confidence": 0.99},
+        {"role": "assistant", "text": "Namaste Rahul, yaad rakhoonga."},
+        {"role": "user", "text": "mujhe Hindi mein jawab pasand hai", "stt_confidence": 0.98},
+        {"role": "assistant", "text": "Theek hai, Hindi mein jawab doonga."},
+        {"role": "user", "text": "late night calls mat karna", "stt_confidence": 0.95},
+        {"role": "assistant", "text": "Samjha, late night calls avoid karoonga."}
+      ]
+    },
+    {
+      "session_key": "seed_s2",
+      "turns": [
+        {"role": "user", "text": "office mein manager bahut pressure deta hai", "stt_confidence": 0.96},
+        {"role": "assistant", "text": "Main samajh raha hoon, office pressure tough hota hai."},
+        {"role": "user", "text": "advice se pehle bas sunna pasand hai", "stt_confidence": 0.94},
+        {"role": "assistant", "text": "Theek hai, pehle sunungi."},
+        {"role": "user", "text": "meri behen Neha hai", "stt_confidence": 0.97},
+        {"role": "assistant", "text": "Achha, aapki behen Neha hai."}
+      ]
+    },
+    {
+      "session_key": "seed_s3",
+      "turns": [
+        {"role": "user", "text": "main roz subah walk karta hoon", "stt_confidence": 0.95},
+        {"role": "assistant", "text": "Walk karna bahut achi aadat hai."},
+        {"role": "user", "text": "mera goal fitness improve karna hai", "stt_confidence": 0.95},
+        {"role": "assistant", "text": "Fitness goal rakhna bahut acha hai."},
+        {"role": "user", "text": "politics ke baare mein baat mat karna", "stt_confidence": 0.95},
+        {"role": "assistant", "text": "Theek hai, politics topic avoid karoonga."}
+      ]
+    },
+    {
+      "session_key": "seed_s4",
+      "turns": [
+        {"role": "user", "text": "har sunday main chai ritual karta hoon", "stt_confidence": 0.94},
+        {"role": "assistant", "text": "Chai ritual bahut relaxing hota hai."},
+        {"role": "user", "text": "traffic se stress hota hai", "stt_confidence": 0.93},
+        {"role": "assistant", "text": "Traffic wakai stress deta hai."}
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "text": "mera naam kya hai",
+      "category": "identity",
+      "relevant_labels": ["preferred_name"],
+      "notes": "Identity recall: name query should return preferred_name."
+    },
+    {
+      "text": "naam yaad hai",
+      "category": "identity",
+      "relevant_labels": ["preferred_name"],
+      "notes": "Identity recall: short naam query should match preferred_name."
+    },
+    {
+      "text": "मेरा नाम क्या है",
+      "category": "identity",
+      "relevant_labels": ["preferred_name"],
+      "notes": "Identity recall: Devanagari name query."
+    },
+    {
+      "text": "mujhe kis language mein jawab pasand hai",
+      "category": "language_preference",
+      "relevant_labels": ["language_style"],
+      "notes": "Language query should return language_style."
+    },
+    {
+      "text": "मुझे किस भाषा में reply पसंद है",
+      "category": "language_preference",
+      "relevant_labels": ["language_style"],
+      "notes": "Devanagari language preference query."
+    },
+    {
+      "text": "meri boundary kya hai",
+      "category": "boundary",
+      "relevant_labels": ["boundary"],
+      "notes": "Boundary recall: should return the boundary label."
+    },
+    {
+      "text": "mujhe kya kya pasand hai",
+      "category": "preference",
+      "relevant_labels": ["safe_preference", "comfort_style"],
+      "notes": "Preference recall: should surface comfort and safe preferences."
+    },
+    {
+      "text": "aaj office ka din heavy tha",
+      "category": "work_stress",
+      "relevant_labels": ["recurring_work_stressor"],
+      "notes": "Work stress: office query should match manager stress memory."
+    },
+    {
+      "text": "office se aaya, bad day tha",
+      "category": "work_stress",
+      "relevant_labels": ["recurring_work_stressor"],
+      "notes": "Work stress: bad day + office should expand to work stressor."
+    },
+    {
+      "text": "kaam par boss ki wajah se pareshan hoon",
+      "category": "work_stress",
+      "relevant_labels": ["recurring_work_stressor"],
+      "notes": "Work stress: kaam/boss aliases should expand graph to work stress."
+    },
+    {
+      "text": "aaj mood off hai",
+      "category": "general",
+      "relevant_labels": [],
+      "irrelevant_labels": ["preferred_name", "language_style"],
+      "notes": "Vague query should NOT inject profile or language memory."
+    },
+    {
+      "text": "hi",
+      "category": "general",
+      "relevant_labels": [],
+      "notes": "Greeting should return no memory."
+    }
+  ]
+}

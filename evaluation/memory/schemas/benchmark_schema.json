@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/benchmark-schema-v1",
+  "title": "Memory Retrieval Benchmark Config",
+  "description": "Seeds memory data, runs retrieval queries, and measures precision/recall/MRR per category.",
+  "type": "object",
+  "required": ["schema_version", "categories", "seed_sessions", "queries"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "categories": {
+      "type": "object",
+      "description": "Memory categories with their relevant labels for metric aggregation.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["description", "relevant_labels"],
+        "properties": {
+          "description": {"type": "string"},
+          "relevant_labels": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "seed_sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["session_key", "turns"],
+        "properties": {
+          "session_key": {"type": "string"},
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["role", "text"],
+              "properties": {
+                "role": {"type": "string", "enum": ["user", "assistant"]},
+                "text": {"type": "string", "minLength": 1},
+                "stt_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "transcript_status": {"type": "string", "default": "final"}
+              }
+            }
+          }
+        }
+      },
+      "description": "Sessions to seed the database with diverse memories before running queries."
+    },
+    "queries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "category", "relevant_labels"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Query text for memory retrieval."
+          },
+          "category": {
+            "type": "string",
+            "description": "Category for metric aggregation."
+          },
+          "relevant_labels": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "description": "Memory labels that are relevant to this query (ground truth)."
+          },
+          "irrelevant_labels": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+            "description": "Memory labels that should NOT be returned (for precision measurement)."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Human-readable description of what this query tests."
+          }
+        }
+      },
+      "minItems": 1
+    }
+  }
+}
