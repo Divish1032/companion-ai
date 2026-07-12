@@ -48,8 +48,8 @@ void main() {
         final confidence = (turn['stt_confidence'] as num?)?.toDouble();
         final offsetMs = (turn['offset_ms'] as int?) ?? 0;
 
-        final msgId = '${fixtureId}_${turnKey}';
-        final turnId = '${sessionKey}_${turnKey}';
+        final msgId = '${fixtureId}_$turnKey';
+        final turnId = '${sessionKey}_$turnKey';
         final createdAt = baseOffset + offsetMs;
 
         if (role == 'user') {
@@ -117,8 +117,12 @@ void main() {
 
       results['memory_blocks'] = memories.map(_toMemoryBlock).toList();
 
-      final pendingReceipts = await database.readPendingMemoryReceipts(limit: 4);
-      results['pending_receipts'] = pendingReceipts.map(_toReceiptBlock).toList();
+      final pendingReceipts = await database.readPendingMemoryReceipts(
+        limit: 4,
+      );
+      results['pending_receipts'] = pendingReceipts
+          .map(_toReceiptBlock)
+          .toList();
     }
 
     final storageExpect = fixture['storage_expect'] as Map<String, dynamic>?;
@@ -126,9 +130,13 @@ void main() {
       results['storage_expect'] = storageExpect;
 
       final mustExistLabels =
-          (storageExpect['must_exist_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (storageExpect['must_exist_labels'] as List<dynamic>?)
+              ?.cast<String>() ??
+          [];
       final mustNotLabels =
-          (storageExpect['must_not_exist_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (storageExpect['must_not_exist_labels'] as List<dynamic>?)
+              ?.cast<String>() ??
+          [];
 
       for (final label in mustExistLabels) {
         expect(
@@ -149,12 +157,17 @@ void main() {
     final queryExpect = query?['expect'] as Map<String, dynamic>?;
     if (queryExpect != null) {
       final mustIncludeLabels =
-          (queryExpect['must_include_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (queryExpect['must_include_labels'] as List<dynamic>?)
+              ?.cast<String>() ??
+          [];
       final mustNotIncludeLabels =
-          (queryExpect['must_not_include_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (queryExpect['must_not_include_labels'] as List<dynamic>?)
+              ?.cast<String>() ??
+          [];
       final maxPackets = queryExpect['max_packets'] as int?;
 
-      final queryLabelsActual = results['query_result']['labels'] as List<dynamic>;
+      final queryLabelsActual =
+          results['query_result']['labels'] as List<dynamic>;
 
       for (final label in mustIncludeLabels) {
         expect(
