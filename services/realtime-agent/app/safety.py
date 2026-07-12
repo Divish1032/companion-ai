@@ -57,7 +57,11 @@ class SafetyClassifier:
                 reason="crisis_keyword",
             )
         if any(keyword in normalized for keyword in PROMPT_INJECTION_KEYWORDS):
-            return SafetyDecision(allowed=True, reason="prompt_injection_guard")
+            return SafetyDecision(
+                allowed=False,
+                response_override="मैं इस तरह के निर्देशों में मदद नहीं कर सकता, लेकिन आपकी बात सुन सकता हूँ।",
+                reason="prompt_injection_blocked",
+            )
         return SafetyDecision(allowed=True)
 
     def classify_output(self, text: str) -> SafetyDecision:

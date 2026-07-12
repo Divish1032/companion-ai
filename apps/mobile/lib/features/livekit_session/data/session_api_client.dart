@@ -39,7 +39,10 @@ class HttpSessionApiClient implements SessionApiClient {
   @override
   Future<LiveKitSessionInfo> createSession({required String deviceId}) async {
     final context = await database.readRecentTranscriptContext(limit: 12);
-    final memories = await database.readSessionStartMemoryContext(limit: 3);
+    // Exact state is delivered only by the reliable V2 local-memory protocol;
+    // semantic recall is selected at query time. Session startup therefore
+    // never leaks stale profile records into an LLM prompt.
+    final memories = <MemoryRecord>[];
     final response = await _postJson('/v1/session', {
       'device_id': deviceId,
       'recent_transcript_context': _recentTranscriptPayload(context),

@@ -326,12 +326,18 @@ class RealtimeAgentSession:
         self._pending_memory_requests: dict[
             tuple[str, int], asyncio.Future[tuple[list[dict[str, object]], list[dict[str, object]]]]
         ] = {}
+        self._pending_memory_context_requests: dict[
+            tuple[str, int], asyncio.Future[dict[str, object]]
+        ] = {}
         self._memory_lookup_latency_ms: dict[str, int] = {}
         self._stopped = asyncio.Event()
         self.started = asyncio.Event()
         self._assistant_speaking = False
         self._active_response_turn_id: str | None = None
         self._response_user_text: dict[str, str] = {}
+        self._turn_stt_confidence: dict[str, float | None] = {}
+        self._turn_stt_metadata: dict[str, tuple[str, str]] = {}
+        self._client_supports_memory_v2 = False
         self._response_committed_turns: set[str] = set()
         self._pending_coalesced_turn: tuple[str, str] | None = None
 
@@ -661,12 +667,18 @@ class RealtimeAgentSession:
         self.cancel_current_turn()
         self._active_response_turn_id = turn_id
         self._response_user_text[turn_id] = effective_text
+        self._turn_stt_confidence[turn_id] = event.confidence
+        self._turn_stt_metadata[turn_id] = (event.provider, event.model)
         self._response_committed_turns.discard(turn_id)
         self._current_turn = asyncio.create_task(
             self._respond_to_final_transcript(turn_id, effective_text)
         )
 
     async def _respond_to_final_transcript(self, turn_id: str, user_text: str) -> None:
+        # Direct unit-test callers do not enter the turn scheduler. Real room
+        # turns always have _current_turn set before this coroutine starts.
+        if self._current_turn is None:
+            self._active_response_turn_id = turn_id
         await self._emit_state("thinking", turn_id=turn_id)
         decision = self.safety_classifier.classify_input(user_text)
         if decision.response_override is not None:
@@ -688,8 +700,27 @@ class RealtimeAgentSession:
             await self._emit_state("listening", turn_id=turn_id, safety_reason=decision.reason)
             return
 
+        memory_context = (
+            await self._request_memory_context_v2(turn_id, user_text)
+            if self._client_supports_memory_v2
+            else {}
+        )
+        direct_text = _render_memory_directive(memory_context)
+
         try:
-            text, clipped, last_token = await self._stream_llm_response(turn_id, user_text)
+            if direct_text is not None:
+                text, clipped, last_token = direct_text, False, None
+            else:
+                policy_card = memory_context.get("policy_card")
+                text, clipped, last_token = await self._stream_llm_response(
+                    turn_id,
+                    user_text,
+                    policy_card=policy_card if isinstance(policy_card, dict) else None,
+                    v2_memory_packets=memory_context.get("memory_packets")
+                    if isinstance(memory_context.get("memory_packets"), list)
+                    else None,
+                    v2_semantic_resolved=memory_context.get("semantic_resolved") is True,
+                )
         except Exception as error:
             text = self.persona.fallback_response
             clipped = False
@@ -713,6 +744,8 @@ class RealtimeAgentSession:
         if output_decision.response_override is not None:
             text = output_decision.response_override
             clipped = False
+        if self._active_response_turn_id != turn_id:
+            return
         self._response_committed_turns.add(turn_id)
         await self._emit_assistant_final(
             turn_id,
@@ -730,8 +763,18 @@ class RealtimeAgentSession:
         self,
         turn_id: str,
         user_text: str,
+        *,
+        policy_card: dict[str, object] | None = None,
+        v2_memory_packets: list[object] | None = None,
+        v2_semantic_resolved: bool = False,
     ) -> tuple[str, bool, LLMToken | None]:
-        messages = await self._llm_messages(turn_id, user_text)
+        messages = await self._llm_messages(
+            turn_id,
+            user_text,
+            policy_card=policy_card,
+            v2_memory_packets=v2_memory_packets,
+            v2_semantic_resolved=v2_semantic_resolved,
+        )
         chunks: list[str] = []
         last_token: LLMToken | None = None
         async for token in self.llm_provider.stream(
@@ -748,7 +791,7 @@ class RealtimeAgentSession:
         text = _sanitize_llm_output(text)
         if not text:
             text = self.persona.fallback_response
-        if _looks_like_question_echo(user_text, text):
+        if _is_question_turn(user_text) and _looks_like_question_echo(user_text, text):
             print(
                 "llm_query_echo_guard",
                 {
@@ -763,7 +806,58 @@ class RealtimeAgentSession:
         clipped_text, clipped = _clip_response_text(text, max_chars=self.persona.max_output_chars)
         return clipped_text, clipped, last_token
 
-    async def _llm_messages(self, turn_id: str, user_text: str) -> list[LLMMessage]:
+    async def _request_memory_context_v2(
+        self,
+        turn_id: str,
+        user_text: str,
+    ) -> dict[str, object]:
+        event = self.sequencer.next(
+            event_type="memory_context_request_v2",
+            turn_id=turn_id,
+            schema_version=2,
+            payload={
+                "query_text": user_text,
+                "transcript_status": "final",
+                "stt_confidence": self._turn_stt_confidence.get(turn_id),
+                "stt_provider": self._turn_stt_metadata.get(turn_id, ("", ""))[0],
+                "stt_model": self._turn_stt_metadata.get(turn_id, ("", ""))[1],
+                "max_blocks": 4,
+                "memory_retrieval_strategy": self.memory_strategy.retrieval,
+                "memory_reranker_strategy": self.memory_strategy.reranker,
+            },
+        )
+        sequence = event["sequence"]
+        if not isinstance(sequence, int):
+            return {}
+        future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
+        key = (turn_id, sequence)
+        self._pending_memory_context_requests[key] = future
+        await self.transport.publish_reliable(json.dumps(event, separators=(",", ":")).encode("utf-8"))
+        try:
+            return await asyncio.wait_for(future, self.settings.memory_lookup_timeout_seconds)
+        except TimeoutError:
+            print(
+                "memory_context_v2_timeout",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "request_sequence": sequence,
+                },
+                flush=True,
+            )
+            return {}
+        finally:
+            self._pending_memory_context_requests.pop(key, None)
+
+    async def _llm_messages(
+        self,
+        turn_id: str,
+        user_text: str,
+        *,
+        policy_card: dict[str, object] | None = None,
+        v2_memory_packets: list[object] | None = None,
+        v2_semantic_resolved: bool = False,
+    ) -> list[LLMMessage]:
         memory_route = route_memory_query(user_text)
         if (
             self.memory_strategy.planner == "qwen3_planner"
@@ -777,7 +871,12 @@ class RealtimeAgentSession:
         turn_memory_packets: list[dict[str, object]] = []
         turn_memory_receipts: list[dict[str, object]] = []
         lookup_attempted = False
-        if memory_route.route not in {"none", "safety"} and memory_route.max_blocks > 0:
+        if v2_semantic_resolved:
+            lookup_attempted = True
+            turn_memory_packets = [
+                packet for packet in (v2_memory_packets or []) if isinstance(packet, dict)
+            ][:6]
+        elif memory_route.route not in {"none", "safety"} and memory_route.max_blocks > 0:
             lookup_attempted = True
             turn_memory_packets, turn_memory_receipts = await self._lookup_turn_memory(
                 turn_id,
@@ -788,6 +887,7 @@ class RealtimeAgentSession:
             user_text,
             turn_memory_packets=turn_memory_packets,
             turn_memory_receipts=turn_memory_receipts,
+            companion_policy=policy_card,
         )
         lookup_latency_ms = self._memory_lookup_latency_ms.pop(turn_id, None)
         print(
@@ -879,7 +979,19 @@ class RealtimeAgentSession:
             event = json.loads(activity)
         except json.JSONDecodeError:
             return False
-        if not isinstance(event, dict) or event.get("type") != "memory_lookup_response":
+        if not isinstance(event, dict):
+            return False
+
+        if event.get("type") == "client_session_started":
+            versions = event.get("memory_protocol_versions")
+            self._client_supports_memory_v2 = (
+                isinstance(versions, list) and 2 in versions
+            ) or event.get("schema_version") == 2
+            return True
+
+        if event.get("type") == "memory_context_response_v2":
+            return self._handle_memory_context_response_v2(event)
+        if event.get("type") != "memory_lookup_response":
             return False
 
         turn_id = event.get("turn_id")
@@ -926,6 +1038,47 @@ class RealtimeAgentSession:
                 "elapsed_ms": event.get("elapsed_ms"),
                 "memory_packets": len(packets),
                 "pending_receipts": len(receipts),
+            },
+            flush=True,
+        )
+        return True
+
+    def _handle_memory_context_response_v2(self, event: dict[str, object]) -> bool:
+        turn_id = event.get("turn_id")
+        request_sequence = event.get("request_sequence")
+        if not isinstance(turn_id, str) or not isinstance(request_sequence, int):
+            return True
+        future = self._pending_memory_context_requests.get((turn_id, request_sequence))
+        if future is None or future.done():
+            print(
+                "memory_context_v2_stale_response",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "request_sequence": request_sequence,
+                },
+                flush=True,
+            )
+            return True
+        result = {
+            "response_directive": event.get("response_directive"),
+            "state_facts": event.get("state_facts"),
+            "pending_candidate": event.get("pending_candidate"),
+            "policy_card": event.get("policy_card"),
+            "memory_packets": event.get("memory_packets"),
+            "semantic_resolved": event.get("semantic_resolved"),
+        }
+        future.set_result(result)
+        print(
+            "memory_context_v2_response",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                "request_sequence": request_sequence,
+                "directive": event.get("response_directive"),
+                "state_fact_count": len(event.get("state_facts", []))
+                if isinstance(event.get("state_facts"), list)
+                else 0,
             },
             flush=True,
         )
@@ -1340,6 +1493,79 @@ def _looks_like_question_echo(user_text: str, response_text: str) -> bool:
     overlap = len(user_tokens & response_tokens) / len(user_tokens)
     response_is_question = any(mark in response_text for mark in ("?", "？", "क्या", "कौन", "कैसे", "कब", "कहाँ"))
     return response_is_question and overlap >= 0.65 and len(response_tokens) <= len(user_tokens) + 5
+
+
+def _is_question_turn(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker in lowered for marker in ("?", "क्या", "कौन", "कैसे", "किस", "kya", "kaun", "kaise", "kis"))
+
+
+def _render_memory_directive(context: dict[str, object]) -> str | None:
+    directive = context.get("response_directive")
+    facts = context.get("state_facts")
+    fact = facts[0] if isinstance(facts, list) and facts and isinstance(facts[0], dict) else None
+    if directive == "fact_unknown":
+        return "मुझे यह बात अभी याद नहीं है।"
+    if directive == "confirmation":
+        candidate = context.get("pending_candidate")
+        if isinstance(candidate, dict):
+            value = candidate.get("value")
+            if isinstance(value, dict) and isinstance(value.get("text"), str):
+                if candidate.get("state_key") == "user.profile.preferred_name":
+                    return f"क्या मैं आपको {value['text']} कहूँ?"
+                return f"क्या मैं इसे {value['text']} के रूप में याद रखूँ?"
+        return "क्या आप चाहते हैं कि मैं यह बात याद रखूँ?"
+    if fact is None:
+        return None
+    value = fact.get("value")
+    state_key = fact.get("state_key")
+    text = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(text, str) or not isinstance(state_key, str):
+        return None
+    if directive == "fact_answer":
+        if state_key == "user.profile.preferred_name":
+            return f"आपका नाम {text} है।"
+        if state_key.startswith("user.relationship.brother."):
+            return f"आपके भाई का नाम {text} है।"
+        if state_key.startswith("user.relationship.sister."):
+            return f"आपकी बहन का नाम {text} है।"
+        if state_key == "user.preference.response_language":
+            return f"आपको {_spoken_language(text)} में जवाब पसंद हैं।"
+        if state_key == "user.preference.response_length":
+            return "आपको छोटे जवाब पसंद हैं।"
+        if state_key == "user.preference.comfort_style":
+            return "आपको सलाह देने से पहले बस सुनना पसंद है।"
+        if state_key.startswith("user.routine.morning."):
+            return "आप रोज सुबह टहलते हैं।"
+        if state_key.startswith("user.boundary."):
+            return "आप इस विषय पर बात नहीं करना पसंद करते हैं।"
+        if state_key.startswith("user.goal."):
+            return f"आपका लक्ष्य {text} है।"
+    if directive == "setting_ack":
+        if state_key == "user.preference.response_language":
+            return f"ठीक है, मैं {_spoken_language(text)} में जवाब दूँगा।"
+        if state_key == "user.preference.response_length":
+            return "ठीक है, मैं छोटे जवाब दूँगा।"
+        if state_key == "user.preference.comfort_style":
+            return "ठीक है, मैं सलाह देने से पहले पहले आपकी बात सुनूँगा।"
+        if state_key == "user.profile.preferred_name":
+            return f"ठीक है, मैं आपको {text} कहूँगा।"
+        if state_key.startswith("user.relationship."):
+            return "ठीक है, मैंने यह संबंध याद रख लिया है।"
+        if state_key.startswith("user.routine."):
+            return "ठीक है, मैंने आपकी यह दिनचर्या याद रख ली है।"
+        if state_key.startswith("user.boundary."):
+            return "ठीक है, मैं इस विषय से बचूँगा।"
+        if state_key.startswith("user.goal."):
+            return "ठीक है, मैंने आपका यह लक्ष्य याद रख लिया है।"
+    return None
+
+
+def _spoken_language(value: str) -> str:
+    return {"Hindi": "हिंदी", "English": "अंग्रेज़ी", "Hinglish": "हिंग्लिश"}.get(
+        value,
+        value,
+    )
 
 
 def _response_tokens(text: str) -> set[str]:

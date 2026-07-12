@@ -17,6 +17,7 @@ class EventSequencer:
         *,
         event_type: str,
         turn_id: str | None = None,
+        schema_version: int = 1,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
@@ -25,7 +26,7 @@ class EventSequencer:
             "sequence": next(self._counter),
             "session_id": self.session_id,
             **({"turn_id": turn_id} if turn_id else {}),
-            "schema_version": 1,
+            "schema_version": schema_version,
             "timestamp_ms": int(time.time() * 1000),
         }
 
@@ -34,10 +35,16 @@ class EventSequencer:
         *,
         event_type: str,
         turn_id: str | None = None,
+        schema_version: int = 1,
         payload: dict[str, Any] | None = None,
     ) -> bytes:
         return json.dumps(
-            self.next(event_type=event_type, turn_id=turn_id, payload=payload),
+            self.next(
+                event_type=event_type,
+                turn_id=turn_id,
+                schema_version=schema_version,
+                payload=payload,
+            ),
             separators=(",", ":"),
         ).encode("utf-8")
 

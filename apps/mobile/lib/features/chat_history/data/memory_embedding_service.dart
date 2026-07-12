@@ -452,6 +452,11 @@ class MemoryRerankException implements Exception {
 }
 
 bool _embeddable(MemoryRecord memory) {
+  // Names and response settings are deterministic Companion State, never
+  // fuzzy vector documents. Keep only semantic/episodic material in ObjectBox.
+  if (!{'semantic', 'episodic', 'session_summary'}.contains(memory.kind)) {
+    return false;
+  }
   if (memory.sensitivity != 'normal') {
     return false;
   }

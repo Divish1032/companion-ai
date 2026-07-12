@@ -86,6 +86,7 @@ class LiveKitEventSequencer {
     required String type,
     required String sessionId,
     String? turnId,
+    int schemaVersion = 1,
     Map<String, Object?> payload = const <String, Object?>{},
   }) {
     return LiveKitDataEvent(
@@ -93,6 +94,7 @@ class LiveKitEventSequencer {
       sequence: _nextSequence++,
       sessionId: sessionId,
       turnId: turnId,
+      schemaVersion: schemaVersion,
       timestampMs: DateTime.now().millisecondsSinceEpoch,
       payload: payload,
     );

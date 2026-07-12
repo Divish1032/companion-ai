@@ -71,8 +71,9 @@ class VoskSTTProvider(STTProvider):
                     )
 
         final = _parse_vosk_json(recognizer.FinalResult())
+        final_text = _clean_text(final.get("text")) or last_partial
         yield self._event(
-            text=_clean_text(final.get("text")),
+            text=final_text,
             is_final=True,
             confidence=_confidence(final),
             started=started,

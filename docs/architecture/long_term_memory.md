@@ -751,6 +751,41 @@ locally. Ubuntu still needs its own host-level capacity validation.
 
 ### Phase 5 Validation Evidence (2026-07-11)
 
+### Companion Memory 2.0 implementation (2026-07-12)
+
+Exact personal facts now use a separate phone-owned deterministic state path.
+This replaces free-text `core_profile` retrieval for the supported fact types;
+the existing records, summaries, graph, and ObjectBox vectors remain
+semantic/episodic retrieval only and cannot override current companion state.
+
+- The phone's Drift/SQLite database initializes append-only `memory_claims`,
+  materialized `companion_state`, and typed `memory_entity_aliases` tables.
+  A single-valued state has one current claim; replacing it supersedes rather
+  than deletes the prior local evidence.
+- The pure-Dart Hindi extractor handles supported exact claims for preferred
+  name, response language, short replies, listen-first preference, sibling
+  names, and morning walks. It normalizes `हिन्दी`/`हिंदी`, accepts
+  `मेरा`/`मेरी`/`मेरे`, and excludes sensitive content before admission.
+- Missing final ASR confidence is `unknown`, not zero. High-confidence explicit
+  state is committed immediately; uncertain single values require an immediate
+  voice confirmation, and uncertain multi-values are promoted by confirmation
+  or a matching second statement. Rejection expires the candidate.
+- The reliable `memory_context_request_v2` / `memory_context_response_v2`
+  protocol resolves claims and exact queries on the phone. Clients negotiate
+  V2 at session start; older clients take V1 immediately.
+- Exact recall, settings acknowledgements, confirmation, and no-memory answers
+  use deterministic Hindi templates. Normal companion replies receive only an
+  allow-listed policy card (`response_language`, `response_length`,
+  `comfort_style`), never raw claim history.
+- Clear History deletes claims and state projections transactionally along with
+  transcripts, legacy memory, graph data, and the existing ObjectBox clear path.
+
+Automated coverage now includes Hindi parser variants, ASR-quality semantics,
+supersession, candidate confirmation/rejection, repeated uncertain evidence,
+clear-history state deletion, and V2 deterministic fact replies. The Phase 5
+phone script must still be rerun against this V2 APK before these changes are
+considered device-validated.
+
 The Android measurements below are historical evidence from the earlier
 deterministic-retrieval APK. They remain useful for admission, receipts, graph,
 and privacy behavior, but Phase 5 must be rerun on the rebuilt APK with the

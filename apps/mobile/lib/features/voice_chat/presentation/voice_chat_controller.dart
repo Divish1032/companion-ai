@@ -10,6 +10,7 @@ import '../../../core/identity/anonymous_device_id.dart';
 import '../../../core/permissions/microphone_permission_service.dart';
 import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
+import '../../chat_history/data/companion_memory_store.dart';
 import '../../chat_history/data/memory_embedding_service.dart';
 import '../../chat_history/data/objectbox_memory_vector_index.dart';
 import '../../livekit_session/data/livekit_connection_service.dart';
@@ -36,6 +37,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   StreamSubscription<LiveKitDataEvent>? _eventSubscription;
   String? _activeDeviceId;
   final _sequencer = LiveKitEventSequencer();
+  Future<void> _criticalEventQueue = Future<void>.value();
 
   @override
   VoiceChatState build() {
@@ -107,13 +109,19 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         );
         await _eventSubscription?.cancel();
         _eventSubscription = handle.events.listen((event) {
-          unawaited(_applyLiveKitEvent(event));
+          _criticalEventQueue = _criticalEventQueue
+              .catchError((_) {})
+              .then((_) => _applyLiveKitEvent(event));
         });
         await liveKitService.sendReliable(
           _sequencer.next(
             type: 'client_session_started',
+            schemaVersion: 2,
             sessionId: createdSession.sessionId,
-            payload: {'room_name': createdSession.roomName},
+            payload: {
+              'room_name': createdSession.roomName,
+              'memory_protocol_versions': [1, 2],
+            },
           ),
         );
 
@@ -195,7 +203,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   }
 
   Future<void> clearHistory() async {
-    await ref.read(appDatabaseProvider).clearHistory();
+    final database = ref.read(appDatabaseProvider);
+    await database.clearAllHistoryAndCompanionMemory();
     final vectorIndex = await ref.read(memoryVectorIndexProvider.future);
     await vectorIndex.deleteAll();
     state = const VoiceChatState.initial();
@@ -298,6 +307,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         isBusy: false,
         clearPartialTranscript: true,
       );
+    } else if (event.type == 'memory_context_request_v2') {
+      await _replyToMemoryContextV2(event);
     } else if (event.type == 'memory_lookup_request') {
       await _replyToMemoryLookupRequest(event);
     } else if (event.type == 'transcript_repeat_requested') {
@@ -413,6 +424,88 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         );
   }
 
+  Future<void> _replyToMemoryContextV2(LiveKitDataEvent event) async {
+    final query = (event.payload['query_text'] as String?)?.trim();
+    final turnId = event.turnId;
+    if (query == null || query.isEmpty || turnId == null) return;
+    final startedAt = DateTime.now().millisecondsSinceEpoch;
+    final database = ref.read(appDatabaseProvider);
+    final resolution = await database.resolveMemoryTurn(
+      turnId: turnId,
+      text: query,
+      transcriptStatus:
+          (event.payload['transcript_status'] as String?) ?? 'final',
+      sttConfidence: (event.payload['stt_confidence'] as num?)?.toDouble(),
+      sttProvider: event.payload['stt_provider'] as String?,
+      sttModel: event.payload['stt_model'] as String?,
+    );
+    final limit = ((event.payload['max_blocks'] as num?)?.toInt() ?? 4).clamp(
+      0,
+      6,
+    );
+    final semanticPackets = resolution.queryScope == null
+        ? const <MemoryRecord>[]
+        : await ref
+              .read(memoryLookupServiceProvider)
+              .lookup(
+                latestUserText: query,
+                limit: limit,
+                retrievalStrategy:
+                    (event.payload['memory_retrieval_strategy'] as String?) ??
+                    'deterministic',
+                rerankerStrategy:
+                    (event.payload['memory_reranker_strategy'] as String?) ??
+                    'deterministic',
+                route: resolution.queryScope,
+              );
+    final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAt;
+    _logVoiceMemoryDiagnostic('memory_context_response_v2_mobile', {
+      'turn_id': turnId,
+      'request_sequence': event.sequence,
+      'elapsed_ms': elapsedMs,
+      'directive': resolution.directive,
+      'state_fact_count': resolution.stateFacts.length,
+      'semantic_packet_count': semanticPackets.length,
+      'pending_candidate': resolution.pendingCandidate != null,
+    });
+    await ref
+        .read(liveKitConnectionServiceProvider)
+        .sendReliable(
+          _sequencer.next(
+            type: 'memory_context_response_v2',
+            schemaVersion: 2,
+            sessionId: event.sessionId,
+            turnId: turnId,
+            payload: {
+              'request_sequence': event.sequence,
+              'elapsed_ms': elapsedMs,
+              'response_directive': resolution.directive,
+              'state_facts': resolution.stateFacts,
+              'policy_card': resolution.policyCard,
+              'semantic_resolved': resolution.queryScope != null,
+              if (resolution.pendingCandidate != null)
+                'pending_candidate': resolution.pendingCandidate,
+              'memory_packets': [
+                for (final memory in semanticPackets)
+                  {
+                    'memory_id': memory.id,
+                    'kind': memory.kind,
+                    'label': memory.label,
+                    'content': memory.content,
+                    'canonical_text': memory.canonicalText,
+                    'source_turn_ids': jsonDecode(memory.sourceTurnIdsJson),
+                    'confidence_score': memory.confidenceScore,
+                    'importance_score': memory.importanceScore,
+                    'temporal_status': memory.temporalStatus,
+                    'sensitivity': memory.sensitivity,
+                    'evidence_summary': memory.evidenceSummary,
+                  },
+              ],
+            },
+          ),
+        );
+  }
+
   Future<void> _persistFinalTranscript(LiveKitDataEvent event) async {
     final text = (event.payload['text'] as String?)?.trim();
     if (text == null || text.isEmpty) {
@@ -431,7 +524,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
     await ref
         .read(appDatabaseProvider)
-        .upsertUserMessageAndExtractMemory(
+        .upsertMessage(
           ChatMessagesCompanion.insert(
             id: 'msg_${event.sessionId}_${turnId}_user',
             sessionId: event.sessionId,

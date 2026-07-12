@@ -93,6 +93,7 @@ class PromptContextBuilder:
         *,
         turn_memory_packets: list[dict[str, object]] | None = None,
         turn_memory_receipts: list[dict[str, object]] | None = None,
+        companion_policy: dict[str, object] | None = None,
     ) -> tuple[list[LLMMessage], dict[str, object]]:
         latest = _clean(latest_user_text, max_chars=800)
         turn_memory_blocks = _parse_memory_block_items(turn_memory_packets or [])
@@ -125,6 +126,10 @@ class PromptContextBuilder:
                 "question about whether to remember this. Do not imply it is already confirmed."
             )
             context_sections.append(_format_receipt_prompt(receipt_prompts[0]))
+        policy = _format_companion_policy(companion_policy or {})
+        if policy:
+            context_sections.append("[companion_policy]")
+            context_sections.append(policy)
 
         messages = [LLMMessage(role="system", content=self.system_prompt)]
         if len(context_sections) > 2:
@@ -155,6 +160,7 @@ class PromptContextBuilder:
                 "episodic_memory",
                 "session_summary",
                 "memory_receipt",
+                "companion_policy",
                 "recent_turns",
             ],
         }
@@ -470,6 +476,21 @@ def _dedupe_recent(turns: list[RecentTurn]) -> list[RecentTurn]:
     return deduped
 
 
+def _format_companion_policy(policy: dict[str, object]) -> str:
+    """Render only the allow-listed current preferences, never claim history."""
+    allowed = {
+        "response_language": {"Hindi", "English", "Hinglish"},
+        "response_length": {"short"},
+        "comfort_style": {"listen_first"},
+    }
+    lines: list[str] = ["Use these current user preferences when helpful:"]
+    for key, values in allowed.items():
+        value = policy.get(key)
+        if isinstance(value, str) and value in values:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def _bound_messages(messages: list[LLMMessage], max_chars: int) -> list[LLMMessage]:
     if sum(len(message.content) for message in messages) <= max_chars:
         return messages
@@ -500,6 +521,8 @@ def _sensitive(text: str) -> bool:
         "khud ko maar",
         "khud ko nuksan",
         "medical",
+        "medicine",
+        "दवा",
         "doctor",
         "legal",
         "lawyer",

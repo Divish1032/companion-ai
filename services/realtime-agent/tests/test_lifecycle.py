@@ -678,6 +678,59 @@ def test_query_time_memory_lookup_timeout_falls_back_without_memory() -> None:
     assert context_text.endswith("office bad day tha")
 
 
+def test_v2_exact_state_reply_bypasses_llm_and_uses_matching_turn() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "client_session_started",
+                    "schema_version": 2,
+                    "memory_protocol_versions": [1, 2],
+                }
+            )
+        )
+        task = asyncio.create_task(
+            session._respond_to_final_transcript("session_test:turn:0042", "मेरा नाम क्या है?")
+        )
+        request = await _wait_for_decoded_event_type(transport, "memory_context_request_v2")
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_context_response_v2",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": request["sequence"],
+                    "response_directive": "fact_answer",
+                    "state_facts": [
+                        {
+                            "claim_id": "claim_amit",
+                            "state_key": "user.profile.preferred_name",
+                            "value": {"text": "अमित"},
+                            "value_type": "profile",
+                        }
+                    ],
+                }
+            )
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    final = next(event for event in events if event["type"] == "assistant_transcript_final")
+    assert final["turn_id"] == "session_test:turn:0042"
+    assert final["text"] == "आपका नाम अमित है।"
+    assert llm.calls == []
+
+
 def test_llm_output_sanitizes_internal_context_markers() -> None:
     assert _sanitize_llm_output(
         "[recent_turns] Haan, main sun raha hoon. [latest_user]"

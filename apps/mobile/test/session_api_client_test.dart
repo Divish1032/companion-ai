@@ -9,72 +9,85 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('createSession sends only tiny session-start memory context', () async {
-    final database = AppDatabase.forTesting(NativeDatabase.memory());
-    addTearDown(database.close);
-    await database
-        .into(database.memoryRecords)
-        .insert(
-          _memory(
-            id: 'memory_name',
-            kind: 'core_profile',
-            label: 'preferred_name',
-            content: 'User prefers to be called Rahul.',
-          ),
-        );
-    await database
-        .into(database.memoryRecords)
-        .insert(
-          _memory(
-            id: 'memory_language',
-            kind: 'procedural',
-            label: 'language_style',
-            content: 'User prefers Hinglish replies.',
-          ),
-        );
-    await database
-        .into(database.memoryRecords)
-        .insert(
-          _memory(
-            id: 'memory_semantic',
-            kind: 'semantic',
-            label: 'work',
-            content: 'This should wait for query-time lookup.',
-          ),
-        );
+  test(
+    'createSession excludes exact companion state from startup context',
+    () async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+      await database
+          .into(database.memoryRecords)
+          .insert(
+            _memory(
+              id: 'memory_name',
+              kind: 'core_profile',
+              label: 'preferred_name',
+              content: 'User prefers to be called Rahul.',
+            ),
+          );
+      await database
+          .into(database.memoryRecords)
+          .insert(
+            _memory(
+              id: 'memory_summary',
+              kind: 'session_summary',
+              label: 'previous_session',
+              content: 'A bounded episodic session summary.',
+            ),
+          );
+      await database
+          .into(database.memoryRecords)
+          .insert(
+            _memory(
+              id: 'memory_language',
+              kind: 'procedural',
+              label: 'language_style',
+              content: 'User prefers Hinglish replies.',
+            ),
+          );
+      await database
+          .into(database.memoryRecords)
+          .insert(
+            _memory(
+              id: 'memory_semantic',
+              kind: 'semantic',
+              label: 'work',
+              content: 'This should wait for query-time lookup.',
+            ),
+          );
 
-    late Map<String, Object?> requestBody;
-    final client = HttpSessionApiClient(
-      baseUrl: 'http://api.test',
-      database: database,
-      client: MockClient((request) async {
-        expect(request.url.path, '/v1/session');
-        requestBody = jsonDecode(request.body) as Map<String, Object?>;
-        return http.Response(
-          jsonEncode({
-            'session_id': 'session_test',
-            'room_name': 'room_test',
-            'livekit_url': 'ws://livekit.test',
-            'expires_at_ms': 123,
-          }),
-          200,
-        );
-      }),
-    );
+      late Map<String, Object?> requestBody;
+      final client = HttpSessionApiClient(
+        baseUrl: 'http://api.test',
+        database: database,
+        client: MockClient((request) async {
+          expect(request.url.path, '/v1/session');
+          requestBody = jsonDecode(request.body) as Map<String, Object?>;
+          return http.Response(
+            jsonEncode({
+              'session_id': 'session_test',
+              'room_name': 'room_test',
+              'livekit_url': 'ws://livekit.test',
+              'expires_at_ms': 123,
+            }),
+            200,
+          );
+        }),
+      );
 
-    await client.createSession(deviceId: 'device_test');
+      await client.createSession(deviceId: 'device_test');
 
-    final memoryContext = requestBody['memory_context'] as List<Object?>;
-    final ids = [
-      for (final item in memoryContext)
-        (item as Map<String, Object?>)['memory_id'],
-    ];
+      final memoryContext = requestBody['memory_context'] as List<Object?>;
+      final ids = [
+        for (final item in memoryContext)
+          (item as Map<String, Object?>)['memory_id'],
+      ];
 
-    expect(ids, contains('memory_name'));
-    expect(ids, contains('memory_language'));
-    expect(ids, isNot(contains('memory_semantic')));
-    expect(memoryContext.length, lessThanOrEqualTo(3));
-  });
+      expect(ids, isNot(contains('memory_name')));
+      expect(ids, isNot(contains('memory_language')));
+      expect(ids, isNot(contains('memory_semantic')));
+      expect(ids, isEmpty);
+    },
+  );
 }
 
 MemoryRecordsCompanion _memory({
