@@ -18,6 +18,11 @@ enum MemoryActionKind {
 
 enum ClaimCardinality { single, multi }
 
+/// The admission decision is made on-device from bounded evidence. A future
+/// model may nominate semantic/episodic candidates, but it must not decide a
+/// profile-state write or bypass this policy.
+enum ClaimAdmission { commit, confirm }
+
 /// A future local NER model may implement this interface. Its output must still
 /// enter the candidate/confirmation path; only deterministic extraction can
 /// update current state directly in this release.
@@ -81,6 +86,26 @@ TranscriptQuality transcriptQuality({
   return confidence >= 0.75
       ? TranscriptQuality.high
       : TranscriptQuality.unknown;
+}
+
+ClaimAdmission claimAdmission({
+  required CompanionClaimCandidate candidate,
+  required TranscriptQuality quality,
+}) {
+  // A repeat-requested or explicitly low-quality transcript is never enough
+  // to alter durable state by itself.
+  if (quality == TranscriptQuality.low) return ClaimAdmission.confirm;
+
+  // Vosk often has no reliable final confidence. For an exact, explicit
+  // grammar match, treating that as a question on every turn makes the
+  // companion feel like a form. Corrections and boundaries remain guarded:
+  // a mistaken replacement is more harmful than a missed convenience fact.
+  if (quality == TranscriptQuality.unknown &&
+      (candidate.assertionKind == 'correction' ||
+          candidate.category == 'boundary')) {
+    return ClaimAdmission.confirm;
+  }
+  return ClaimAdmission.commit;
 }
 
 MemoryTurnAnalysis analyzeMemoryTurn(String text) {
@@ -192,7 +217,7 @@ MemoryTurnAnalysis? _queryAction(String text) {
 CompanionClaimCandidate? _claimCandidate(String text) {
   final name = _capture(text, [
     RegExp(
-      r'(?:मेरा|meri|mera|my) नाम\s+([a-z\u0900-\u097f]{2,32})\s+(?:है|hai)',
+      r'(?:मेरा|meri|mera|my) नाम\s+([a-z\u0900-\u097f]{2,32})(?:\s+(?:है|hai))?',
       caseSensitive: false,
     ),
     RegExp(
@@ -214,7 +239,7 @@ CompanionClaimCandidate? _claimCandidate(String text) {
 
   final relation = _capture(text, [
     RegExp(
-      r'(?:मेरा|मेरी|मेरे)\s+(भाई|बहन)\s+का\s+नाम\s+([a-z\u0900-\u097f]{2,32})\s+है',
+      r'(?:मेरा|मेरी|मेरे)\s+(भाई|बहन)\s+का\s+नाम\s+([a-z\u0900-\u097f]{2,32})(?:\s+है)?',
       caseSensitive: false,
     ),
     RegExp(

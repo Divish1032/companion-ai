@@ -131,6 +131,9 @@ def _persona_response(messages: list[LLMMessage]) -> str:
     ).casefold()
     receipt_question = _receipt_question(memory_text)
     remembered_name = _remembered_name(memory_text)
+    admission_response = _turn_admission_response(memory_text)
+    if admission_response:
+        return _with_receipt_question(admission_response, receipt_question)
     if remembered_name and any(
         phrase in normalized
         for phrase in (
@@ -168,6 +171,37 @@ def _persona_response(messages: list[LLMMessage]) -> str:
         "Haan, main sun raha hoon. Thoda aur batao, main bina judge kiye saath hoon.",
         receipt_question,
     )
+
+
+def _turn_admission_response(memory_text: str) -> str | None:
+    if "[turn_admission]" not in memory_text:
+        return None
+    if "morning-walk routine" in memory_text:
+        return "सुबह की सैर दिन की अच्छी शुरुआत लगती है। आपको टहलना अकेले पसंद है या किसी के साथ?"
+    if "their brother is named" in memory_text:
+        name = _admission_value(memory_text, "their brother is named ")
+        return f"{name}—अच्छा नाम है। आप दोनों काफ़ी करीब हैं?" if name else "आप दोनों काफ़ी करीब हैं?"
+    if "their sister is named" in memory_text:
+        name = _admission_value(memory_text, "their sister is named ")
+        return f"{name}—अच्छा नाम है। आप दोनों काफ़ी करीब हैं?" if name else "आप दोनों काफ़ी करीब हैं?"
+    if "preferred name as" in memory_text:
+        name = _admission_value(memory_text, "preferred name as ")
+        return (
+            f"अच्छा {name}, आपसे मिलकर अच्छा लगा। आज आपका दिन कैसा रहा?"
+            if name
+            else "आपसे मिलकर अच्छा लगा। आज आपका दिन कैसा रहा?"
+        )
+    if "described this goal:" in memory_text:
+        return "यह अच्छा लक्ष्य है। आज इसकी तरफ़ एक छोटा कदम क्या हो सकता है?"
+    return None
+
+
+def _admission_value(memory_text: str, marker: str) -> str | None:
+    start = memory_text.find(marker)
+    if start < 0:
+        return None
+    value = memory_text[start + len(marker) :].split(".", 1)[0].strip()
+    return value if value and len(value) <= 48 else None
 
 
 def _receipt_question(memory_text: str) -> str | None:

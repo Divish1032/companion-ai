@@ -117,17 +117,19 @@ extension CompanionMemoryStore on AppDatabase {
     await ensureCompanionMemorySchema();
     await _migrateLegacyCompanionStateIfNeeded();
     final analysis = analyzeMemoryTurn(text);
+    final previousTurnId = await _previousFinalUserTurnId(turnId);
     if (analysis.action == MemoryActionKind.confirmCandidate) {
-      return _confirmCandidate(turnId);
+      return _confirmCandidate(turnId, previousTurnId);
     }
     if (analysis.action == MemoryActionKind.rejectCandidate) {
-      await _rejectCandidate();
+      await _rejectCandidate(previousTurnId);
       return MemoryTurnResolution(
         directive: 'companion',
         policyCard: await _policyCard(),
       );
     }
     if (analysis.action == MemoryActionKind.answerState) {
+      await _expirePendingCandidates();
       final facts = await _facts(analysis.stateKey!);
       return MemoryTurnResolution(
         directive: facts.isEmpty ? 'fact_unknown' : 'fact_answer',
@@ -135,6 +137,7 @@ extension CompanionMemoryStore on AppDatabase {
       );
     }
     if (analysis.action == MemoryActionKind.retrieveSemantic) {
+      await _expirePendingCandidates();
       return MemoryTurnResolution(
         directive: 'companion',
         queryScope: analysis.queryScope,
@@ -143,6 +146,7 @@ extension CompanionMemoryStore on AppDatabase {
     }
     if (analysis.action != MemoryActionKind.setState ||
         analysis.candidate == null) {
+      await _expirePendingCandidates();
       return MemoryTurnResolution(
         directive: 'companion',
         policyCard: await _policyCard(),
@@ -156,19 +160,34 @@ extension CompanionMemoryStore on AppDatabase {
     );
     return transaction(() async {
       final current = await _currentClaim(candidate.stateKey);
-      final repeated = await _candidateWithSameValue(candidate);
+      final repeated = await _candidateWithSameValue(candidate, previousTurnId);
       final now = DateTime.now().millisecondsSinceEpoch;
+      if (current?['value_json'] == candidate.valueJson) {
+        await _appendEvidenceTurn(current!, turnId, now);
+        await _expirePendingCandidates();
+        return MemoryTurnResolution(
+          directive: 'setting_ack',
+          stateFacts: await _facts(candidate.stateKey),
+        );
+      }
       if (repeated != null) {
         await _activate(repeated, candidate, current, now);
+        await _expirePendingCandidates();
         return MemoryTurnResolution(
           directive: 'setting_ack',
           stateFacts: await _facts(candidate.stateKey),
         );
       }
 
+      // A new explicit assertion means the user has moved on from any older
+      // confirmation prompt. Never let a later bare "हाँ" confirm it.
+      await _expirePendingCandidates();
+
       final id =
           'claim_${now}_${turnId.hashCode}_${candidate.stateKey.hashCode}';
-      final pending = quality != TranscriptQuality.high;
+      final pending =
+          claimAdmission(candidate: candidate, quality: quality) ==
+          ClaimAdmission.confirm;
       await customStatement(
         '''INSERT INTO memory_claims (
           id, state_key, subject, predicate, value_json, cardinality, category,
@@ -233,7 +252,9 @@ extension CompanionMemoryStore on AppDatabase {
 
   Future<Map<String, Object?>?> _candidateWithSameValue(
     CompanionClaimCandidate candidate,
+    String? previousTurnId,
   ) async {
+    if (previousTurnId == null) return null;
     final rows = await customSelect(
       'SELECT * FROM memory_claims WHERE state_key = ? AND value_json = ? '
       'AND claim_state = ? AND confirmation_state = ? LIMIT 1',
@@ -244,7 +265,14 @@ extension CompanionMemoryStore on AppDatabase {
         Variable.withString('pending'),
       ],
     ).get();
-    return rows.isEmpty ? null : rows.single.data;
+    for (final row in rows) {
+      if (_stringList(
+        row.data['source_turn_ids_json'],
+      ).contains(previousTurnId)) {
+        return row.data;
+      }
+    }
+    return null;
   }
 
   Future<void> _activate(
@@ -278,6 +306,19 @@ extension CompanionMemoryStore on AppDatabase {
         now: now,
       );
     }
+  }
+
+  Future<void> _appendEvidenceTurn(
+    Map<String, Object?> claim,
+    String turnId,
+    int now,
+  ) async {
+    final sourceTurns = _stringList(claim['source_turn_ids_json']);
+    if (!sourceTurns.contains(turnId)) sourceTurns.add(turnId);
+    await customStatement(
+      'UPDATE memory_claims SET source_turn_ids_json = ?, updated_at = ? WHERE id = ?',
+      [jsonEncode(sourceTurns), now, claim['id']],
+    );
   }
 
   Future<void> _upsertPersonAlias({
@@ -333,20 +374,16 @@ extension CompanionMemoryStore on AppDatabase {
     );
   }
 
-  Future<MemoryTurnResolution> _confirmCandidate(String turnId) async {
+  Future<MemoryTurnResolution> _confirmCandidate(
+    String turnId,
+    String? previousTurnId,
+  ) async {
     return transaction(() async {
-      final rows = await customSelect(
-        'SELECT * FROM memory_claims WHERE claim_state = ? AND confirmation_state = ? '
-        'ORDER BY updated_at DESC LIMIT 1',
-        variables: [
-          Variable.withString('candidate'),
-          Variable.withString('pending'),
-        ],
-      ).get();
-      if (rows.isEmpty) {
+      final claim = await _pendingCandidateForSourceTurn(previousTurnId);
+      if (claim == null) {
+        await _expirePendingCandidates();
         return const MemoryTurnResolution(directive: 'companion');
       }
-      final claim = rows.single.data;
       final value = _decodeValue(claim['value_json']);
       final candidate = CompanionClaimCandidate(
         stateKey: claim['state_key']! as String,
@@ -374,6 +411,7 @@ extension CompanionMemoryStore on AppDatabase {
           claim['id'],
         ],
       );
+      await _expirePendingCandidates();
       return MemoryTurnResolution(
         directive: 'setting_ack',
         stateFacts: await _facts(candidate.stateKey),
@@ -381,18 +419,22 @@ extension CompanionMemoryStore on AppDatabase {
     });
   }
 
-  Future<void> _rejectCandidate() async {
+  Future<void> _rejectCandidate(String? previousTurnId) async {
+    final claim = await _pendingCandidateForSourceTurn(previousTurnId);
+    if (claim == null) {
+      await _expirePendingCandidates();
+      return;
+    }
     await customStatement(
-      '''UPDATE memory_claims SET claim_state = 'expired', confirmation_state = 'rejected', updated_at = ?
-         WHERE id = (SELECT id FROM memory_claims WHERE claim_state = 'candidate'
-         AND confirmation_state = 'pending' ORDER BY updated_at DESC LIMIT 1)''',
-      [DateTime.now().millisecondsSinceEpoch],
+      "UPDATE memory_claims SET claim_state = 'expired', confirmation_state = 'rejected', updated_at = ? WHERE id = ?",
+      [DateTime.now().millisecondsSinceEpoch, claim['id']],
     );
+    await _expirePendingCandidates();
   }
 
   Future<List<Map<String, Object?>>> _facts(String stateKey) async {
     final wildcard = stateKey.endsWith('.*');
-    final rows = await customSelect(
+    var rows = await customSelect(
       wildcard
           ? 'SELECT * FROM memory_claims WHERE claim_state = ? AND state_key LIKE ? ORDER BY updated_at DESC LIMIT 4'
           : 'SELECT c.* FROM companion_state s JOIN memory_claims c '
@@ -408,6 +450,18 @@ extension CompanionMemoryStore on AppDatabase {
         if (!wildcard) Variable.withString('current'),
       ],
     ).get();
+    // Multi-valued state deliberately has no single-row projection. Resolve
+    // an exact current claim directly so acknowledgements stay deterministic.
+    if (!wildcard && rows.isEmpty) {
+      rows = await customSelect(
+        'SELECT * FROM memory_claims WHERE state_key = ? AND claim_state = ? '
+        'ORDER BY updated_at DESC LIMIT 1',
+        variables: [
+          Variable.withString(stateKey),
+          Variable.withString('current'),
+        ],
+      ).get();
+    }
     return [
       for (final row in rows)
         {
@@ -418,6 +472,57 @@ extension CompanionMemoryStore on AppDatabase {
         },
     ];
   }
+
+  Future<String?> _previousFinalUserTurnId(String turnId) async {
+    final currentRows = await customSelect(
+      "SELECT session_id, created_at FROM chat_messages WHERE turn_id = ? "
+      "AND role = 'user' AND status IN ('final', 'final_corrected') "
+      'ORDER BY created_at DESC LIMIT 1',
+      variables: [Variable.withString(turnId)],
+    ).get();
+    if (currentRows.isEmpty) return null;
+    final current = currentRows.single.data;
+    final sessionId = current['session_id'] as String?;
+    final createdAt = current['created_at'] as int?;
+    if (sessionId == null || createdAt == null) return null;
+    final previousRows = await customSelect(
+      "SELECT turn_id FROM chat_messages WHERE session_id = ? AND role = 'user' "
+      "AND status IN ('final', 'final_corrected') AND created_at < ? "
+      'ORDER BY created_at DESC LIMIT 1',
+      variables: [Variable.withString(sessionId), Variable.withInt(createdAt)],
+    ).get();
+    return previousRows.isEmpty
+        ? null
+        : previousRows.single.data['turn_id'] as String?;
+  }
+
+  Future<Map<String, Object?>?> _pendingCandidateForSourceTurn(
+    String? sourceTurnId,
+  ) async {
+    if (sourceTurnId == null) return null;
+    final rows = await customSelect(
+      'SELECT * FROM memory_claims WHERE claim_state = ? AND confirmation_state = ? '
+      'ORDER BY updated_at DESC',
+      variables: [
+        Variable.withString('candidate'),
+        Variable.withString('pending'),
+      ],
+    ).get();
+    for (final row in rows) {
+      if (_stringList(
+        row.data['source_turn_ids_json'],
+      ).contains(sourceTurnId)) {
+        return row.data;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _expirePendingCandidates() => customStatement(
+    "UPDATE memory_claims SET claim_state = 'expired', confirmation_state = 'expired', updated_at = ? "
+    "WHERE claim_state = 'candidate' AND confirmation_state = 'pending'",
+    [DateTime.now().millisecondsSinceEpoch],
+  );
 
   Future<Map<String, Object?>> _policyCard() async {
     final rows = await customSelect(

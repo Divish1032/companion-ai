@@ -706,6 +706,8 @@ class RealtimeAgentSession:
             else {}
         )
         direct_text = _render_memory_directive(memory_context)
+        direct_text = direct_text or _live_data_unavailable_response(user_text)
+        turn_admission = _memory_admission_hint(memory_context)
 
         try:
             if direct_text is not None:
@@ -720,6 +722,7 @@ class RealtimeAgentSession:
                     if isinstance(memory_context.get("memory_packets"), list)
                     else None,
                     v2_semantic_resolved=memory_context.get("semantic_resolved") is True,
+                    turn_admission=turn_admission,
                 )
         except Exception as error:
             text = self.persona.fallback_response
@@ -767,6 +770,7 @@ class RealtimeAgentSession:
         policy_card: dict[str, object] | None = None,
         v2_memory_packets: list[object] | None = None,
         v2_semantic_resolved: bool = False,
+        turn_admission: dict[str, object] | None = None,
     ) -> tuple[str, bool, LLMToken | None]:
         messages = await self._llm_messages(
             turn_id,
@@ -774,6 +778,7 @@ class RealtimeAgentSession:
             policy_card=policy_card,
             v2_memory_packets=v2_memory_packets,
             v2_semantic_resolved=v2_semantic_resolved,
+            turn_admission=turn_admission,
         )
         chunks: list[str] = []
         last_token: LLMToken | None = None
@@ -832,7 +837,9 @@ class RealtimeAgentSession:
         future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
         key = (turn_id, sequence)
         self._pending_memory_context_requests[key] = future
-        await self.transport.publish_reliable(json.dumps(event, separators=(",", ":")).encode("utf-8"))
+        await self.transport.publish_reliable(
+            json.dumps(event, separators=(",", ":")).encode("utf-8")
+        )
         try:
             return await asyncio.wait_for(future, self.settings.memory_lookup_timeout_seconds)
         except TimeoutError:
@@ -857,6 +864,7 @@ class RealtimeAgentSession:
         policy_card: dict[str, object] | None = None,
         v2_memory_packets: list[object] | None = None,
         v2_semantic_resolved: bool = False,
+        turn_admission: dict[str, object] | None = None,
     ) -> list[LLMMessage]:
         memory_route = route_memory_query(user_text)
         if (
@@ -888,6 +896,7 @@ class RealtimeAgentSession:
             turn_memory_packets=turn_memory_packets,
             turn_memory_receipts=turn_memory_receipts,
             companion_policy=policy_card,
+            turn_admission=turn_admission,
         )
         lookup_latency_ms = self._memory_lookup_latency_ms.pop(turn_id, None)
         print(
@@ -901,6 +910,7 @@ class RealtimeAgentSession:
                 "candidates_returned": len(turn_memory_packets),
                 "candidates_injected": diagnostics["memory_blocks_selected"],
                 "no_memory_decision": not turn_memory_packets,
+                "turn_admission_present": turn_admission is not None,
                 "context_char_budget": self.context_builder.max_context_chars,
                 "context_chars": diagnostics["context_chars"],
                 "retrieval_strategy": self.memory_strategy.retrieval,
@@ -1014,17 +1024,17 @@ class RealtimeAgentSession:
             return True
 
         raw_packets = event.get("memory_packets", [])
-        packets = [
-            packet
-            for packet in raw_packets
-            if isinstance(packet, dict)
-        ][:6] if isinstance(raw_packets, list) else []
+        packets = (
+            [packet for packet in raw_packets if isinstance(packet, dict)][:6]
+            if isinstance(raw_packets, list)
+            else []
+        )
         raw_receipts = event.get("pending_receipts", [])
-        receipts = [
-            receipt
-            for receipt in raw_receipts
-            if isinstance(receipt, dict)
-        ][:1] if isinstance(raw_receipts, list) else []
+        receipts = (
+            [receipt for receipt in raw_receipts if isinstance(receipt, dict)][:1]
+            if isinstance(raw_receipts, list)
+            else []
+        )
         elapsed_ms = event.get("elapsed_ms")
         if isinstance(elapsed_ms, int) and elapsed_ms >= 0:
             self._memory_lookup_latency_ms[turn_id] = elapsed_ms
@@ -1480,7 +1490,16 @@ def _looks_like_internal_marker_fragment(text: str) -> bool:
     lowered = text.casefold()
     return any(
         fragment in lowered
-        for fragment in ("[recent", "[latest", "[core", "[procedural", "[semantic", "[episodic", "[session", "[memory")
+        for fragment in (
+            "[recent",
+            "[latest",
+            "[core",
+            "[procedural",
+            "[semantic",
+            "[episodic",
+            "[session",
+            "[memory",
+        )
     )
 
 
@@ -1491,13 +1510,18 @@ def _looks_like_question_echo(user_text: str, response_text: str) -> bool:
     if len(user_tokens) < 2 or len(response_tokens) < 2:
         return False
     overlap = len(user_tokens & response_tokens) / len(user_tokens)
-    response_is_question = any(mark in response_text for mark in ("?", "？", "क्या", "कौन", "कैसे", "कब", "कहाँ"))
+    response_is_question = any(
+        mark in response_text for mark in ("?", "？", "क्या", "कौन", "कैसे", "कब", "कहाँ")
+    )
     return response_is_question and overlap >= 0.65 and len(response_tokens) <= len(user_tokens) + 5
 
 
 def _is_question_turn(text: str) -> bool:
     lowered = text.casefold()
-    return any(marker in lowered for marker in ("?", "क्या", "कौन", "कैसे", "किस", "kya", "kaun", "kaise", "kis"))
+    return any(
+        marker in lowered
+        for marker in ("?", "क्या", "कौन", "कैसे", "किस", "kya", "kaun", "kaise", "kis")
+    )
 
 
 def _render_memory_directive(context: dict[str, object]) -> str | None:
@@ -1511,9 +1535,7 @@ def _render_memory_directive(context: dict[str, object]) -> str | None:
         if isinstance(candidate, dict):
             value = candidate.get("value")
             if isinstance(value, dict) and isinstance(value.get("text"), str):
-                if candidate.get("state_key") == "user.profile.preferred_name":
-                    return f"क्या मैं आपको {value['text']} कहूँ?"
-                return f"क्या मैं इसे {value['text']} के रूप में याद रखूँ?"
+                return _confirmation_text(str(candidate.get("state_key", "")), value["text"])
         return "क्या आप चाहते हैं कि मैं यह बात याद रखूँ?"
     if fact is None:
         return None
@@ -1547,18 +1569,64 @@ def _render_memory_directive(context: dict[str, object]) -> str | None:
         if state_key == "user.preference.response_length":
             return "ठीक है, मैं छोटे जवाब दूँगा।"
         if state_key == "user.preference.comfort_style":
-            return "ठीक है, मैं सलाह देने से पहले पहले आपकी बात सुनूँगा।"
+            return "ठीक है, मैं सलाह देने से पहले आपकी बात सुनूँगा। मैं सुन रहा हूँ।"
         if state_key == "user.profile.preferred_name":
-            return f"ठीक है, मैं आपको {text} कहूँगा।"
+            return None
         if state_key.startswith("user.relationship."):
-            return "ठीक है, मैंने यह संबंध याद रख लिया है।"
+            return None
         if state_key.startswith("user.routine."):
-            return "ठीक है, मैंने आपकी यह दिनचर्या याद रख ली है।"
+            return None
         if state_key.startswith("user.boundary."):
-            return "ठीक है, मैं इस विषय से बचूँगा।"
+            return "ठीक है, मैं राजनीति से बचूँगा। हम किसी और बात पर बात कर सकते हैं।"
         if state_key.startswith("user.goal."):
-            return "ठीक है, मैंने आपका यह लक्ष्य याद रख लिया है।"
+            return None
     return None
+
+
+def _memory_admission_hint(context: dict[str, object]) -> dict[str, object] | None:
+    if context.get("response_directive") != "setting_ack":
+        return None
+    facts = context.get("state_facts")
+    fact = facts[0] if isinstance(facts, list) and facts and isinstance(facts[0], dict) else None
+    if fact is None:
+        return None
+    state_key = fact.get("state_key")
+    value = fact.get("value")
+    text = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(state_key, str) or not isinstance(text, str):
+        return None
+    if state_key == "user.profile.preferred_name":
+        return {"kind": "preferred_name", "user_name": text}
+    if state_key.startswith("user.relationship.brother."):
+        return {"kind": "relationship", "relationship_role": "brother", "person_name": text}
+    if state_key.startswith("user.relationship.sister."):
+        return {"kind": "relationship", "relationship_role": "sister", "person_name": text}
+    if state_key.startswith("user.routine.morning."):
+        return {"kind": "morning_walk"}
+    if state_key.startswith("user.goal."):
+        return {"kind": "goal", "goal": text}
+    return None
+
+
+def _confirmation_text(state_key: str, text: str) -> str:
+    if state_key == "user.profile.preferred_name":
+        return f"आपने बताया कि आपका नाम {text} है। क्या मैं आपको {text} कहूँ? आज आपका दिन कैसा रहा?"
+    if state_key.startswith("user.relationship."):
+        role = "बहन" if ".sister." in state_key else "भाई"
+        return f"आपने बताया कि आपके {role} का नाम {text} है। क्या मैं यह याद रखूँ? आप दोनों कैसे हैं?"
+    if state_key.startswith("user.routine."):
+        return "आप रोज सुबह टहलते हैं। क्या मैं यह याद रखूँ? टहलने के बाद आपको कैसा लगता है?"
+    if state_key == "user.preference.comfort_style":
+        return "आप चाहते हैं कि मैं सलाह से पहले आपकी बात सुनूँ। क्या मैं यह याद रखूँ? मैं सुन रहा हूँ।"
+    if state_key == "user.preference.response_language":
+        return f"आप {_spoken_language(text)} में जवाब चाहते हैं। क्या मैं यह याद रखूँ? बताइए, अभी आपके मन में क्या है?"
+    if state_key == "user.preference.response_length":
+        return "आप छोटे जवाब चाहते हैं। क्या मैं यह याद रखूँ?"
+    if state_key.startswith("user.boundary."):
+        return "आप चाहते हैं कि मैं राजनीति से बचूँ। क्या मैं यह याद रखूँ? हम किसी और बात पर बात कर सकते हैं।"
+    if state_key.startswith("user.goal."):
+        return f"आपका लक्ष्य {text} है। क्या मैं यह याद रखूँ? आज यह कैसा चल रहा है?"
+    return "क्या आप चाहते हैं कि मैं यह बात याद रखूँ?"
 
 
 def _spoken_language(value: str) -> str:
@@ -1566,6 +1634,13 @@ def _spoken_language(value: str) -> str:
         value,
         value,
     )
+
+
+def _live_data_unavailable_response(text: str) -> str | None:
+    normalized = text.casefold()
+    if any(token in normalized for token in ("मौसम", "weather", "तापमान", "temperature")):
+        return "मेरे पास लाइव मौसम की जानकारी नहीं है, इसलिए मैं अंदाज़ा नहीं लगाना चाहता।"
+    return None
 
 
 def _response_tokens(text: str) -> set[str]:

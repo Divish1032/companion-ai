@@ -14,6 +14,9 @@ from app.lifecycle import (
     MemoryAgentTransport,
     RealtimeAgentSession,
     _looks_like_question_echo,
+    _live_data_unavailable_response,
+    _memory_admission_hint,
+    _render_memory_directive,
     _sanitize_llm_output,
     _wait_until_started,
 )
@@ -34,6 +37,44 @@ def test_query_echo_guard_only_matches_question_restatement() -> None:
     assert _looks_like_question_echo("मेरा नाम क्या है", "मेरा नाम क्या है?")
     assert not _looks_like_question_echo("मेरा नाम क्या है", "मुझे आपका नाम अभी पता नहीं है।")
     assert not _looks_like_question_echo("दुनिया कैसे बनी", "यह एक बड़ा वैज्ञानिक सवाल है।")
+
+
+def test_memory_confirmation_is_deterministic_and_low_risk_admission_uses_llm() -> None:
+    confirmation = _render_memory_directive(
+        {
+            "response_directive": "confirmation",
+            "pending_candidate": {
+                "state_key": "user.routine.morning.walk",
+                "value": {"text": "walk"},
+            },
+        }
+    )
+    admission_context = {
+        "response_directive": "setting_ack",
+        "state_facts": [
+            {
+                "state_key": "user.relationship.brother.रोहन",
+                "value": {"text": "रोहन"},
+            }
+        ],
+    }
+    acknowledgement = _render_memory_directive(admission_context)
+    admission = _memory_admission_hint(admission_context)
+
+    assert confirmation == "आप रोज सुबह टहलते हैं। क्या मैं यह याद रखूँ? टहलने के बाद आपको कैसा लगता है?"
+    assert acknowledgement is None
+    assert admission == {
+        "kind": "relationship",
+        "relationship_role": "brother",
+        "person_name": "रोहन",
+    }
+
+
+def test_live_weather_is_not_fabricated_without_a_live_data_tool() -> None:
+    assert _live_data_unavailable_response("आज मौसम कैसा है?") == (
+        "मेरे पास लाइव मौसम की जानकारी नहीं है, इसलिए मैं अंदाज़ा नहीं लगाना चाहता।"
+    )
+    assert _live_data_unavailable_response("आज मेरा मन उदास है") is None
 
 
 def test_agent_emits_state_sequence_and_filler_before_fake_audio() -> None:
@@ -314,7 +355,7 @@ def test_overlong_llm_output_is_clipped_before_final_response() -> None:
 
     events = [_decode(event) for event in transport.events]
     assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
-    assert len(str(assistant["text"])) <= 240
+    assert len(str(assistant["text"])) <= 320
     assert assistant["clipped"] is True
 
 
@@ -731,10 +772,70 @@ def test_v2_exact_state_reply_bypasses_llm_and_uses_matching_turn() -> None:
     assert llm.calls == []
 
 
+def test_v2_low_risk_admission_uses_llm_with_relationship_role_guard() -> None:
+    transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+        llm_provider=llm,
+    )
+
+    async def scenario() -> None:
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "client_session_started",
+                    "schema_version": 2,
+                    "memory_protocol_versions": [1, 2],
+                }
+            )
+        )
+        task = asyncio.create_task(
+            session._respond_to_final_transcript(
+                "session_test:turn:0043",
+                "मेरे भाई का नाम रोहन है",
+            )
+        )
+        request = await _wait_for_decoded_event_type(transport, "memory_context_request_v2")
+        await session._handle_client_data_event(
+            json.dumps(
+                {
+                    "type": "memory_context_response_v2",
+                    "turn_id": request["turn_id"],
+                    "request_sequence": request["sequence"],
+                    "response_directive": "setting_ack",
+                    "state_facts": [
+                        {
+                            "claim_id": "claim_rohan",
+                            "state_key": "user.relationship.brother.रोहन",
+                            "value": {"text": "रोहन"},
+                            "value_type": "relationship",
+                        }
+                    ],
+                }
+            )
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    final = next(event for event in events if event["type"] == "assistant_transcript_final")
+    prompt = "\n".join(message.content for message in llm.calls[0])
+    assert final["text"] == "recorded reply"
+    assert len(llm.calls) == 1
+    assert "[turn_admission]" in prompt
+    assert "brother is named रोहन" in prompt
+    assert "never address the user as रोहन" in prompt
+
+
 def test_llm_output_sanitizes_internal_context_markers() -> None:
-    assert _sanitize_llm_output(
-        "[recent_turns] Haan, main sun raha hoon. [latest_user]"
-    ) == "Haan, main sun raha hoon."
+    assert (
+        _sanitize_llm_output("[recent_turns] Haan, main sun raha hoon. [latest_user]")
+        == "Haan, main sun raha hoon."
+    )
 
 
 def test_stale_memory_lookup_response_is_ignored_until_matching_response_arrives() -> None:
@@ -809,9 +910,7 @@ def test_safety_and_greeting_routes_do_not_send_memory_lookup() -> None:
     events = [_decode(event) for event in transport.events]
     assert not any(event["type"] == "memory_lookup_request" for event in events)
     assert llm.calls == 1
-    assistant = [
-        event for event in events if event["type"] == "assistant_transcript_final"
-    ][-1]
+    assistant = [event for event in events if event["type"] == "assistant_transcript_final"][-1]
     assert assistant["status"] == "safety_override"
 
 

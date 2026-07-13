@@ -140,6 +140,38 @@ def test_persona_llm_asks_explicit_memory_receipt_question() -> None:
     assert response.endswith("Kya main office/manager pressure wali baat yaad rakhun?")
 
 
+def test_persona_llm_uses_relationship_admission_without_calling_person_the_user() -> None:
+    import asyncio
+
+    async def scenario() -> str:
+        provider = PersonaLLMProvider()
+        chunks = [
+            token.text
+            async for token in provider.stream(
+                [
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "[turn_admission]\n"
+                            "The user said their brother is named रोहन. रोहन is not the user; "
+                            "never address the user as रोहन. Acknowledge the relationship naturally, "
+                            "without mentioning memory storage."
+                        ),
+                    ),
+                    LLMMessage(role="user", content="मेरे भाई का नाम रोहन है"),
+                ],
+                "hi-IN",
+                max_output_chars=320,
+            )
+        ]
+        return "".join(chunks)
+
+    response = asyncio.run(scenario())
+
+    assert response == "रोहन—अच्छा नाम है। आप दोनों काफ़ी करीब हैं?"
+    assert not response.startswith("ठीक है रोहन")
+
+
 def test_sarvam_llm_uses_voice_safe_request_shape(monkeypatch) -> None:  # noqa: ANN001
     import asyncio
     import json

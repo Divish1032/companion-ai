@@ -12,19 +12,22 @@ void main() {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(database.close);
 
-        await database.resolveMemoryTurn(
+        await _resolve(
+          database,
           turnId: 't1',
           text: 'मेरा नाम राहुल है',
           transcriptStatus: 'final',
           sttConfidence: 0.92,
         );
-        await database.resolveMemoryTurn(
+        await _resolve(
+          database,
           turnId: 't2',
           text: 'असल में मेरा नाम अमित है',
           transcriptStatus: 'final',
           sttConfidence: 0.93,
         );
-        final answer = await database.resolveMemoryTurn(
+        final answer = await _resolve(
+          database,
           turnId: 't3',
           text: 'मेरा नाम क्या है?',
           transcriptStatus: 'final',
@@ -48,31 +51,29 @@ void main() {
     );
 
     test(
-      'unknown confidence creates a candidate that confirmation activates',
+      'unknown confidence silently commits an exact low-risk assertion',
       () async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(database.close);
 
-        final pending = await database.resolveMemoryTurn(
+        final committed = await _resolve(
+          database,
           turnId: 't1',
           text: 'मेरा नाम राहुल है',
           transcriptStatus: 'final',
           sttConfidence: null,
         );
-        final confirmed = await database.resolveMemoryTurn(
+        final unrelatedYes = await _resolve(
+          database,
           turnId: 't2',
           text: 'हाँ',
           transcriptStatus: 'final',
           sttConfidence: 0.9,
         );
 
-        expect(pending.directive, 'confirmation');
-        expect(
-          pending.pendingCandidate?['state_key'],
-          'user.profile.preferred_name',
-        );
-        expect(confirmed.directive, 'setting_ack');
-        expect((confirmed.stateFacts.single['value'] as Map)['text'], 'राहुल');
+        expect(committed.directive, 'setting_ack');
+        expect((committed.stateFacts.single['value'] as Map)['text'], 'राहुल');
+        expect(unrelatedYes.directive, 'companion');
       },
     );
 
@@ -82,32 +83,44 @@ void main() {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(database.close);
 
-        final first = await database.resolveMemoryTurn(
+        final first = await _resolve(
+          database,
           turnId: 't1',
           text: 'मेरे भाई का नाम अमित है',
           transcriptStatus: 'final',
-          sttConfidence: null,
+          sttConfidence: 0.5,
         );
-        final second = await database.resolveMemoryTurn(
+        final second = await _resolve(
+          database,
           turnId: 't2',
           text: 'मेरे भाई का नाम अमित है',
           transcriptStatus: 'final',
-          sttConfidence: null,
+          sttConfidence: 0.5,
         );
-        final pendingName = await database.resolveMemoryTurn(
+        final originalName = await _resolve(
+          database,
           turnId: 't3',
           text: 'मेरा नाम राहुल है',
           transcriptStatus: 'final',
           sttConfidence: null,
         );
-        await database.resolveMemoryTurn(
+        final pendingCorrection = await _resolve(
+          database,
           turnId: 't4',
+          text: 'असल में मेरा नाम अमित है',
+          transcriptStatus: 'final',
+          sttConfidence: null,
+        );
+        await _resolve(
+          database,
+          turnId: 't5',
           text: 'नहीं याद रखना',
           transcriptStatus: 'final',
           sttConfidence: 0.9,
         );
-        final name = await database.resolveMemoryTurn(
-          turnId: 't5',
+        final name = await _resolve(
+          database,
+          turnId: 't6',
           text: 'मेरा नाम क्या है?',
           transcriptStatus: 'final',
           sttConfidence: 0.9,
@@ -115,15 +128,67 @@ void main() {
 
         expect(first.directive, 'confirmation');
         expect(second.directive, 'setting_ack');
-        expect(pendingName.directive, 'confirmation');
-        expect(name.directive, 'fact_unknown');
+        expect((second.stateFacts.single['value'] as Map)['text'], 'अमित');
+        expect(originalName.directive, 'setting_ack');
+        expect(pendingCorrection.directive, 'confirmation');
+        expect(name.directive, 'fact_answer');
+        expect((name.stateFacts.single['value'] as Map)['text'], 'राहुल');
       },
     );
+
+    test('only the immediately preceding candidate can be confirmed', () async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+
+      final pending = await _resolve(
+        database,
+        turnId: 't1',
+        text: 'मेरा नाम राहुल',
+        transcriptStatus: 'final',
+        sttConfidence: 0.5,
+      );
+      final unrelated = await _resolve(
+        database,
+        turnId: 't2',
+        text: 'आज मेरा मन उदास है',
+        transcriptStatus: 'final',
+        sttConfidence: 0.9,
+      );
+      final lateYes = await _resolve(
+        database,
+        turnId: 't3',
+        text: 'हाँ',
+        transcriptStatus: 'final',
+        sttConfidence: 0.9,
+      );
+      final answer = await _resolve(
+        database,
+        turnId: 't4',
+        text: 'मेरा नाम क्या है?',
+        transcriptStatus: 'final',
+        sttConfidence: 0.9,
+      );
+      final claim =
+          (await database
+                  .customSelect(
+                    'SELECT claim_state, confirmation_state FROM memory_claims',
+                  )
+                  .get())
+              .single;
+
+      expect(pending.directive, 'confirmation');
+      expect(unrelated.directive, 'companion');
+      expect(lateYes.directive, 'companion');
+      expect(answer.directive, 'fact_unknown');
+      expect(claim.data['claim_state'], 'expired');
+      expect(claim.data['confirmation_state'], 'expired');
+    });
 
     test('clear history erases claims and current-state projections', () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
-      await database.resolveMemoryTurn(
+      await _resolve(
+        database,
         turnId: 't1',
         text: 'मेरा नाम राहुल है',
         transcriptStatus: 'final',
@@ -167,7 +232,8 @@ void main() {
           ),
         );
 
-        final answer = await database.resolveMemoryTurn(
+        final answer = await _resolve(
+          database,
           turnId: 'query_turn',
           text: 'मेरा नाम क्या है?',
           transcriptStatus: 'final',
@@ -176,7 +242,7 @@ void main() {
         final claims = await database
             .customSelect(
               'SELECT extraction_version FROM memory_claims WHERE claim_state = ?',
-            variables: [Variable.withString('current')],
+              variables: [Variable.withString('current')],
             )
             .get();
 
@@ -191,7 +257,8 @@ void main() {
       () async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(database.close);
-        await database.resolveMemoryTurn(
+        await _resolve(
+          database,
           turnId: 't1',
           text: 'मेरा नाम राहुल है',
           transcriptStatus: 'final',
@@ -216,4 +283,54 @@ void main() {
       },
     );
   });
+}
+
+Future<MemoryTurnResolution> _resolve(
+  AppDatabase database, {
+  required String turnId,
+  required String text,
+  required String transcriptStatus,
+  required double? sttConfidence,
+  String? sttProvider,
+  String? sttModel,
+}) async {
+  await database
+      .into(database.chatSessions)
+      .insertOnConflictUpdate(
+        ChatSessionsCompanion.insert(
+          id: 'test_session',
+          startedAt: 0,
+          language: 'hi-IN',
+        ),
+      );
+  await database
+      .into(database.chatMessages)
+      .insert(
+        ChatMessagesCompanion.insert(
+          id: 'message_$turnId',
+          sessionId: 'test_session',
+          turnId: turnId,
+          role: 'user',
+          messageText: text,
+          status: transcriptStatus,
+          language: 'hi-IN',
+          createdAt: _turnOrder(turnId),
+          sttConfidence: Value(sttConfidence),
+        ),
+      );
+  return database.resolveMemoryTurn(
+    turnId: turnId,
+    text: text,
+    transcriptStatus: transcriptStatus,
+    sttConfidence: sttConfidence,
+    sttProvider: sttProvider,
+    sttModel: sttModel,
+  );
+}
+
+int _turnOrder(String turnId) {
+  final numeric = int.tryParse(
+    RegExp(r'\d+').firstMatch(turnId)?.group(0) ?? '',
+  );
+  return numeric ?? 1000000;
 }

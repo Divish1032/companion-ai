@@ -27,6 +27,16 @@ void main() {
       },
     );
 
+    test(
+      'accepts a spoken name assertion when Vosk omits the final copula',
+      () {
+        final name = analyzeMemoryTurn('मेरा नाम राहुल');
+
+        expect(name.action, MemoryActionKind.setState);
+        expect(name.candidate?.value['text'], 'राहुल');
+      },
+    );
+
     test('routes supported recall questions to exact local state', () {
       expect(
         analyzeMemoryTurn('मेरा नाम क्या है?').stateKey,
@@ -75,6 +85,44 @@ void main() {
         expect(
           transcriptQuality(status: 'final', confidence: 0.80),
           TranscriptQuality.high,
+        );
+      },
+    );
+
+    test(
+      'auto-commits explicit unknown-quality facts but guards risky writes',
+      () {
+        final name = analyzeMemoryTurn('मेरा नाम राहुल');
+        final correction = analyzeMemoryTurn('असल में मेरा नाम अमित है');
+        final boundary = analyzeMemoryTurn('मुझे राजनीति पर बात नहीं करनी है');
+
+        expect(
+          claimAdmission(
+            candidate: name.candidate!,
+            quality: TranscriptQuality.unknown,
+          ),
+          ClaimAdmission.commit,
+        );
+        expect(
+          claimAdmission(
+            candidate: correction.candidate!,
+            quality: TranscriptQuality.unknown,
+          ),
+          ClaimAdmission.confirm,
+        );
+        expect(
+          claimAdmission(
+            candidate: boundary.candidate!,
+            quality: TranscriptQuality.unknown,
+          ),
+          ClaimAdmission.confirm,
+        );
+        expect(
+          claimAdmission(
+            candidate: name.candidate!,
+            quality: TranscriptQuality.low,
+          ),
+          ClaimAdmission.confirm,
         );
       },
     );

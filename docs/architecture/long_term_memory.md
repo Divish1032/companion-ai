@@ -766,10 +766,14 @@ semantic/episodic retrieval only and cannot override current companion state.
   name, response language, short replies, listen-first preference, sibling
   names, and morning walks. It normalizes `हिन्दी`/`हिंदी`, accepts
   `मेरा`/`मेरी`/`मेरे`, and excludes sensitive content before admission.
-- Missing final ASR confidence is `unknown`, not zero. High-confidence explicit
-  state is committed immediately; uncertain single values require an immediate
-  voice confirmation, and uncertain multi-values are promoted by confirmation
-  or a matching second statement. Rejection expires the candidate.
+- Missing final ASR confidence is `unknown`, not zero. A strict, explicit,
+  low-risk deterministic state assertion is committed silently even when final
+  confidence is unknown; this is necessary for the active Vosk path to feel
+  like a companion rather than a questionnaire. Low-quality/repeat-requested
+  transcripts, unknown-quality corrections, and unknown-quality boundaries
+  require immediate voice confirmation. Rejection expires the candidate.
+  A future LLM may consolidate semantic/episodic candidates asynchronously,
+  but it is never allowed to write or supersede Companion State.
 - The reliable `memory_context_request_v2` / `memory_context_response_v2`
   protocol resolves claims and exact queries on the phone. Clients negotiate
   V2 at session start; older clients take V1 immediately.
@@ -777,6 +781,12 @@ semantic/episodic retrieval only and cannot override current companion state.
   use deterministic Hindi templates. Normal companion replies receive only an
   allow-listed policy card (`response_language`, `response_length`,
   `comfort_style`), never raw claim history.
+- A newly admitted low-risk profile, relationship, routine, or goal does not
+  narrate storage to the user. The agent receives a tiny typed per-turn
+  admission cue and generates the conversational acknowledgement; relationship
+  cues explicitly identify the named person as someone other than the user.
+  Exact recall, settings changes, boundaries, and confirmations remain
+  deterministic.
 - Clear History deletes claims and state projections transactionally along with
   transcripts, legacy memory, graph data, and the existing ObjectBox clear path.
 

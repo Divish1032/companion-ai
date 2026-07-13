@@ -6,7 +6,7 @@ from typing import Literal
 from app.providers.interfaces import LLMMessage
 
 
-MAX_CONTEXT_CHARS = 2200
+MAX_CONTEXT_CHARS = 2600
 MAX_MEMORY_BLOCKS = 6
 MAX_RECENT_MESSAGES = 6
 
@@ -94,6 +94,7 @@ class PromptContextBuilder:
         turn_memory_packets: list[dict[str, object]] | None = None,
         turn_memory_receipts: list[dict[str, object]] | None = None,
         companion_policy: dict[str, object] | None = None,
+        turn_admission: dict[str, object] | None = None,
     ) -> tuple[list[LLMMessage], dict[str, object]]:
         latest = _clean(latest_user_text, max_chars=800)
         turn_memory_blocks = _parse_memory_block_items(turn_memory_packets or [])
@@ -130,14 +131,15 @@ class PromptContextBuilder:
         if policy:
             context_sections.append("[companion_policy]")
             context_sections.append(policy)
+        admission = _format_turn_admission(turn_admission or {})
+        if admission:
+            context_sections.append("[turn_admission]")
+            context_sections.append(admission)
 
         messages = [LLMMessage(role="system", content=self.system_prompt)]
         if len(context_sections) > 2:
             messages.append(LLMMessage(role="system", content="\n".join(context_sections)))
-        messages.extend(
-            LLMMessage(role=turn.role, content=turn.text)
-            for turn in selected_recent
-        )
+        messages.extend(LLMMessage(role=turn.role, content=turn.text) for turn in selected_recent)
         messages.append(LLMMessage(role="user", content=latest))
 
         bounded_messages = _bound_messages(messages, self.max_context_chars)
@@ -146,6 +148,7 @@ class PromptContextBuilder:
             "memory_blocks_available": len(self.memory_blocks),
             "turn_memory_blocks_available": len(turn_memory_blocks),
             "memory_receipts_available": len(receipt_prompts),
+            "turn_admission_present": bool(admission),
             "memory_blocks_selected": len(selected_memory),
             "recent_turns_available": len(self.recent_turns),
             "recent_turns_selected": len(selected_recent),
@@ -161,6 +164,7 @@ class PromptContextBuilder:
                 "session_summary",
                 "memory_receipt",
                 "companion_policy",
+                "turn_admission",
                 "recent_turns",
             ],
         }
@@ -232,12 +236,25 @@ class PromptContextBuilder:
         return selected
 
     def _select_recent_turns(self, latest_user_text: str) -> list[RecentTurn]:
-        selected = [
-            turn
-            for turn in self.recent_turns
-            if _eligible_recent(turn) and turn.text != latest_user_text.strip()
-        ]
-        return _dedupe_recent(selected)[-self.max_recent_messages :]
+        selected = _dedupe_recent(
+            [
+                turn
+                for turn in self.recent_turns
+                if _eligible_recent(turn) and turn.text != latest_user_text.strip()
+            ]
+        )
+        if not selected or _is_follow_up(latest_user_text):
+            return selected[-self.max_recent_messages :]
+
+        # A self-contained new topic must not inherit a recent but unrelated
+        # conversation. This is deliberately lexical and abstention-safe: a
+        # semantic connection belongs in a retrieved memory packet, not in
+        # unfiltered working context.
+        latest_tokens = _topic_tokens(latest_user_text)
+        recent_tokens = {token for turn in selected for token in _topic_tokens(turn.text)}
+        if latest_tokens and not latest_tokens.intersection(recent_tokens):
+            return []
+        return selected[-self.max_recent_messages :]
 
 
 def _parse_recent_turns(
@@ -368,6 +385,84 @@ def _eligible_recent(turn: RecentTurn) -> bool:
     return len(turn.text) >= 4 and (len(set(words)) >= 3 or len(words) <= 5)
 
 
+def _is_follow_up(text: str) -> bool:
+    normalized = text.casefold().strip()
+    return len(_topic_tokens(normalized)) <= 1 or any(
+        marker in normalized
+        for marker in (
+            "हाँ",
+            "हां",
+            "नहीं",
+            "ठीक",
+            "और",
+            "फिर",
+            "बताओ",
+            "सुनो",
+            "haan",
+            "nahi",
+            "theek",
+            "aur",
+            "phir",
+        )
+    )
+
+
+def _topic_tokens(text: str) -> set[str]:
+    stop_words = {
+        "मैं",
+        "मेरा",
+        "मेरी",
+        "मेरे",
+        "मुझे",
+        "तुम",
+        "आप",
+        "है",
+        "हूं",
+        "हूँ",
+        "था",
+        "थी",
+        "थे",
+        "हैं",
+        "और",
+        "का",
+        "की",
+        "के",
+        "से",
+        "पर",
+        "को",
+        "यह",
+        "वह",
+        "आज",
+        "कल",
+        "aaj",
+        "kal",
+        "main",
+        "mera",
+        "meri",
+        "mere",
+        "mujhe",
+        "hai",
+        "hain",
+        "tha",
+        "thi",
+        "the",
+        "aur",
+        "ka",
+        "ki",
+        "ke",
+        "se",
+        "par",
+        "ko",
+        "ye",
+        "woh",
+    }
+    return {
+        token
+        for token in text.casefold().replace("।", " ").replace("?", " ").split()
+        if len(token) >= 2 and token not in stop_words
+    }
+
+
 def _eligible_memory(block: MemoryBlock) -> bool:
     if block.confidence_score < 0.5 or block.importance_score < 0.25:
         return False
@@ -489,6 +584,47 @@ def _format_companion_policy(policy: dict[str, object]) -> str:
         if isinstance(value, str) and value in values:
             lines.append(f"{key}: {value}")
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _format_turn_admission(admission: dict[str, object]) -> str:
+    """Render a narrow, typed cue for a fact just admitted on this turn.
+
+    The cue is not memory history and is intentionally unavailable for recall,
+    settings, confirmations, or sensitive material. It lets the LLM sound
+    conversational while exact storage and state resolution stay phone-owned.
+    """
+    kind = admission.get("kind")
+    if kind == "preferred_name":
+        name = _clean(str(admission.get("user_name", "")), max_chars=48)
+        if name:
+            return (
+                "The user explicitly gave their preferred name as "
+                f"{name}. Respond warmly to the introduction. Do not say that you saved, "
+                "remembered, or noted it."
+            )
+    if kind == "relationship":
+        role = admission.get("relationship_role")
+        person = _clean(str(admission.get("person_name", "")), max_chars=48)
+        if role in {"brother", "sister"} and person:
+            relation = "brother" if role == "brother" else "sister"
+            return (
+                f"The user said their {relation} is named {person}. {person} is not the user; "
+                f"never address the user as {person}. Acknowledge the relationship naturally, "
+                "without mentioning memory storage."
+            )
+    if kind == "morning_walk":
+        return (
+            "The user described a morning-walk routine. Respond to the lived experience, "
+            "not to the act of saving information. A gentle open question is appropriate."
+        )
+    if kind == "goal":
+        goal = _clean(str(admission.get("goal", "")), max_chars=100)
+        if goal:
+            return (
+                f"The user described this goal: {goal}. Respond encouragingly and naturally; "
+                "do not say it was saved or remembered."
+            )
+    return ""
 
 
 def _bound_messages(messages: list[LLMMessage], max_chars: int) -> list[LLMMessage]:

@@ -66,7 +66,8 @@ def test_prompt_builder_selects_relevant_memory_before_recent_turns() -> None:
 
     assert "User prefers to be called Rahul." in joined
     assert "suicide" not in joined
-    assert joined.index("User prefers to be called Rahul.") < joined.index("kal ka halka sa turn")
+    assert "kal ka halka sa turn" not in joined
+    assert diagnostics["recent_turns_selected"] == 0
     assert diagnostics["memory_blocks_selected"] == 2
 
 
@@ -175,6 +176,26 @@ def test_prompt_builder_updates_same_session_history_after_complete_turn() -> No
     assert messages[-1].content == "naam yaad hai?"
 
 
+def test_prompt_builder_drops_unrelated_recent_topic_context() -> None:
+    builder = PromptContextBuilder(
+        system_prompt="system",
+        initial_context={
+            "recent_turns": [
+                _turn("t1", "user", "मुझे राजनीति पर बात नहीं करनी है"),
+                _turn("t2", "assistant", "ठीक है, मैं राजनीति से बचूँगा।"),
+            ],
+            "memory_blocks": [],
+        },
+    )
+
+    messages, diagnostics = builder.build("मेरी दावा खत्म हो गई")
+    joined = "\n".join(message.content for message in messages)
+
+    assert "राजनीति" not in joined
+    assert "बचूँगा" not in joined
+    assert diagnostics["recent_turns_selected"] == 0
+
+
 def test_prompt_builder_adds_bounded_memory_receipt_prompt() -> None:
     builder = PromptContextBuilder(system_prompt="system", initial_context=[])
 
@@ -199,6 +220,26 @@ def test_prompt_builder_adds_bounded_memory_receipt_prompt() -> None:
     assert "Potential memory" in joined
     assert diagnostics["memory_receipts_available"] == 1
     assert messages[-1].content == "aaj office ka din heavy tha"
+
+
+def test_prompt_builder_adds_typed_admission_cue_without_memory_history() -> None:
+    builder = PromptContextBuilder(system_prompt="system", initial_context=[])
+
+    messages, diagnostics = builder.build(
+        "मेरे भाई का नाम रोहन है",
+        turn_admission={
+            "kind": "relationship",
+            "relationship_role": "brother",
+            "person_name": "रोहन",
+        },
+    )
+    joined = "\n".join(message.content for message in messages)
+
+    assert "[turn_admission]" in joined
+    assert "brother is named रोहन" in joined
+    assert "never address the user as रोहन" in joined
+    assert "saved, remembered, or noted" not in joined
+    assert diagnostics["turn_admission_present"] is True
 
 
 def test_prompt_builder_excludes_rejected_memory_blocks() -> None:
