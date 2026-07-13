@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "daily_life_v1",
+  "description": "A first-meeting conversation covering identity, daily routine, work stress, and preferences across 8 turns. Tests admission, retrieval across turns, and context assembly.",
+  "persona": "hindi_companion_v1",
+  "turns": [
+    {"text": "Namaste", "stt_confidence": 0.98, "notes": "Greeting — should not trigger memory lookup."},
+    {"text": "mera naam Rahul hai", "stt_confidence": 0.99, "notes": "Identity declaration — should store preferred_name."},
+    {"text": "aaj office mein bahut kaam tha, manager ne deadline de di", "stt_confidence": 0.96, "notes": "Work stress declaration — should store recurring_work_stressor."},
+    {"text": "mera naam kya hai waise", "stt_confidence": 0.95, "notes": "Identity recall — should retrieve preferred_name."},
+    {"text": "main roz subah 6 baje walk karta hoon", "stt_confidence": 0.95, "notes": "Routine declaration — should store routine."},
+    {"text": "mujhe Hindi mein jawab pasand hai", "stt_confidence": 0.98, "notes": "Language preference — should store language_style."},
+    {"text": "mujhe advice se pehle bas sunna pasand hai", "stt_confidence": 0.94, "notes": "Comfort style — should store comfort_style."},
+    {"text": "aaj mood off hai, office ka din yaad aaya", "stt_confidence": 0.93, "notes": "Vague + specific: should retrieve work_stress but not inject unrelated profile."}
+  ],
+  "audit": {
+    "admission_expect": {
+      "turn_1": {"should_store_labels": [], "should_not_store_labels": ["preferred_name", "session_summary"], "notes": "Greeting creates no memory."},
+      "turn_2": {"should_store_labels": ["preferred_name"], "should_not_store_labels": [], "notes": "Name should be stored."},
+      "turn_3": {"should_store_labels": ["recurring_work_stressor"], "should_not_store_labels": [], "notes": "Work stress should be stored."},
+      "turn_5": {"should_store_labels": ["routine"], "should_not_store_labels": [], "notes": "Walk routine should be stored."},
+      "turn_6": {"should_store_labels": ["language_style"], "should_not_store_labels": [], "notes": "Hindi preference should be stored."},
+      "turn_7": {"should_store_labels": ["comfort_style"], "should_not_store_labels": [], "notes": "Comfort style should be stored."}
+    },
+    "retrieval_expect": {
+      "turn_1": {"should_retrieve_labels": [], "should_not_retrieve_labels": ["preferred_name"], "max_packets": 0, "notes": "Greeting: no memory lookup."},
+      "turn_4": {"should_retrieve_labels": ["preferred_name"], "should_not_retrieve_labels": [], "max_packets": 6, "notes": "Name query must return preferred_name."},
+      "turn_8": {"should_retrieve_labels": ["recurring_work_stressor"], "should_not_retrieve_labels": ["preferred_name", "language_style"], "max_packets": 6, "notes": "Work-stress query should retrieve stressor, not inject name/language."}
+    },
+    "global_checks": [
+      {"type": "context_budget_respected", "description": "Prompt context never exceeds 2200 chars.", "expected": true},
+      {"type": "latest_user_authoritative", "description": "Latest user message is always the last message in prompt.", "expected": true},
+      {"type": "no_assistant_text_in_user_role", "description": "Assistant responses never appear as user messages.", "expected": true},
+      {"type": "correction_supersedes", "description": "If user corrects a fact, old value is superseded.", "expected": true},
+      {"type": "session_summary_created", "description": "Complete turns create session summaries.", "expected": true}
+    ]
+  }
+}

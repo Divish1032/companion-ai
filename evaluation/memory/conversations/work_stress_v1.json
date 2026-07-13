@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "work_stress_v1",
+  "description": "A focused session about work stress: declaration, receipt confirmation, later recall with graph expansion, and boundary setting. Tests the full admission-consolidation-retrieval cycle.",
+  "persona": "hindi_companion_v1",
+  "turns": [
+    {"text": "Namaste, aaj office jaana hai", "stt_confidence": 0.97, "notes": "Opening with work mention."},
+    {"text": "mera naam Priya hai", "stt_confidence": 0.99, "notes": "Identity declaration."},
+    {"text": "office mein manager bahut pressure deta hai, roz late night kaam karna padta hai", "stt_confidence": 0.96, "notes": "Strong work stress declaration."},
+    {"text": "haan yaad rakhna, yeh important hai", "stt_confidence": 0.95, "notes": "Explicit receipt confirmation of pending memory."},
+    {"text": "aaj subah walk nahi kar paayi, der se uthi", "stt_confidence": 0.93, "notes": "Routine miss — not a memory declaration."},
+    {"text": "actually meri behen ka naam Neha hai", "stt_confidence": 0.97, "notes": "Family relationship declaration."},
+    {"text": "actually late night calls nahi, weekend calls mat karna", "stt_confidence": 0.94, "notes": "Boundary correction — should supersede previous boundary."},
+    {"text": "aaj office se aayi, manager ki wajah se phir se stress ho gaya", "stt_confidence": 0.95, "notes": "Work stress recall: should retrieve manager stress memory via graph expansion."},
+    {"text": "nahi yaad mat rakhna office wali baat", "stt_confidence": 0.96, "notes": "Explicit rejection of work stress memory."},
+    {"text": "mere baare mein kya yaad hai tumhe", "stt_confidence": 0.94, "notes": "Broad recall: should retrieve name + relationship, NOT the rejected work stress."}
+  ],
+  "audit": {
+    "admission_expect": {
+      "turn_2": {"should_store_labels": ["preferred_name"], "should_not_store_labels": [], "notes": "Name stored."},
+      "turn_3": {"should_store_labels": ["recurring_work_stressor"], "should_not_store_labels": [], "notes": "Work stress stored with pending receipt."},
+      "turn_6": {"should_store_labels": ["family_relationship"], "should_not_store_labels": [], "notes": "Sister relationship stored."},
+      "turn_7": {"should_store_labels": ["boundary"], "should_not_store_labels": [], "notes": "Boundary correction stored, old boundary superseded."}
+    },
+    "retrieval_expect": {
+      "turn_1": {"should_retrieve_labels": [], "should_not_retrieve_labels": ["preferred_name"], "max_packets": 0, "notes": "Opening with work mention should not yet retrieve work stress (not yet stored)."},
+      "turn_8": {"should_retrieve_labels": ["recurring_work_stressor"], "should_not_retrieve_labels": [], "max_packets": 6, "notes": "Work stress recall with graph expansion."},
+      "turn_10": {"should_retrieve_labels": ["preferred_name", "family_relationship", "boundary"], "should_not_retrieve_labels": ["recurring_work_stressor"], "max_packets": 6, "notes": "Broad recall: should get name + relationship + boundary, NOT rejected work stress."}
+    },
+    "global_checks": [
+      {"type": "receipt_confirmation_works", "description": "Explicit haan yaad rakhna confirms pending receipt.", "expected": true},
+      {"type": "receipt_rejection_permanent", "description": "Explicit nahi yaad mat rakhna permanently excludes memory.", "expected": true},
+      {"type": "correction_supersedes", "description": "Boundary correction supersedes old boundary.", "expected": true},
+      {"type": "context_budget_respected", "description": "Prompt context stays within 2200 chars across all turns.", "expected": true},
+      {"type": "no_assistant_text_in_user_role", "description": "Assistant text never appears as user role.", "expected": true}
+    ]
+  }
+}

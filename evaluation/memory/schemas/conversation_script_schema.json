@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/conversation-script-schema-v1",
+  "title": "Conversation Audit Script",
+  "description": "A conversation scenario that exercises the full memory pipeline: admission, retrieval, prompt assembly, and mock LLM response. Driven entirely by synthetic user turns; assistant responses are mock-generated.",
+  "type": "object",
+  "required": ["schema_version", "id", "turns"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "description": {"type": "string"},
+    "persona": {"type": "string", "default": "hindi_companion_v1"},
+    "turns": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/turn"},
+      "minItems": 2
+    },
+    "audit": {"$ref": "#/$defs/audit"}
+  },
+  "$defs": {
+    "turn": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "description": "User utterance in Hindi/Hinglish."},
+        "stt_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.96},
+        "notes": {"type": "string", "description": "What this turn is testing."},
+        "turn_id": {"type": "string", "description": "Optional override for turn ID."}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "admission_expect": {
+          "type": "object",
+          "description": "Per-turn admission expectations: which labels SHOULD be stored after each user turn.",
+          "patternProperties": {
+            "turn_[0-9]+": {
+              "type": "object",
+              "properties": {
+                "should_store_labels": {"type": "array", "items": {"type": "string"}},
+                "should_not_store_labels": {"type": "array", "items": {"type": "string"}},
+                "notes": {"type": "string"}
+              }
+            }
+          }
+        },
+        "retrieval_expect": {
+          "type": "object",
+          "description": "Per-turn retrieval expectations: which labels SHOULD be retrieved for each query.",
+          "patternProperties": {
+            "turn_[0-9]+": {
+              "type": "object",
+              "properties": {
+                "should_retrieve_labels": {"type": "array", "items": {"type": "string"}},
+                "should_not_retrieve_labels": {"type": "array", "items": {"type": "string"}},
+                "max_packets": {"type": "integer", "minimum": 0},
+                "notes": {"type": "string"}
+              }
+            }
+          }
+        },
+        "global_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {"type": "string"},
+              "description": {"type": "string"},
+              "expected": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

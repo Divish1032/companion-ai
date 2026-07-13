@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/audit-report-schema-v1",
+  "title": "Memory Conversation Audit Report",
+  "description": "AI agent audit of a conversation trace. Reports per-turn memory drift, gaps, and improvement suggestions. Never contains full transcript or prompt text.",
+  "type": "object",
+  "required": ["audit_id", "conversation_id", "total_turns", "summary", "per_turn"],
+  "properties": {
+    "audit_id": {"type": "string"},
+    "conversation_id": {"type": "string"},
+    "total_turns": {"type": "integer", "minimum": 1},
+    "summary": {"$ref": "#/$defs/summary"},
+    "per_turn": {"type": "array", "items": {"$ref": "#/$defs/per_turn"}},
+    "global_checks": {"$ref": "#/$defs/global_checks"},
+    "improvement_suggestions": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": ["admission_correct", "admission_total", "retrieval_correct", "retrieval_total"],
+      "properties": {
+        "admission_correct": {"type": "integer", "description": "Turns where admission matched expectations."},
+        "admission_total": {"type": "integer", "description": "Total turns with admission expectations."},
+        "retrieval_correct": {"type": "integer", "description": "Turns where retrieval matched expectations."},
+        "retrieval_total": {"type": "integer", "description": "Total turns with retrieval expectations."},
+        "overall_gaps": {"type": "integer", "description": "Count of identified gaps/drifts."},
+        "severity": {"type": "string", "enum": ["clean", "minor_gaps", "significant_gaps", "critical"]}
+      }
+    },
+    "per_turn": {
+      "type": "object",
+      "required": ["turn_index", "user_text_hash", "admission", "retrieval"],
+      "properties": {
+        "turn_index": {"type": "integer"},
+        "user_text_hash": {"type": "string", "description": "Redacted hash of the user text."},
+        "admission": {
+          "type": "object",
+          "properties": {
+            "expected_labels": {"type": "array", "items": {"type": "string"}},
+            "actual_labels": {"type": "array", "items": {"type": "string"}},
+            "matched": {"type": "boolean"},
+            "missing": {"type": "array", "items": {"type": "string"}},
+            "unexpected": {"type": "array", "items": {"type": "string"}},
+            "drift_note": {"type": "string"}
+          }
+        },
+        "retrieval": {
+          "type": "object",
+          "properties": {
+            "expected_labels": {"type": "array", "items": {"type": "string"}},
+            "actual_labels": {"type": "array", "items": {"type": "string"}},
+            "matched": {"type": "boolean"},
+            "missing": {"type": "array", "items": {"type": "string"}},
+            "unexpected": {"type": "array", "items": {"type": "string"}},
+            "packet_count": {"type": "integer"},
+            "context_chars": {"type": "integer"},
+            "drift_note": {"type": "string"}
+          }
+        },
+        "prompt_summary": {
+          "type": "object",
+          "properties": {
+            "roles": {"type": "array", "items": {"type": "string"}},
+            "message_count": {"type": "integer"},
+            "context_chars": {"type": "integer"},
+            "memory_blocks_injected": {"type": "integer"},
+            "assistant_role_integrity_ok": {"type": "boolean"}
+          }
+        },
+        "mock_response_hash": {"type": "string"}
+      }
+    },
+    "global_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check": {"type": "string"},
+          "passed": {"type": "boolean"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  }
+}
