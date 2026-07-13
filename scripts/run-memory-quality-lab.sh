@@ -77,6 +77,56 @@ reject_production_target() {
 
 reject_production_target
 
+# Audit-only mode: skip all other stages, run only the conversation audit
+if [[ -n "$AUDIT_SCRIPT" ]]; then
+  echo "=== Conversation Audit ==="
+  echo "Script: $AUDIT_SCRIPT"
+  echo ""
+
+  audit_db="$tmp_dir/audit_conversation.db"
+  audit_trace_json="$tmp_dir/audit_trace.json"
+  mkdir -p "$tmp_dir" "$report_dir"
+
+  echo -n "[tracer] "
+  tracer_output=$(
+    cd "$mobile_dir" && \
+    AUDIT_SCRIPT="$AUDIT_SCRIPT" \
+    AUDIT_DB_PATH="$audit_db" \
+    flutter test test/memory_conversation_tracer_test.dart --reporter compact 2>&1
+  ) || true
+
+  tracer_clean=$(echo "$tracer_output" | tr -d '\r')
+  contract_match=$(echo "$tracer_clean" | grep '{"conversation_id"' | head -1 || true)
+  if [[ -n "$contract_match" ]]; then
+    echo "$contract_match" | $PYTHON -c "
+import sys, re, json
+line = sys.stdin.read()
+m = re.search(r'\{.*\}', line)
+if m:
+    with open('$audit_trace_json', 'w') as f:
+        json.dump(json.loads(m.group(0)), f, indent=2)
+    print('OK')
+" 2>/dev/null
+    echo ""
+
+    if [[ -s "$audit_trace_json" ]]; then
+      echo "[audit]"
+      audit_output_json="$report_dir/audit_$(date -u +%Y%m%d_%H%M%S).json"
+      $PYTHON "$repo_root/scripts/audit-conversation.py" "$audit_trace_json" "$AUDIT_SCRIPT" --output "$audit_output_json" 2>&1
+      echo ""
+      echo "Audit report: $audit_output_json"
+    else
+      echo "FAILED: trace file empty"
+    fi
+  else
+    echo "FAILED (no trace output)"
+    echo "$tracer_output" | tail -5 >&2
+  fi
+
+  rm -rf "$tmp_dir"
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Dry-run
 # ---------------------------------------------------------------------------
@@ -403,65 +453,6 @@ if m:
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# Stage 5: Conversation audit (full pipeline trace)
-# ---------------------------------------------------------------------------
-audit_trace_json=""
-audit_start_sec=0
-audit_duration_ms=0
-audit_passed=true
-
-if [[ -n "$AUDIT_SCRIPT" ]]; then
-  echo ""
-  echo "=== Stage 5: Conversation audit ==="
-  if [[ ! -f "$AUDIT_SCRIPT" ]]; then
-    echo "  SKIP: conversation script not found: $AUDIT_SCRIPT"
-  else
-    audit_start_sec=$SECONDS
-    audit_db="$tmp_dir/audit_conversation.db"
-    audit_trace_json="$tmp_dir/audit_trace.json"
-
-    echo -n "  [tracer] "
-    tracer_output=$(
-      cd "$mobile_dir" && \
-      AUDIT_SCRIPT="$AUDIT_SCRIPT" \
-      AUDIT_DB_PATH="$audit_db" \
-      flutter test test/memory_conversation_tracer_test.dart --reporter compact 2>&1
-    ) || true
-
-    tracer_clean=$(echo "$tracer_output" | tr -d '\r')
-    contract_match=$(echo "$tracer_clean" | grep '{"conversation_id"' | head -1 || true)
-    if [[ -n "$contract_match" ]]; then
-      echo "$contract_match" | $PYTHON -c "
-import sys, re, json
-line = sys.stdin.read()
-m = re.search(r'\{.*\}', line)
-if m:
-    with open('$audit_trace_json', 'w') as f:
-        json.dump(json.loads(m.group(0)), f, indent=2)
-    print('OK')
-" 2>/dev/null
-      audit_passed=true
-    else
-      echo "FAILED (no output)"
-      audit_passed=false
-    fi
-
-    if $audit_passed && [[ -s "$audit_trace_json" ]]; then
-      echo -n "  [audit] "
-      audit_output_json="$tmp_dir/audit_report.json"
-      if $PYTHON "$repo_root/scripts/audit-conversation.py" "$audit_trace_json" "$AUDIT_SCRIPT" --output "$audit_output_json" 2>/dev/null; then
-        echo "OK"
-      else
-        echo "FAILED"
-        audit_passed=false
-      fi
-    fi
-
-    audit_duration_ms=$(( ($SECONDS - audit_start_sec) * 1000 ))
-  fi
-fi
-
 total_duration_ms=$(( ($SECONDS - overall_start_sec) * 1000 ))
 
 # ---------------------------------------------------------------------------
@@ -525,24 +516,6 @@ with open('$tmp_dir/benchmark_metrics.json', encoding='utf-8') as f:
     benchmark = json.load(f)
 report['suite_durations_ms']['benchmark'] = $benchmark_duration_ms
 report['benchmark'] = benchmark
-with open('$report_json', 'w', encoding='utf-8') as f:
-    json.dump(report, f, indent=2, ensure_ascii=False)
-" 2>/dev/null
-  fi
-fi
-
-# Inject audit section into report if audit ran
-if [[ -n "$AUDIT_SCRIPT" ]] && [[ -f "$audit_trace_json" ]]; then
-  audit_report_path="$tmp_dir/audit_report.json"
-  if [[ -f "$audit_report_path" ]]; then
-    $PYTHON -c "
-import json
-with open('$report_json', encoding='utf-8') as f:
-    report = json.load(f)
-with open('$audit_report_path', encoding='utf-8') as f:
-    audit = json.load(f)
-report['suite_durations_ms']['audit'] = $audit_duration_ms
-report['audit'] = audit
 with open('$report_json', 'w', encoding='utf-8') as f:
     json.dump(report, f, indent=2, ensure_ascii=False)
 " 2>/dev/null
