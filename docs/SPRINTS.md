@@ -363,6 +363,9 @@ Acceptance:
 
 ### Sprint 7.5: Conversation Memory and Context Quality
 
+Status: Complete for the local MVP slice; Android same-session and
+previous-session memory validation passed on the rebuilt debug APK.
+
 Goal:
 
 Make the companion remember useful context from the same session and previous local

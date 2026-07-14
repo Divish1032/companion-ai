@@ -33,9 +33,10 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
   validation.
 - Sprint 7.5 delivered the local conversation-memory and context-quality slice
   after Sprint 7.
-- The long-term-memory foundation and query-time local retrieval are implemented.
-  Real model-serving weights, Ubuntu capacity/latency validation, and the final
-  Hindi/Hinglish memory evaluation remain part of Sprints 8-10 hardening.
+- The long-term-memory Phases 1-5 foundation, query-time local retrieval, and
+  rebuilt-APK Hindi/Hinglish validation are complete. Ubuntu capacity/latency
+  validation and GPU-dependent Qwen reranking/planning remain Sprints 8-10
+  hardening work.
 
 ## Sprint Reading Guide
 

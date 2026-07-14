@@ -3,10 +3,10 @@
 This document is the implementation handoff for making Companion AI's memory
 long-term, meaningful, privacy-preserving, and low-latency.
 
-Current status: Phases 1-4 are implemented for the current MVP scope. Hindi/Hinglish
-uses an explicitly selected EmbeddingGemma-plus-deterministic memory policy. The
-full Phase 1-5 plan is **not complete end to end** until Phase 5
-phone retesting and its documentation gate are finished.
+Current status: Phases 1-5 are complete for the current MVP scope. Hindi/Hinglish
+uses an explicitly selected EmbeddingGemma-plus-deterministic memory policy.
+Phase 5 was revalidated on the rebuilt Android debug APK after the current
+language-policy and voice-transcript fixes.
 Treat the "Implemented so far" and
 "Remaining work" sections as the source of truth before continuing.
 
@@ -21,9 +21,11 @@ Verified status:
 - [x] Phase 4 model-serving and backend selection. EmbeddingGemma is used for
   embedding creation, while deterministic reranking and planning remain the
   Hindi/Hinglish default. GPU-dependent Qwen work is deferred.
-- [ ] Phase 5 evaluation, tuning, and Android validation.
-  Automated Hindi/Hinglish evaluation and the redacted fixed-code Android
-  scenarios are complete; the repository docs gate has an unrelated blocker.
+- [x] Phase 5 evaluation, tuning, and Android validation.
+  Automated Hindi/Hinglish evaluation and the rebuilt-APK Android scenarios
+  are complete, including exact same-session and previous-session recall,
+  greeting no-overretrieval, rejection/removal of pending memory, and
+  explicit-only admission.
 
 ## Goals
 
@@ -810,13 +812,11 @@ semantic/episodic retrieval only and cannot override current companion state.
 Automated coverage now includes Hindi parser variants, ASR-quality semantics,
 supersession, candidate confirmation/rejection, repeated uncertain evidence,
 clear-history state deletion, and V2 deterministic fact replies. The Phase 5
-phone script must still be rerun against this V2 APK before these changes are
-considered device-validated.
+phone script was rerun against the rebuilt V2 APK and is device-validated.
 
-The Android measurements below are historical evidence from the earlier
-deterministic-retrieval APK. They remain useful for admission, receipts, graph,
-and privacy behavior, but Phase 5 must be rerun on the rebuilt APK with the
-current EmbeddingGemma/ONNX backend and latest voice-turn fixes before closure.
+The Android measurements below include historical deterministic-retrieval
+evidence and the completed rebuilt-APK Phase 5 validation. They remain useful
+for admission, receipts, graph, and privacy behavior.
 
 - Completed automated evaluation:
   - `scripts/run-memory-eval.sh` is the required deterministic Hindi/Hinglish
@@ -853,9 +853,7 @@ current EmbeddingGemma/ONNX backend and latest voice-turn fixes before closure.
     fixed APK; the record remained `rejected/expired` and was not re-admitted
     or injected. The query returned two unrelated past session summaries,
     which were excluded from the rejection decision.
-- All Android acceptance scenarios now have evidence. Phase 5 is functionally
-  complete, but the checklist remains open until the repository docs gate is
-  repaired outside this scoped change.
+- All Android acceptance scenarios now have evidence. Phase 5 is complete.
 - Redacted metrics implemented:
   - memory route
   - lookup latency
@@ -885,8 +883,9 @@ current EmbeddingGemma/ONNX backend and latest voice-turn fixes before closure.
   and planning remain deterministic and Qwen flags remain disabled.
 - A rejected deterministic work-stressor memory is now protected from automatic
   re-admission; this is covered by the Flutter database regression test.
-- Do not claim full Phase 1-5 completion until all remaining work is done and
-  verified.
+- Phases 1-5 are complete for the current MVP scope. Ubuntu capacity/latency
+  validation and GPU-dependent Qwen reranking/planning remain separate Sprint
+  9+ operational work.
 
 ## Handoff Into Sprints 8-10
 
