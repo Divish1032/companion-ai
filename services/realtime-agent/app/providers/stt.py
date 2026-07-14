@@ -40,7 +40,9 @@ class VoskSTTProvider(STTProvider):
         started = time.perf_counter()
         recognizer = self._recognizer_type(self._model, self.target_sample_rate)
         recognizer.SetWords(True)
+        completed_segments: list[str] = []
         last_partial = ""
+        last_emitted = ""
         audio_seconds = 0.0
 
         async for frame in audio_frames:
@@ -49,10 +51,14 @@ class VoskSTTProvider(STTProvider):
             if recognizer.AcceptWaveform(pcm16):
                 result = _parse_vosk_json(recognizer.Result())
                 text = _clean_text(result.get("text"))
-                if text and text != last_partial:
-                    last_partial = text
+                if text and (not completed_segments or completed_segments[-1] != text):
+                    completed_segments.append(text)
+                last_partial = ""
+                visible_text = " ".join(completed_segments)
+                if visible_text and visible_text != last_emitted:
+                    last_emitted = visible_text
                     yield self._event(
-                        text=text,
+                        text=visible_text,
                         is_final=False,
                         confidence=_confidence(result),
                         started=started,
@@ -60,10 +66,12 @@ class VoskSTTProvider(STTProvider):
                     )
             else:
                 partial = _clean_text(_parse_vosk_json(recognizer.PartialResult()).get("partial"))
-                if partial and partial != last_partial:
+                visible_text = " ".join([*completed_segments, partial]).strip()
+                if partial and visible_text != last_emitted:
                     last_partial = partial
+                    last_emitted = visible_text
                     yield self._event(
-                        text=partial,
+                        text=visible_text,
                         is_final=False,
                         confidence=None,
                         started=started,
@@ -71,7 +79,13 @@ class VoskSTTProvider(STTProvider):
                     )
 
         final = _parse_vosk_json(recognizer.FinalResult())
-        final_text = _clean_text(final.get("text")) or last_partial
+        final_segment = _clean_text(final.get("text"))
+        final_parts = [*completed_segments]
+        if final_segment and (not final_parts or final_parts[-1] != final_segment):
+            final_parts.append(final_segment)
+        elif not final_segment and last_partial:
+            final_parts.append(last_partial)
+        final_text = " ".join(final_parts).strip()
         yield self._event(
             text=final_text,
             is_final=True,

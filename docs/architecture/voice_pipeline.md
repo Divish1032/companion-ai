@@ -109,6 +109,11 @@ Initial audio pipeline defaults:
 - VAD consumes 30ms windows over canonical PCM.
 - STT receives streaming chunks around 100-200ms, plus pre-speech buffer.
 - VAD and STT streaming should run concurrently once speech is confirmed; do not wait for VAD end before starting STT.
+- An STT adapter that internally finalizes a segment during a natural pause
+  must retain that segment and append the final trailing segment before it
+  emits the logical turn's final transcript. Vosk's `Result()` is segment-level
+  while `FinalResult()` may contain only the last segment; treating the former
+  as a replaceable partial loses the beginning of a spoken thought.
 - TTS output should be normalized to the format required by LiveKit publication in one adapter layer.
 - Log sample rate, channels, bit depth, codec, and chunk sizes once per session.
 
