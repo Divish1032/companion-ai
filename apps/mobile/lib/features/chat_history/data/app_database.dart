@@ -8,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'memory_language_policy.dart';
+
 import 'memory_vector_index.dart';
 
 part 'app_database.g.dart';
@@ -1708,30 +1710,14 @@ _MemoryQueryIntent _classifyMemoryQuery(String text) {
 
 bool _isQuestionLikeMemoryTurn(String text) {
   final normalized = _normalizeForMemory(text);
-  const markers = [
-    '?',
-    'kya',
-    'kaun',
-    'kaise',
-    'kis',
-    'yaad hai',
-    'remember',
-    'what is',
-    'what was',
-    'do you know',
-    'क्या',
-    'कौन',
-    'कैसे',
-    'किस',
-    'याद है',
-  ];
-  return markers.any(normalized.contains);
+  final policy = MemoryLanguagePolicyRegistry.hiIN;
+  return policy.isQuestion(normalized) ||
+      _containsAny(normalized, const ['what is', 'what was', 'do you know']);
 }
 
 bool _isQuestionToken(String value) {
-  final normalized = _normalizeForMemory(value);
-  const questionTokens = {'kya', 'what', 'क्या'};
-  return questionTokens.contains(normalized);
+  return !MemoryLanguagePolicyRegistry.hiIN.isValidPersonValue(value) ||
+      _normalizeForMemory(value) == 'what';
 }
 
 String _normalizeForMemory(String text) {

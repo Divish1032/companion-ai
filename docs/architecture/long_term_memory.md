@@ -294,6 +294,23 @@ procedural records are retrieved only for an explicit matching recall intent;
 they are excluded from general turns. It must abstain rather than add vague
 personal context. Qwen strategies remain disabled future experiments.
 
+### Exact-claim language policy
+
+Exact profile and relationship state is governed by a versioned, language-scoped
+mobile policy (`MemoryLanguagePolicyRegistry`), separate from fuzzy semantic
+retrieval. A policy owns its language's question markers, observed STT question
+variants, invalid entity values, extraction grammar, confirmation/rejection
+markers, and safe preference phrases. For example, the Hindi policy treats the
+observed Vosk rendering `नाम के है` as a recall question and rejects `के` as a
+person value.
+
+The realtime agent includes the resolved session language in every
+`memory_context_request_v2`; the phone selects that policy before any durable
+claim is admitted. A language without a reviewed policy uses the `und` fallback:
+normal conversation remains available, but profile and relationship claims are
+not written automatically. Add a policy only with language-specific transcript
+fixtures, invalid-capture regressions, and confirmation behavior tests.
+
 The mobile defaults use EmbeddingGemma-backed vector retrieval with deterministic
 fallback, reranking, and planning. Qwen reranking and planning remain disabled.
 A future language must explicitly select a non-deterministic strategy and enable

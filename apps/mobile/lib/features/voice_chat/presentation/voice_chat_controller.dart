@@ -433,6 +433,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     final resolution = await database.resolveMemoryTurn(
       turnId: turnId,
       text: query,
+      language: (event.payload['language'] as String?) ?? 'und',
       transcriptStatus:
           (event.payload['transcript_status'] as String?) ?? 'final',
       sttConfidence: (event.payload['stt_confidence'] as num?)?.toDouble(),

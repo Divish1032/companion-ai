@@ -743,6 +743,7 @@ def test_v2_exact_state_reply_bypasses_llm_and_uses_matching_turn() -> None:
             session._respond_to_final_transcript("session_test:turn:0042", "मेरा नाम क्या है?")
         )
         request = await _wait_for_decoded_event_type(transport, "memory_context_request_v2")
+        assert request["language"] == "hi-IN"
         await session._handle_client_data_event(
             json.dumps(
                 {

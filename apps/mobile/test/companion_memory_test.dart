@@ -8,6 +8,9 @@ void main() {
       () {
         final name = analyzeMemoryTurn('मेरा नाम अमित है');
         final relation = analyzeMemoryTurn('मेरे भाई का नाम राहुल है');
+        final observedSttRelation = analyzeMemoryTurn(
+          'मैंने भाई का नाम रोहन है',
+        );
         final language = analyzeMemoryTurn('मुझे हिन्दी में जवाब पसंद है');
         final routine = analyzeMemoryTurn('मैं रोज सुबह टहलता हूं');
         final policy = analyzeMemoryTurn(
@@ -19,6 +22,10 @@ void main() {
         expect(name.candidate?.stateKey, 'user.profile.preferred_name');
         expect(name.candidate?.value['text'], 'अमित');
         expect(relation.candidate?.stateKey, 'user.relationship.brother.राहुल');
+        expect(
+          observedSttRelation.candidate?.stateKey,
+          'user.relationship.brother.रोहन',
+        );
         expect(language.candidate?.value['text'], 'Hindi');
         expect(routine.candidate?.stateKey, 'user.routine.morning.walk');
         expect(policy.candidate?.stateKey, 'user.preference.comfort_style');
@@ -54,7 +61,41 @@ void main() {
         analyzeMemoryTurn('मुझे सलाह से पहले क्या पसंद है?').stateKey,
         'user.preference.comfort_style',
       );
+      expect(
+        analyzeMemoryTurn(
+          'मैंने तुम्हें अपने भाई के बारे में क्या बताया था',
+        ).stateKey,
+        'user.relationship.brother.*',
+      );
     });
+
+    test(
+      'treats observed Hindi ASR question variants as questions, not names',
+      () {
+        final profile = analyzeMemoryTurn('मेरा नाम के है');
+        final relation = analyzeMemoryTurn('मेरे भाई का नाम के है');
+
+        expect(profile.action, MemoryActionKind.answerState);
+        expect(profile.stateKey, 'user.profile.preferred_name');
+        expect(profile.candidate, isNull);
+        expect(relation.action, MemoryActionKind.answerState);
+        expect(relation.stateKey, 'user.relationship.brother.*');
+        expect(relation.candidate, isNull);
+      },
+    );
+
+    test(
+      'fails closed for a language without a reviewed exact-memory policy',
+      () {
+        final analysis = analyzeMemoryTurn(
+          'my name is Alex',
+          language: 'fr-FR',
+        );
+
+        expect(analysis.action, MemoryActionKind.companion);
+        expect(analysis.candidate, isNull);
+      },
+    );
 
     test('does not silently correct a semantically different ASR word', () {
       expect(

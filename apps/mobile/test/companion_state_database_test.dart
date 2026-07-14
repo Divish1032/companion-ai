@@ -78,6 +78,40 @@ void main() {
     );
 
     test(
+      'unknown-confidence profile replacement requires confirmation',
+      () async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(database.close);
+
+        await _resolve(
+          database,
+          turnId: 't1',
+          text: 'मेरा नाम अमित है',
+          transcriptStatus: 'final',
+          sttConfidence: null,
+        );
+        final replacement = await _resolve(
+          database,
+          turnId: 't2',
+          text: 'मेरा नाम विनय है',
+          transcriptStatus: 'final',
+          sttConfidence: null,
+        );
+        final answer = await _resolve(
+          database,
+          turnId: 't3',
+          text: 'मेरा नाम क्या है?',
+          transcriptStatus: 'final',
+          sttConfidence: null,
+        );
+
+        expect(replacement.directive, 'confirmation');
+        expect(answer.directive, 'fact_answer');
+        expect((answer.stateFacts.single['value'] as Map)['text'], 'अमित');
+      },
+    );
+
+    test(
       'a repeated uncertain relationship becomes current and rejected candidates do not',
       () async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -321,6 +355,7 @@ Future<MemoryTurnResolution> _resolve(
   return database.resolveMemoryTurn(
     turnId: turnId,
     text: text,
+    language: 'hi-IN',
     transcriptStatus: transcriptStatus,
     sttConfidence: sttConfidence,
     sttProvider: sttProvider,

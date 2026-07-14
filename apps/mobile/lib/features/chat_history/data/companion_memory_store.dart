@@ -109,6 +109,7 @@ extension CompanionMemoryStore on AppDatabase {
   Future<MemoryTurnResolution> resolveMemoryTurn({
     required String turnId,
     required String text,
+    required String language,
     required String transcriptStatus,
     required double? sttConfidence,
     String? sttProvider,
@@ -116,7 +117,7 @@ extension CompanionMemoryStore on AppDatabase {
   }) async {
     await ensureCompanionMemorySchema();
     await _migrateLegacyCompanionStateIfNeeded();
-    final analysis = analyzeMemoryTurn(text);
+    final analysis = analyzeMemoryTurn(text, language: language);
     final previousTurnId = await _previousFinalUserTurnId(turnId);
     if (analysis.action == MemoryActionKind.confirmCandidate) {
       return _confirmCandidate(turnId, previousTurnId);
@@ -185,9 +186,18 @@ extension CompanionMemoryStore on AppDatabase {
 
       final id =
           'claim_${now}_${turnId.hashCode}_${candidate.stateKey.hashCode}';
+      // A first, explicit low-risk name can be convenient even when Vosk does
+      // not expose a final confidence. Replacing an existing identity is more
+      // harmful: require a voice confirmation unless transcript quality is
+      // high, even if the extractor saw an assertion grammar match.
+      final replacingExactProfile =
+          candidate.stateKey == 'user.profile.preferred_name' &&
+          current != null &&
+          quality != TranscriptQuality.high;
       final pending =
+          replacingExactProfile ||
           claimAdmission(candidate: candidate, quality: quality) ==
-          ClaimAdmission.confirm;
+              ClaimAdmission.confirm;
       await customStatement(
         '''INSERT INTO memory_claims (
           id, state_key, subject, predicate, value_json, cardinality, category,

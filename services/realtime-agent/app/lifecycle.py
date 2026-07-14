@@ -822,6 +822,7 @@ class RealtimeAgentSession:
             schema_version=2,
             payload={
                 "query_text": user_text,
+                "language": self.settings.language,
                 "transcript_status": "final",
                 "stt_confidence": self._turn_stt_confidence.get(turn_id),
                 "stt_provider": self._turn_stt_metadata.get(turn_id, ("", ""))[0],

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'memory_language_policy.dart';
+
 /// Deterministic, phone-owned understanding for the small set of facts that
 /// must be exact in a companion conversation. This is deliberately separate
 /// from semantic/vector retrieval: a name or response preference is state,
@@ -27,14 +29,15 @@ enum ClaimAdmission { commit, confirm }
 /// enter the candidate/confirmation path; only deterministic extraction can
 /// update current state directly in this release.
 abstract interface class MemoryExtractor {
-  MemoryTurnAnalysis analyze(String text);
+  MemoryTurnAnalysis analyze(String text, {String language});
 }
 
 class DeterministicMemoryExtractor implements MemoryExtractor {
   const DeterministicMemoryExtractor();
 
   @override
-  MemoryTurnAnalysis analyze(String text) => analyzeMemoryTurn(text);
+  MemoryTurnAnalysis analyze(String text, {String language = 'hi-IN'}) =>
+      analyzeMemoryTurn(text, language: language);
 }
 
 class CompanionClaimCandidate {
@@ -108,25 +111,29 @@ ClaimAdmission claimAdmission({
   return ClaimAdmission.commit;
 }
 
-MemoryTurnAnalysis analyzeMemoryTurn(String text) {
-  final normalized = _normalize(text);
-  if (normalized.isEmpty || _sensitive(normalized)) {
+MemoryTurnAnalysis analyzeMemoryTurn(String text, {String language = 'hi-IN'}) {
+  final policy = MemoryLanguagePolicyRegistry.forLanguage(language);
+  final normalized = policy.normalize(text);
+  if (normalized.isEmpty ||
+      policy.containsAny(normalized, policy.sensitiveMarkers)) {
     return const MemoryTurnAnalysis(action: MemoryActionKind.none);
   }
-  if (_isRejection(normalized)) {
+  if (policy.containsAny(normalized, policy.rejectionMarkers)) {
     return const MemoryTurnAnalysis(action: MemoryActionKind.rejectCandidate);
   }
-  if (_isConfirmation(normalized)) {
+  if (policy.containsAny(normalized, policy.confirmationMarkers)) {
     return const MemoryTurnAnalysis(action: MemoryActionKind.confirmCandidate);
   }
-  if (_isGreeting(normalized)) {
+  if (policy.greetings.contains(normalized)) {
     return const MemoryTurnAnalysis(action: MemoryActionKind.none);
   }
 
-  final query = _queryAction(normalized);
+  final query = _queryAction(normalized, policy);
   if (query != null) return query;
 
-  final candidate = _claimCandidate(normalized);
+  final candidate = policy.supportsDurableExactClaims
+      ? _claimCandidate(normalized, policy)
+      : null;
   if (candidate != null) {
     return MemoryTurnAnalysis(
       action: MemoryActionKind.setState,
@@ -135,13 +142,7 @@ MemoryTurnAnalysis analyzeMemoryTurn(String text) {
     );
   }
 
-  if (_containsAny(normalized, const [
-    'office',
-    'काम',
-    'ऑफिस',
-    'work',
-    'manager',
-  ])) {
+  if (policy.containsAny(normalized, policy.workMarkers)) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.retrieveSemantic,
       queryScope: 'work',
@@ -150,23 +151,25 @@ MemoryTurnAnalysis analyzeMemoryTurn(String text) {
   return const MemoryTurnAnalysis(action: MemoryActionKind.companion);
 }
 
-MemoryTurnAnalysis? _queryAction(String text) {
-  if (_isQuestion(text) && _containsAny(text, const ['नाम', 'naam', 'name'])) {
-    if (_containsAny(text, const ['भाई', 'बहन', 'brother', 'sister'])) {
-      final role = _containsAny(text, const ['बहन', 'sister'])
-          ? 'sister'
-          : 'brother';
-      return MemoryTurnAnalysis(
-        action: MemoryActionKind.answerState,
-        stateKey: 'user.relationship.$role.*',
-      );
-    }
+MemoryTurnAnalysis? _queryAction(String text, MemoryLanguagePolicy policy) {
+  if (policy.isQuestion(text) &&
+      policy.containsAny(text, policy.relationshipMarkers)) {
+    final role = _containsAny(text, const ['बहन', 'sister'])
+        ? 'sister'
+        : 'brother';
+    return MemoryTurnAnalysis(
+      action: MemoryActionKind.answerState,
+      stateKey: 'user.relationship.$role.*',
+    );
+  }
+  if (policy.isQuestion(text) &&
+      _containsAny(text, const ['नाम', 'naam', 'name'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.profile.preferred_name',
     );
   }
-  if (_isQuestion(text) &&
+  if (policy.isQuestion(text) &&
       _containsAny(text, const [
         'भाषा',
         'language',
@@ -179,33 +182,34 @@ MemoryTurnAnalysis? _queryAction(String text) {
       stateKey: 'user.preference.response_language',
     );
   }
-  if (_isQuestion(text) &&
+  if (policy.isQuestion(text) &&
       _containsAny(text, const ['सलाह', 'advice', 'सुनना', 'सुनो'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.preference.comfort_style',
     );
   }
-  if (_isQuestion(text) &&
+  if (policy.isQuestion(text) &&
       _containsAny(text, const ['रोज', 'हर दिन', 'सुबह', 'daily', 'morning'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.routine.morning.*',
     );
   }
-  if (_isQuestion(text) && _containsAny(text, const ['छोटा', 'short'])) {
+  if (policy.isQuestion(text) && _containsAny(text, const ['छोटा', 'short'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.preference.response_length',
     );
   }
-  if (_isQuestion(text) && _containsAny(text, const ['राजनीति', 'boundary'])) {
+  if (policy.isQuestion(text) &&
+      _containsAny(text, const ['राजनीति', 'boundary'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.boundary.*',
     );
   }
-  if (_isQuestion(text) && _containsAny(text, const ['लक्ष्य', 'goal'])) {
+  if (policy.isQuestion(text) && _containsAny(text, const ['लक्ष्य', 'goal'])) {
     return const MemoryTurnAnalysis(
       action: MemoryActionKind.answerState,
       stateKey: 'user.goal.*',
@@ -214,17 +218,11 @@ MemoryTurnAnalysis? _queryAction(String text) {
   return null;
 }
 
-CompanionClaimCandidate? _claimCandidate(String text) {
-  final name = _capture(text, [
-    RegExp(
-      r'(?:मेरा|meri|mera|my) नाम\s+([a-z\u0900-\u097f]{2,32})(?:\s+(?:है|hai))?',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'(?:my name is)\s+([a-z\u0900-\u097f]{2,32})',
-      caseSensitive: false,
-    ),
-  ]);
+CompanionClaimCandidate? _claimCandidate(
+  String text,
+  MemoryLanguagePolicy policy,
+) {
+  final name = _capture(text, policy.namePatterns, policy: policy);
   if (name != null) {
     return CompanionClaimCandidate(
       stateKey: 'user.profile.preferred_name',
@@ -233,20 +231,18 @@ CompanionClaimCandidate? _claimCandidate(String text) {
       value: {'text': name, 'entity_type': 'person'},
       cardinality: ClaimCardinality.single,
       category: 'profile',
-      assertionKind: _looksLikeCorrection(text) ? 'correction' : 'assertion',
+      assertionKind: policy.containsAny(text, policy.correctionMarkers)
+          ? 'correction'
+          : 'assertion',
     );
   }
 
-  final relation = _capture(text, [
-    RegExp(
-      r'(?:मेरा|मेरी|मेरे)\s+(भाई|बहन)\s+का\s+नाम\s+([a-z\u0900-\u097f]{2,32})(?:\s+है)?',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'my\s+(brother|sister)\s+(?:name is|is)\s+([a-z\u0900-\u097f]{2,32})',
-      caseSensitive: false,
-    ),
-  ], group: 2);
+  final relation = _capture(
+    text,
+    policy.relationshipPatterns,
+    policy: policy,
+    group: 2,
+  );
   if (relation != null) {
     final role = _containsAny(text, const ['बहन', 'sister'])
         ? 'sister'
@@ -262,10 +258,8 @@ CompanionClaimCandidate? _claimCandidate(String text) {
     );
   }
 
-  final language = _language(text);
-  if (language != null &&
-      (_containsAny(text, const ['पसंद', 'prefer', 'केवल', 'सिर्फ', 'only']) ||
-          _containsAny(text, const ['जवाब', 'उत्तर', 'reply', 'answer']))) {
+  final language = _language(text, policy);
+  if (language != null && policy.containsAny(text, policy.preferenceMarkers)) {
     return CompanionClaimCandidate(
       stateKey: 'user.preference.response_language',
       subject: 'user',
@@ -273,16 +267,13 @@ CompanionClaimCandidate? _claimCandidate(String text) {
       value: {'text': language},
       cardinality: ClaimCardinality.single,
       category: 'preference',
-      assertionKind: _looksLikeCorrection(text) ? 'correction' : 'assertion',
+      assertionKind: policy.containsAny(text, policy.correctionMarkers)
+          ? 'correction'
+          : 'assertion',
     );
   }
 
-  if (_containsAny(text, const [
-    'छोटे जवाब',
-    'छोटा जवाब',
-    'short replies',
-    'short reply',
-  ])) {
+  if (policy.containsAny(text, policy.shortResponseMarkers)) {
     return const CompanionClaimCandidate(
       stateKey: 'user.preference.response_length',
       subject: 'user',
@@ -294,11 +285,7 @@ CompanionClaimCandidate? _claimCandidate(String text) {
     );
   }
 
-  if (_containsAny(text, const [
-    'सलाह देने से पहले',
-    'advice se pehle',
-    'listen first',
-  ])) {
+  if (policy.containsAny(text, policy.comfortStyleMarkers)) {
     return const CompanionClaimCandidate(
       stateKey: 'user.preference.comfort_style',
       subject: 'user',
@@ -310,11 +297,7 @@ CompanionClaimCandidate? _claimCandidate(String text) {
     );
   }
 
-  if (_containsAny(text, const [
-    'रोज सुबह टहल',
-    'हर सुबह टहल',
-    'daily morning walk',
-  ])) {
+  if (policy.containsAny(text, policy.morningWalkMarkers)) {
     return const CompanionClaimCandidate(
       stateKey: 'user.routine.morning.walk',
       subject: 'user',
@@ -326,10 +309,7 @@ CompanionClaimCandidate? _claimCandidate(String text) {
     );
   }
 
-  if (_containsAny(text, const [
-    'राजनीति पर बात नहीं',
-    'politics par baat nahi',
-  ])) {
+  if (policy.containsAny(text, policy.politicsBoundaryMarkers)) {
     return const CompanionClaimCandidate(
       stateKey: 'user.boundary.politics',
       subject: 'user',
@@ -341,9 +321,7 @@ CompanionClaimCandidate? _claimCandidate(String text) {
     );
   }
 
-  final goal = _capture(text, [
-    RegExp(r'(?:मेरा|मेरी) लक्ष्य\s+(.{2,80}?)\s+(?:है|हैं)'),
-  ]);
+  final goal = _capture(text, policy.goalPatterns, policy: policy);
   if (goal != null) {
     return CompanionClaimCandidate(
       stateKey: 'user.goal.${_keyToken(goal)}',
@@ -358,103 +336,28 @@ CompanionClaimCandidate? _claimCandidate(String text) {
   return null;
 }
 
-String? _capture(String text, List<RegExp> patterns, {int group = 1}) {
+String? _capture(
+  String text,
+  List<RegExp> patterns, {
+  required MemoryLanguagePolicy policy,
+  int group = 1,
+}) {
   for (final pattern in patterns) {
     final value = pattern.firstMatch(text)?.group(group)?.trim();
-    if (value != null && value.isNotEmpty && !_isQuestion(value)) return value;
+    if (value != null && policy.isValidPersonValue(value)) return value;
   }
   return null;
 }
 
-String? _language(String text) {
-  if (_containsAny(text, const ['हिंदी', 'हिन्दी', 'hindi'])) return 'Hindi';
-  if (_containsAny(text, const ['इंग्लिश', 'english'])) return 'English';
-  if (text.contains('hinglish')) return 'Hinglish';
+String? _language(String text, MemoryLanguagePolicy policy) {
+  for (final entry in policy.languageValues.entries) {
+    if (text.contains(entry.key)) return entry.value;
+  }
   return null;
 }
 
-bool _isQuestion(String text) => _containsAny(text, const [
-  '?',
-  'क्या',
-  'कौन',
-  'कैसे',
-  'किस',
-  'kya',
-  'kaun',
-  'kaise',
-  'kis',
-  'yaad hai',
-  'remember',
-]);
-
-bool _isConfirmation(String text) => _containsAny(text, const [
-  'हाँ',
-  'हां',
-  'haan',
-  'ha',
-  'yes',
-  'याद रखना',
-  'yaad rakh',
-  'confirm',
-]);
-
-bool _isRejection(String text) => _containsAny(text, const [
-  'नहीं याद',
-  'मत याद',
-  'nahin',
-  'nahi',
-  'no',
-  'reject',
-]);
-
-bool _isGreeting(String text) =>
-    const {'नमस्ते', 'hi', 'hello', 'hey', 'haan', 'हाँ'}.contains(text);
-
-bool _looksLikeCorrection(String text) => _containsAny(text, const [
-  'असल में',
-  'नहीं',
-  'गलत',
-  'actually',
-  'nahi',
-  'nahin',
-  'correction',
-  'instead',
-]);
-
-bool _sensitive(String text) => _containsAny(text, const [
-  'आत्महत्या',
-  'मर जाना',
-  'खुद को मार',
-  'suicide',
-  'medical',
-  'medical advice',
-  'medicine',
-  'दवा',
-  'डॉक्टर',
-  'doctor',
-  'कानूनी',
-  'legal',
-  'वकील',
-  'lawyer',
-  'loan',
-  'investment',
-  'financial',
-  'sexual',
-  'नशा',
-  'addiction',
-  'drugs',
-  'सिर्फ तुम',
-  'तुम्हारे बिना',
-]);
-
 bool _containsAny(String text, Iterable<String> values) =>
     values.any(text.contains);
-
-String _normalize(String value) => value
-    .replaceAll(RegExp(r'\s+'), ' ')
-    .trim()
-    .toLowerCase()
-    .replaceAll('हिन्दी', 'हिंदी');
 
 String _keyToken(String value) => value
     .toLowerCase()
