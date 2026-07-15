@@ -16,7 +16,7 @@ _repo_root = _this_file.parents[3]
 if str(_agent_root) not in sys.path:
     sys.path.insert(0, str(_agent_root))
 
-from app.context import PromptContextBuilder   # noqa: E402
+from app.context import PromptContextBuilder  # noqa: E402
 
 SYSTEM_PROMPT = (
     "You are a supportive Hindi/Hinglish companion. Keep replies to 1-2 short sentences. "
@@ -79,13 +79,13 @@ def run_agent_contract(contract_path: str, fixture_path: str | None = None) -> t
         for fragment in must_contain_text:
             if fragment not in prompt_text:
                 passed = False
-                failures.append(f"expected text fragment in prompt context (redacted)")
+                failures.append("expected text fragment in prompt context (redacted)")
 
         must_not_contain_text = agent_expect.get("must_not_contain_text", [])
         for fragment in must_not_contain_text:
             if fragment in prompt_text:
                 passed = False
-                failures.append(f"forbidden text fragment found in prompt context (redacted)")
+                failures.append("forbidden text fragment found in prompt context (redacted)")
 
         max_blocks = agent_expect.get("max_memory_blocks")
         if max_blocks is not None and diagnostics.get("memory_blocks_selected", 0) > max_blocks:
@@ -97,9 +97,7 @@ def run_agent_contract(contract_path: str, fixture_path: str | None = None) -> t
         max_chars = agent_expect.get("max_context_chars")
         if max_chars is not None and diagnostics.get("context_chars", 0) > max_chars:
             passed = False
-            failures.append(
-                f"context chars {diagnostics['context_chars']} exceeds max {max_chars}"
-            )
+            failures.append(f"context chars {diagnostics['context_chars']} exceeds max {max_chars}")
 
     result = {
         "fixture_id": fixture_id,

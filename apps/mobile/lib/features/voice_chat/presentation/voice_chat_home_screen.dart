@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/identity/anonymous_device_id.dart';
 import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
+import '../../chat_history/presentation/memory_controls_screen.dart';
 import '../domain/voice_session_state.dart';
 import 'voice_chat_controller.dart';
 
@@ -21,6 +22,15 @@ class VoiceChatHomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Companion AI'),
         actions: [
+          IconButton(
+            tooltip: 'What I remember',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const MemoryControlsScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.psychology_outlined),
+          ),
           IconButton(
             tooltip: 'Clear history',
             onPressed: messages.maybeWhen(

@@ -3,12 +3,14 @@
 This document is the implementation handoff for making Companion AI's memory
 long-term, meaningful, privacy-preserving, and low-latency.
 
-Current status: Phases 1-5 are complete for the current MVP scope. Hindi/Hinglish
+Current status: Phases 1-6 are implemented for the current MVP scope. Hindi/Hinglish
 uses an explicitly selected EmbeddingGemma-plus-deterministic memory policy.
 Phase 5 was revalidated on the rebuilt Android debug APK after the current
 language-policy and voice-transcript fixes.
-Treat the "Implemented so far" and
-"Remaining work" sections as the source of truth before continuing.
+Phase 6 automated suites and Android debug/release builds pass. The configured
+real extractor passed local routine, assistant-commitment, sensitive-content,
+and unavailable-provider checks; physical voice-device and iOS compilation
+remain deployment evidence boundaries.
 
 Verified status:
 
@@ -303,7 +305,7 @@ mobile policy (`MemoryLanguagePolicyRegistry`), separate from fuzzy semantic
 retrieval. A policy owns its language's question markers, observed STT question
 variants, invalid entity values, extraction grammar, confirmation/rejection
 markers, and safe preference phrases. For example, the Hindi policy treats the
-observed Vosk rendering `नाम के है` as a recall question and rejects `के` as a
+observed Vosk rendering `naam ke hai` as a recall question and rejects `ke` as a
 person value.
 
 The realtime agent includes the resolved session language in every
@@ -783,8 +785,8 @@ semantic/episodic retrieval only and cannot override current companion state.
   than deletes the prior local evidence.
 - The pure-Dart Hindi extractor handles supported exact claims for preferred
   name, response language, short replies, listen-first preference, sibling
-  names, and morning walks. It normalizes `हिन्दी`/`हिंदी`, accepts
-  `मेरा`/`मेरी`/`मेरे`, and excludes sensitive content before admission.
+  names, and morning walks. It normalizes common Hindi spellings, accepts
+  `mera`/`meri`/`mere`, and excludes sensitive content before admission.
 - Missing final ASR confidence is `unknown`, not zero. A strict, explicit,
   low-risk deterministic state assertion is committed silently even when final
   confidence is unknown; this is necessary for the active Vosk path to feel
@@ -866,6 +868,137 @@ for admission, receipts, graph, and privacy behavior.
   - Implemented in realtime-agent `memory_lookup_metrics`; collect and assess
     these records during Android validation.
 
+## Phase 6: Ground-Truth Memory Layer (2026-07-15)
+
+Phase 6 implements the hybrid deterministic + asynchronous-LLM design. It does
+not put extraction on the voice hot path and it does not give the extractor
+write authority.
+
+### End-to-end flow
+
+1. A final LiveKit user event is stored locally and immediately runs the
+   existing deterministic exact-fact admission.
+2. A final assistant event completes the exchange and enqueues exactly one
+   local extraction job keyed by session, turn, and extraction version.
+3. After a short idle delay or at session end, the phone sends at most four
+   recent completed exchanges to the stateless `/v1/memory-candidates`
+   endpoint. Partial/low-quality evidence is never silently upgraded.
+4. The configured OpenAI-compatible extraction model returns a strict JSON
+   envelope. Every output field is required (nullable where appropriate),
+   additional properties are forbidden, and provider-side response storage is
+   explicitly disabled. The service retains no dialogue, candidate, vector, or
+   user profile and logs no request text.
+5. Before returning proposals, the stateless API rejects unknown source IDs,
+   role-inconsistent evidence, non-normal sensitivity labels, and locally
+   recognized sensitive evidence. This is defense in depth because a real
+   provider can misclassify sensitive content.
+6. The phone validates source-turn provenance, evidence role, transcript
+   quality, lexical grounding in the cited source, deterministic local
+   sensitivity markers, explicitness, temporal-expression agreement for
+   proposed event timestamps, confidence, future utility, recurrence, and
+   requested action. Provenance must belong to the exact bounded job window,
+   not merely an older turn in the same session. Only the phone commits a memory.
+7. Failed jobs retry with bounded exponential backoff. The voice response does
+   not wait for extraction, client calls have a hard timeout, non-retryable 4xx
+   responses become terminal immediately, stale worker leases are reclaimed,
+   and large backlogs schedule another bounded drain. Extractor failure omits
+   new memory rather than failing conversation.
+
+The LLM may use assistant replies to understand a shared exchange and may
+propose an `assistant_commitment`; assistant text can never prove a user fact.
+`profile` candidates are rejected because exact identity is owned exclusively
+by Companion State. Explicit personal preferences, relationships, and
+boundaries require a user receipt before being treated as confirmed. Sensitive
+candidates fail closed. Arbitrary ontology mutation is not accepted. A
+`SUPERSEDE` proposal is admitted only for an explicit changed goal or routine
+that has an already admitted local target with the same subject and predicate;
+the phone records the replacement link and contradiction audit itself.
+
+### Typed local state
+
+Drift schema version 5 adds:
+
+- `memory_episodes`: an episode record referencing intact source turn IDs,
+  event time, entities/topics, confidence, importance, and sensitivity;
+- `memory_open_threads`: future events, unresolved items, and bounded assistant
+  commitments with separate follow-up/proactive permission flags;
+- `memory_extraction_jobs`: idempotency, attempts, retry time, version, and
+  redacted error state;
+- `memory_candidates`: the local proposal/decision audit, including rejection
+  reason and admitted target ID.
+
+Summaries are secondary indexes, not ground truth. When an episodic result is
+selected, retrieval expands the surrounding original messages from its source
+turn instead of asking the generator to trust only a compressed summary.
+
+### Retrieval and working context
+
+The phone runs deterministic exact resolution and combines FTS5 lexical hits,
+EmbeddingGemma/ObjectBox vector hits, graph expansion, temporal status, and
+open-thread expansion. Results are filtered for quality/sensitivity/receipt
+state before ranking, deduplicated, diversified, and bounded by the existing
+six-packet protocol. Vague cues such as "woh interview kaisa raha?" route to
+episodes/open threads; unrelated ambiguous turns retain the zero-memory
+`broad_safe` behavior.
+
+Explicit name, language, preference, boundary, and work-stress recall intents
+filter FTS, vector, and graph candidates to their typed memory labels. General
+FTS candidates must also pass meaningful lexical relevance, preventing common
+tokens such as `hai` from injecting unrelated memories into vague mood turns.
+
+Unconfirmed or rejected records are excluded independently at SQLite lexical,
+graph/open-thread expansion, vector creation, and realtime prompt-selection
+boundaries. A rejected proposal cannot count as prior evidence for an implied
+recurrence. Separate source events without a grounded timestamp retain distinct
+episode identities, while undated open threads become stale after 30 days.
+
+The realtime agent also emits an `[active_dialogue_state]` block derived only
+from the current bounded dialogue window: topic tokens, explicitly named
+people, current question, recent assistant commitment, time expression, user
+goal, and unresolved pronouns. It is marked as working context, never durable
+evidence. Recent turns remain verbatim and the latest user message remains
+authoritative.
+Context values are explicitly marked as untrusted quoted data. Raw latest-user
+text is not copied into a system-role dialogue-state field; it remains only in
+the authoritative user message.
+
+### User control and encryption
+
+The voice-only app now exposes a read-only "What I remember" screen. A user can
+confirm an uncertain memory or forget an individual memory; Clear History
+deletes transcripts, exact claims, semantic records, episodes, open threads,
+jobs/candidate audits, graph rows, and derived ObjectBox vectors.
+
+Transcript and text-bearing memory SQLite data uses
+SQLite3MultipleCiphers. A random 256-bit key is generated with `Random.secure`
+and stored through platform secure storage. On upgrade, a plaintext database is
+WAL-checkpointed, copied table-by-table into a keyed database, schema version
+and indexes are preserved, `integrity_check` is required, and only then is the
+plaintext copy deleted. Failure restores the original plaintext database rather
+than risking silent data loss. ObjectBox contains derived memory IDs/vectors and
+can be rebuilt from SQLite.
+
+### Configuration boundary
+
+The extraction path is deliberately disabled until both sides are configured:
+
+- API: `API_ENABLE_MEMORY_EXTRACTION=true`, plus extraction base URL, API key,
+  and model;
+- mobile: `--dart-define=ENABLE_MEMORY_EXTRACTION=true`.
+
+This is a deployment safety gate, not a missing code path. Without credentials,
+deterministic memory continues to work and no new extraction jobs are created;
+previously queued jobs remain local. No model
+quality claim is made until the selected real extractor passes the scripted
+Hindi/Hinglish evaluation on real devices.
+
+The queue is an app-lifecycle background queue: it drains during idle/session
+end while the app is running and resumes persisted work on the next launch. It
+does not claim guaranteed execution after the operating system terminates the
+app. The extraction endpoint adds no application authentication by current MVP
+policy; when enabled outside local development it must be protected by a
+trusted/private gateway with access controls and rate limits.
+
 ## Known Gaps And Constraints
 
 - Real ObjectBox HNSW wrapper is wired and admitted memories are synced to it
@@ -883,9 +1016,13 @@ for admission, receipts, graph, and privacy behavior.
   and planning remain deterministic and Qwen flags remain disabled.
 - A rejected deterministic work-stressor memory is now protected from automatic
   re-admission; this is covered by the Flutter database regression test.
-- Phases 1-5 are complete for the current MVP scope. Ubuntu capacity/latency
-  validation and GPU-dependent Qwen reranking/planning remain separate Sprint
-  9+ operational work.
+- Phases 1-6 are implemented for the current MVP scope. The configured real
+  provider passed the local API contract and safety-filter matrix. Broader
+  Hindi/Hinglish voice quality, iOS compilation/device behavior, and
+  release-device encrypted migration still require physical-device evidence
+  and a full Apple toolchain. Ubuntu host capacity/network validation and
+  GPU-dependent Qwen reranking/planning remain separate Sprint 9+ operational
+  work.
 
 ## Handoff Into Sprints 8-10
 

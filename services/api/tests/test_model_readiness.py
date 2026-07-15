@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +33,7 @@ def _service(backend: str = "pytorch") -> ModelServingService:
         reranker_model_name="unused",
         planner_enabled=False,
         planner_model_name="unused",
+        embedding_model_revision="revision-123",
     )
 
 
@@ -42,6 +45,7 @@ def test_embedding_warmup_makes_model_ready_and_serves(monkeypatch) -> None:  # 
     service = _service()
 
     assert service.embedding_readiness()["state"] == "loading"
+    assert service.embedding_readiness()["revision"] == "revision-123"
     asyncio.run(service.warm_up())
 
     assert service.embedding_readiness()["state"] == "ready"
@@ -78,3 +82,60 @@ def test_disabled_embedding_is_ready_without_model_load() -> None:
     asyncio.run(service.warm_up())
 
     assert service.embedding_readiness()["state"] == "disabled"
+
+
+def test_onnx_artifact_revision_must_match(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        "app.embedding_service.SentenceTransformersEmbeddingModel",
+        _FakeEmbeddingModel,
+    )
+    metadata = tmp_path / "companion_model_revision.json"
+    metadata.write_text(
+        json.dumps({"model": "test-model", "revision": "wrong-revision"}),
+        encoding="utf-8",
+    )
+    service = ModelServingService(
+        embedding_enabled=True,
+        embedding_model_name="test-model",
+        embedding_model_revision="revision-123",
+        embedding_dimension=4,
+        embedding_backend="onnx",
+        embedding_model_path=str(tmp_path),
+        reranker_enabled=False,
+        reranker_model_name="unused",
+        planner_enabled=False,
+        planner_model_name="unused",
+    )
+
+    asyncio.run(service.warm_up())
+
+    assert service.embedding_readiness()["state"] == "failed"
+    assert service.embedding_readiness()["error_type"] == "ModelServingUnavailable"
+
+
+def test_onnx_artifact_revision_match_allows_warmup(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        "app.embedding_service.SentenceTransformersEmbeddingModel",
+        _FakeEmbeddingModel,
+    )
+    metadata = tmp_path / "companion_model_revision.json"
+    metadata.write_text(
+        json.dumps({"model": "test-model", "revision": "revision-123"}),
+        encoding="utf-8",
+    )
+    service = ModelServingService(
+        embedding_enabled=True,
+        embedding_model_name="test-model",
+        embedding_model_revision="revision-123",
+        embedding_dimension=4,
+        embedding_backend="onnx",
+        embedding_model_path=str(tmp_path),
+        reranker_enabled=False,
+        reranker_model_name="unused",
+        planner_enabled=False,
+        planner_model_name="unused",
+    )
+
+    asyncio.run(service.warm_up())
+
+    assert service.embedding_readiness()["state"] == "ready"

@@ -29,12 +29,12 @@ storage_expect:
 query:
   text: "मुझे किस भाषा में जवाब पसंद है?"
   expect:
-    must_include_labels: []
+    must_include_labels: [language_style]
     must_not_include_labels: []
     max_packets: 4
     latest_user_authoritative: true
 agent_context_expect:
-  must_contain_labels: [safe_preference]
+  must_contain_labels: [language_style]
   must_contain_text: []
   must_not_contain_labels: []
   must_not_contain_text: []

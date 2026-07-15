@@ -37,6 +37,11 @@ This project is a low-latency Hindi/Hinglish voice-only AI companion MVP for And
   rebuilt-APK Hindi/Hinglish validation are complete. Ubuntu capacity/latency
   validation and GPU-dependent Qwen reranking/planning remain Sprints 8-10
   hardening work.
+- The post-Phase-5 memory layer adds encrypted phone-owned storage, a
+  strict-schema stateless background LLM candidate endpoint, idempotent local
+  extraction jobs, deterministic admission, typed episodes/open threads,
+  FTS5 + vector + graph + temporal retrieval, episode-window expansion, an
+  active-dialogue-state prompt block, and per-memory confirm/forget controls.
 
 ## Sprint Reading Guide
 

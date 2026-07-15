@@ -30,15 +30,24 @@ void main() {
     addTearDown(database.close);
 
     await _seedData(database, seedSessions);
+    // Retrieval must never use unconfirmed memories. The benchmark models the
+    // post-confirmation product state so receipt isolation and retrieval
+    // quality are both measured honestly.
+    final pending = await database.readPendingMemoryReceipts(limit: 100);
+    for (final memory in pending) {
+      await database.confirmMemory(memory.id);
+    }
 
     final queryResults = <Map<String, dynamic>>[];
     for (final q in queries) {
       final queryData = q as Map<String, dynamic>;
       final text = queryData['text'] as String? ?? '';
       final relevantLabels =
-          (queryData['relevant_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (queryData['relevant_labels'] as List<dynamic>?)?.cast<String>() ??
+          [];
       final irrelevantLabels =
-          (queryData['irrelevant_labels'] as List<dynamic>?)?.cast<String>() ?? [];
+          (queryData['irrelevant_labels'] as List<dynamic>?)?.cast<String>() ??
+          [];
       final category = queryData['category'] as String? ?? 'general';
 
       final memories = await database.readMemoryContext(
@@ -68,7 +77,8 @@ void main() {
       'by_category': byCategory,
       'overall': overall,
       'total_queries': queries.length,
-      'seed_memory_count': (await database.select(database.memoryRecords).get()).length,
+      'seed_memory_count':
+          (await database.select(database.memoryRecords).get()).length,
     };
 
     stdout.writeln(jsonEncode(output));
@@ -145,7 +155,7 @@ Map<String, dynamic> _evaluateQuery({
     precision = returnedLabels.isEmpty ? 1.0 : 0.0;
   } else {
     final truePositives = returnedSet.intersection(relevantSet).length;
-    precision = returnedLabels.isEmpty ? 1.0 : truePositives / returnedLabels.length;
+    precision = returnedSet.isEmpty ? 1.0 : truePositives / returnedSet.length;
     recall = truePositives / relevantLabels.length;
   }
 
@@ -164,7 +174,9 @@ Map<String, dynamic> _evaluateQuery({
     f1 = 2 * (precision * recall) / (precision + recall);
   }
 
-  final irrelevantReturned = returnedSet.intersection(irrelevantLabels.toSet()).length;
+  final irrelevantReturned = returnedSet
+      .intersection(irrelevantLabels.toSet())
+      .length;
 
   return {
     'query_text_hash': _hashText(text),
@@ -177,7 +189,8 @@ Map<String, dynamic> _evaluateQuery({
     'f1': f1,
     'mrr': mrr,
     'irrelevant_intrusions': irrelevantReturned,
-    'passed': irrelevantReturned == 0 && (relevantLabels.isEmpty || recall >= 0.5),
+    'passed':
+        irrelevantReturned == 0 && (relevantLabels.isEmpty || recall >= 0.5),
   };
 }
 
@@ -216,10 +229,12 @@ Map<String, dynamic> _computeOverall(
   Map<String, dynamic> categories,
 ) {
   final n = results.length;
-  final relevantResults =
-      results.where((r) => (r['relevant_labels'] as List).isNotEmpty).toList();
-  final generalResults =
-      results.where((r) => (r['relevant_labels'] as List).isEmpty).toList();
+  final relevantResults = results
+      .where((r) => (r['relevant_labels'] as List).isNotEmpty)
+      .toList();
+  final generalResults = results
+      .where((r) => (r['relevant_labels'] as List).isEmpty)
+      .toList();
 
   return {
     'total_queries': n,

@@ -15,6 +15,14 @@ from app.embedding_service import (
     ModelServingUnavailable,
     RetrievalPlan,
 )
+from app.memory_extraction import (
+    MemoryCandidateExtractor,
+    MemoryExtractionRequest,
+    MemoryExtractionResponse,
+    MemoryExtractionUnavailable,
+    OpenAICompatibleMemoryCandidateExtractor,
+    filter_source_safe_candidates,
+)
 from app.session_store import RateLimitExceeded, SessionStore
 
 settings = Settings()
@@ -23,6 +31,7 @@ agent_assigner = AgentAssigner(settings)
 model_serving = ModelServingService(
     embedding_enabled=settings.enable_memory_embeddings,
     embedding_model_name=settings.memory_embedding_model,
+    embedding_model_revision=settings.memory_embedding_revision,
     embedding_dimension=settings.memory_embedding_dimension,
     embedding_backend=settings.memory_embedding_backend,
     embedding_model_path=settings.memory_embedding_model_path,
@@ -30,6 +39,12 @@ model_serving = ModelServingService(
     reranker_model_name=settings.memory_reranker_model,
     planner_enabled=settings.enable_memory_planner,
     planner_model_name=settings.memory_planner_model,
+)
+memory_candidate_extractor: MemoryCandidateExtractor = OpenAICompatibleMemoryCandidateExtractor(
+    base_url=settings.memory_extraction_base_url,
+    api_key=settings.memory_extraction_api_key,
+    model=settings.memory_extraction_model,
+    timeout_seconds=settings.memory_extraction_timeout_seconds,
 )
 
 
@@ -173,6 +188,10 @@ def get_model_serving() -> ModelServingService:
     return model_serving
 
 
+def get_memory_candidate_extractor() -> MemoryCandidateExtractor:
+    return memory_candidate_extractor
+
+
 @app.get("/health")
 async def health() -> dict[str, object]:
     return {"status": "ok", "service": settings.service_name}
@@ -271,6 +290,27 @@ async def memory_plan(
     )
 
 
+@app.post("/v1/memory-candidates", response_model=MemoryExtractionResponse)
+async def memory_candidates(
+    request: MemoryExtractionRequest,
+    extractor: Annotated[MemoryCandidateExtractor, Depends(get_memory_candidate_extractor)],
+) -> MemoryExtractionResponse:
+    if not settings.enable_memory_extraction:
+        raise HTTPException(status_code=503, detail={"code": "memory_extraction_disabled"})
+    try:
+        candidates = await extractor.extract(request)
+    except MemoryExtractionUnavailable as error:
+        raise HTTPException(
+            status_code=503, detail={"code": "memory_extraction_unavailable"}
+        ) from error
+    safe_candidates = filter_source_safe_candidates(request, candidates)
+    return MemoryExtractionResponse(
+        job_id=request.job_id,
+        extraction_version=request.extraction_version,
+        candidates=safe_candidates,
+    )
+
+
 @app.post("/v1/session", response_model=CreateSessionResponse)
 async def create_session(
     request: CreateSessionRequest,
@@ -300,6 +340,7 @@ async def create_session(
     try:
         await assigner.assign(session=session)
     except AgentAssignmentFailed as error:
+        await assigner.cancel(session_id=session.session_id)
         session_store.end_session(
             session_id=session.session_id,
             device_id=request.device_id,
@@ -373,9 +414,12 @@ async def livekit_token(
 async def end_session(
     request: EndSessionRequest,
     session_store: Annotated[SessionStore, Depends(get_store)],
+    assigner: Annotated[AgentAssigner, Depends(get_agent_assigner)],
 ) -> dict[str, bool]:
     ended = session_store.end_session(
         session_id=request.session_id,
         device_id=request.device_id,
     )
+    if ended:
+        await assigner.cancel(session_id=request.session_id)
     return {"ended": ended}

@@ -77,6 +77,10 @@ extension CompanionMemoryStore on AppDatabase {
       await customStatement('DELETE FROM memory_entity_aliases');
       await customStatement('DELETE FROM companion_state');
       await customStatement('DELETE FROM memory_claims');
+      await customStatement('DELETE FROM memory_candidates');
+      await customStatement('DELETE FROM memory_extraction_jobs');
+      await customStatement('DELETE FROM memory_open_threads');
+      await customStatement('DELETE FROM memory_episodes');
     });
   }
 
@@ -103,6 +107,10 @@ extension CompanionMemoryStore on AppDatabase {
       memoryEntities,
       memoryEdges,
       memoryContradictions,
+      memoryCandidates,
+      memoryExtractionJobs,
+      memoryOpenThreads,
+      memoryEpisodes,
     ]);
   }
 

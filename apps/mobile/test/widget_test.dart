@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:companion_mobile/app.dart';
 import 'package:companion_mobile/core/audio/audio_session_service.dart';
+import 'package:companion_mobile/core/config/app_config.dart';
 import 'package:companion_mobile/core/identity/anonymous_device_id.dart';
 import 'package:companion_mobile/core/permissions/microphone_permission_service.dart';
 import 'package:companion_mobile/core/privacy/consent_store.dart';
@@ -245,15 +247,140 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 1));
   });
+
+  testWidgets(
+    'live final-turn events run deterministic admission and enqueue background extraction',
+    (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final liveKit = _FakeLiveKitConnectionService();
+      addTearDown(database.close);
+      await tester.pumpWidget(
+        _testApp(database, liveKit: liveKit, memoryExtractionEnabled: true),
+      );
+      await tester.tap(find.text('Start voice session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Agree'));
+      await tester.pumpAndSettle();
+
+      liveKit.emitEvent(
+        const LiveKitDataEvent(
+          type: 'transcript_final',
+          sequence: 20,
+          sessionId: 'session_test',
+          timestampMs: 20,
+          turnId: 'turn_live_memory',
+          payload: {
+            'text': 'mera naam Rahul hai',
+            'status': 'final',
+            'language': 'hi-IN',
+            'confidence': 0.96,
+          },
+        ),
+      );
+      liveKit.emitEvent(
+        const LiveKitDataEvent(
+          type: 'assistant_transcript_final',
+          sequence: 21,
+          sessionId: 'session_test',
+          timestampMs: 21,
+          turnId: 'turn_live_memory',
+          payload: {
+            'text': 'Namaste Rahul, tumse milkar accha laga.',
+            'status': 'final',
+            'language': 'hi-IN',
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final records = await database.select(database.memoryRecords).get();
+      expect(records.any((record) => record.label == 'preferred_name'), isTrue);
+      final jobs = await database.select(database.memoryExtractionJobs).get();
+      expect(jobs, hasLength(1));
+      expect(jobs.single.status, 'pending');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
+  testWidgets('memory controls confirm, embed, and forget one memory', (
+    tester,
+  ) async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    final vectorIndex = InMemoryMemoryVectorIndex();
+    addTearDown(database.close);
+    await database.upsertMessage(
+      ChatMessagesCompanion.insert(
+        id: 'u_control',
+        sessionId: 'session_test',
+        turnId: 'turn_control',
+        role: 'user',
+        messageText: 'Asha meri close friend hai',
+        status: 'final',
+        language: 'hi-IN',
+        createdAt: 1,
+        sttConfidence: const Value(0.96),
+      ),
+    );
+    await database
+        .into(database.memoryRecords)
+        .insert(
+          MemoryRecordsCompanion.insert(
+            id: 'memory_control',
+            kind: 'semantic',
+            label: 'relationship',
+            content: 'Asha is a close friend.',
+            canonicalText: const Value('asha close friend'),
+            sourceTurnIdsJson: jsonEncode(['turn_control']),
+            sourceRole: 'user',
+            transcriptStatus: 'validated_completed_turn',
+            createdAt: 1,
+            updatedAt: 1,
+            confidenceScore: 0.9,
+            importanceScore: 0.8,
+            receiptState: const Value('unconfirmed'),
+          ),
+        );
+
+    await tester.pumpWidget(_testApp(database, vectorIndex: vectorIndex));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.psychology_outlined));
+    await tester.pumpAndSettle();
+    expect(find.text('Asha is a close friend.'), findsOneWidget);
+    expect(find.text('needs confirmation'), findsOneWidget);
+
+    await tester.tap(find.text('Confirm'));
+    await tester.pumpAndSettle();
+    expect(
+      (await database.select(database.memoryRecords).getSingle()).receiptState,
+      'confirmed',
+    );
+    expect(await vectorIndex.count(), 1);
+
+    await tester.tap(find.text('Forget'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Forget'));
+    await tester.pumpAndSettle();
+    expect(await database.select(database.memoryRecords).get(), isEmpty);
+    expect(await vectorIndex.count(), 0);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 1));
+  });
 }
 
 Widget _testApp(
   AppDatabase database, {
   _FakeLiveKitConnectionService? liveKit,
   InMemoryMemoryVectorIndex? vectorIndex,
+  bool memoryExtractionEnabled = false,
 }) {
   return ProviderScope(
     overrides: [
+      appConfigProvider.overrideWith(
+        (ref) => AppConfig(enableMemoryExtraction: memoryExtractionEnabled),
+      ),
       appDatabaseProvider.overrideWith((ref) => database),
       memoryVectorIndexProvider.overrideWith(
         (ref) async => vectorIndex ?? InMemoryMemoryVectorIndex(),

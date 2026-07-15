@@ -92,20 +92,20 @@ tests continue to cover request sequence and stale/timeout behaviour.
 
 ```text
 companion-ai/
-├── scripts/
-│   ├── run-memory-eval.sh               # Existing required gate
-│   └── run-memory-quality-lab.sh         # New wrapper: gate + fixtures + report
-│
-├── evaluation/memory/
-│   ├── fixtures/                         # Small synthetic JSONL/YAML scenarios
-│   ├── schemas/                          # Scenario and report schemas
-│   └── reports/                          # Gitignored local/CI artifacts only
-│
-├── apps/mobile/test/                     # Existing tests; targeted fixture adapter
-├── services/realtime-agent/tests/         # Existing tests; targeted packet/prompt adapter
-│
-└── docs/evals/
-    └── memory_quality_lab.md             # Runbook and report interpretation
+|-- scripts/
+|   |-- run-memory-eval.sh               # Existing required gate
+|   `-- run-memory-quality-lab.sh         # New wrapper: gate + fixtures + report
+|
+|-- evaluation/memory/
+|   |-- fixtures/                         # Small synthetic JSONL/YAML scenarios
+|   |-- schemas/                          # Scenario and report schemas
+|   `-- reports/                          # Gitignored local/CI artifacts only
+|
+|-- apps/mobile/test/                     # Existing tests; targeted fixture adapter
+|-- services/realtime-agent/tests/        # Existing tests; targeted packet/prompt adapter
+|
+`-- docs/evals/
+    `-- memory_quality_lab.md             # Runbook and report interpretation
 ```
 
 `evaluation/memory/reports/` must be gitignored. Committed fixtures contain
@@ -148,7 +148,7 @@ transport, or a real LLM response.
 ### 7.1 Start small
 
 The current direct tests already form most of the deterministic dataset. Add
-only **15–20 structured gap fixtures** initially. Do not create a 60–100 case
+only **15-20 structured gap fixtures** initially. Do not create a 60-100 case
 benchmark before there is evidence that it is needed.
 
 The first fixtures should cover gaps that are difficult to see in the current
@@ -201,7 +201,7 @@ sessions:
         transcript_status: final
         stt_confidence: 0.98
         offset_ms: 2000
-        text: "अब advice bhi de sakte ho."
+        text: "Ab advice bhi de sakte ho."
 storage_expect:
   must_exist: [comfort_style_advice_allowed]
   must_be_superseded: [comfort_style_listen_only]
@@ -234,7 +234,7 @@ Contract rules:
 - The product owner assigns at least one native or professionally fluent
   Hindi/Hinglish reviewer for language-sensitive fixtures.
 - Begin with a review pilot of 10 fixtures. Record review effort and ambiguity
-  findings, then decide whether to expand to 15–20.
+  findings, then decide whether to expand to 15-20.
 - A fixture review checks: natural language, asserted memory semantics,
   intended route, safety classification, expected IDs, and whether it overlaps
   an existing direct test.
@@ -355,7 +355,7 @@ A candidate is an improvement only when:
 
 ## 11. Rollout
 
-### Stage A — Structured fixtures and reporting
+### Stage A - Structured fixtures and reporting
 
 **Goal:** Make the existing deterministic gate easier to inspect and extend.
 
@@ -367,7 +367,7 @@ Tasks:
 3. Add temporary database/clock fixture adapter using real mobile memory code.
 4. Add validated lookup-response contract fixture into existing agent prompt
    tests; do not add a network bridge.
-5. Write/review the 10-fixture pilot, then expand to 15–20 only if the review
+5. Write/review the 10-fixture pilot, then expand to 15-20 only if the review
    process is clear.
 6. Create JSON/Markdown redacted reports.
 
@@ -375,12 +375,12 @@ Exit criteria:
 
 - Existing `scripts/run-memory-eval.sh` remains green and semantically
   unchanged.
-- One scenario proves real mobile state → selected packet contract → real agent
+- One scenario proves real mobile state -> selected packet contract -> real agent
   prompt assertion.
 - All pilot fixtures are schema-valid, reproducible by ID, and reviewed.
 - The report contains no transcript/memory/prompt text.
 
-### Stage B — Regression discipline and targeted diagnostics
+### Stage B - Regression discipline and targeted diagnostics
 
 **Goal:** Turn every confirmed memory bug into a permanent safety-preserving
 test.
@@ -401,13 +401,13 @@ Exit criteria:
 - A deliberately regressive candidate is rejected because it fails a protected
   fixture or the existing gate.
 
-### Stage C — Agent triage and proposal workflow
+### Stage C - Agent triage and proposal workflow
 
 **Goal:** Reduce time from failed test to evidence-backed proposed fix.
 
 Tasks:
 
-1. Define the agent’s report input/output format and allowed filesystem/test
+1. Define the agent's report input/output format and allowed filesystem/test
    actions.
 2. Generate failure classification, proposed minimal fixture, patch hypothesis,
    and baseline/candidate report.
@@ -427,7 +427,7 @@ The following are not part of the first implementation because they add cost or
 complexity without current evidence of memory-layer value:
 
 - A live Dart-to-Python HTTP/gRPC bridge or a new evaluation service.
-- A 60–100+ case benchmark, unrestricted synthetic mutation generator, or
+- A 60-100+ case benchmark, unrestricted synthetic mutation generator, or
   benchmark dashboards.
 - LLM-as-a-judge, response-tone scoring, external judge-provider governance,
   or judge calibration.
@@ -461,7 +461,7 @@ fixtures.
 3. Add one temporary-DB structured fixture that proves mobile result to agent
    prompt contract.
 4. Add and review the 10-fixture pilot.
-5. Expand to 15–20 evidence-driven fixtures and protected cases.
+5. Expand to 15-20 evidence-driven fixtures and protected cases.
 6. Add baseline/candidate report comparison.
 7. Add agent triage/proposal workflow.
 8. Reconsider deferred features only after the above produces real failure

@@ -1,10 +1,21 @@
-# Hindi/Hinglish Deterministic Memory Evaluation
+# Hindi/Hinglish Long-Term Memory Evaluation
 
 Run the automated suite from the repository root:
 
 ```bash
 scripts/run-memory-eval.sh
 ```
+
+Run the complete protected-fixture and retrieval-quality gate with:
+
+```bash
+scripts/run-memory-quality-lab.sh --benchmark
+```
+
+The benchmark is fail-closed: every query assertion must pass and irrelevant
+intrusions must remain zero. Baseline mode returns a failure when retrieval
+assertions fail, and comparison mode rejects fixture, readiness, or benchmark
+metric regressions.
 
 The suite is a regression gate for the phone-owned Hindi/Hinglish MVP. It must
 pass before a real-phone memory validation run.
@@ -24,6 +35,16 @@ pass before a real-phone memory validation run.
 | Timeout/failure | Lookup continues without memory when mobile/vector/rerank paths fail. |
 | Context budget | Prompt context remains bounded and reports its character count. |
 | Strategy isolation | `hi-IN` resolves deterministic retrieval/reranking/planning and invokes no model path. |
+| Live ingestion | Final LiveKit user/assistant events run exact admission and enqueue one idempotent background job. |
+| Candidate provenance | Assistant-only text cannot become a user fact; unknown source turns are rejected. |
+| Window isolation | A valid turn from the same session but outside the claimed extraction window is rejected. |
+| Local schema defense | Malformed items, out-of-range scores, extra output properties, and incomplete strict schemas fail closed. |
+| Retry lifecycle | HTTP timeout, terminal 4xx, exponential retry cap, stale lease recovery, and backlog continuation are covered. |
+| Episodes | Typed episodes retain source turn IDs and retrieval expands the surrounding raw turns. |
+| Open threads | A future event can be found from a vague Hindi/Hinglish follow-up. |
+| Sensitive candidates | The LLM proposal is rejected locally and never becomes a retrievable record. |
+| Receipt isolation | Unconfirmed memory is excluded from lexical, graph, vector, session-start, and realtime prompt paths. |
+| Encryption migration | Existing plaintext SQLite data is migrated to SQLite3MultipleCiphers without row loss. |
 
 ## Pass criteria
 
@@ -32,6 +53,12 @@ pass before a real-phone memory validation run.
 - Hindi/Hinglish strategy isolation remains true.
 - Safety/sensitive-memory exclusion has zero failures.
 - Context injection stays within the configured six packets and character budget.
+- The stateless extraction API accepts only its strict bounded schema and is
+  fail-closed while disabled or unavailable.
+- The deterministic retrieval benchmark passes 12/12 queries with zero
+  irrelevant intrusions. The 2026-07-15 audited baseline records 1.0 precision,
+  recall, F1, and MRR for relevant queries; greeting and vague-mood queries
+  return no unrelated memory.
 
 ## Real-phone protocol
 
@@ -48,6 +75,13 @@ conversation.
 5. Start a new session and repeat the grounded office recall.
 6. Explicitly say "nahi yaad mat rakhna" for a pending memory; verify it is not
    recalled afterwards.
+7. For the asynchronous extractor, state one bounded non-sensitive event that
+   is not an exact profile fact, wait at least five seconds while the app stays
+   open, and verify that the voice response was not delayed by extraction.
+8. Open "What I remember" and verify the event has grounded source evidence.
+   Start another session and ask about the event using different wording.
+9. Close and relaunch the app before the queued-work check. Verify any persisted
+   job resumes without duplicating the admitted memory.
 
 ## Historical measured phone run: 2026-07-11
 
@@ -68,13 +102,10 @@ showed the following results:
 
 The phone run used only non-sensitive content. No transcript text is included in
 this evidence table. This run predates the current EmbeddingGemma/ONNX default
-and the latest topic/coalescing/echo fixes. Phase 5 is not closed until the
-rebuilt APK is installed and all affected scenarios are repeated, including the
-final rejection/exclusion scenario. The automated docs gate is also currently
-blocked by pre-existing non-ASCII characters in the untracked
-`docs/MEMORY_QUALITY_LAB_PLAN.md` file. The Android acceptance protocol itself
-has passed on the fixed APK; Phase 5 should not be called repository-green
-until that unrelated docs gate is repaired.
+and Phase 6 asynchronous extractor. The affected deterministic scenarios were
+subsequently repeated on the rebuilt APK and the docs gate was repaired. The
+Phase 6 real-provider event, persisted-job resume, and encrypted release-device
+checks still require the current physical-phone run.
 
 Capture `companion.memory`, `companion.voice.memory`, `memory_lookup_metrics`,
 `memory_lookup_response`, and `prompt_context`. The logs must contain route,

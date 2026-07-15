@@ -37,6 +37,10 @@ void main() {
 
       expect(hits.first.memoryId, 'memory_work');
 
+      await index.delete('memory_work');
+      hits = await index.search(queryEmbedding: _embedding(third: 1), limit: 2);
+      expect(hits.any((hit) => hit.memoryId == 'memory_work'), isFalse);
+
       await index.deleteAll();
       hits = await index.search(queryEmbedding: _embedding(first: 1), limit: 2);
 

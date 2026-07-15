@@ -38,11 +38,12 @@ void main() {
     final database = AppDatabase.forTesting(NativeDatabase(dbFile));
     addTearDown(() async {
       await database.close();
-      try { dbFile.deleteSync(); } catch (_) {}
+      try {
+        dbFile.deleteSync();
+      } catch (_) {}
     });
 
     final trace = <Map<String, dynamic>>[];
-    String? lastAssistantText;
     int sessionCount = 0;
 
     for (int turnIdx = 0; turnIdx < turns.length; turnIdx++) {
@@ -86,8 +87,11 @@ void main() {
       final memoryBlocks = memories.map(_toBlock).toList();
       final packetCount = memories.length;
 
-      final mockResponse = _generateMockResponse(text, retrievedLabels, afterRecords);
-      lastAssistantText = mockResponse;
+      final mockResponse = _generateMockResponse(
+        text,
+        retrievedLabels,
+        afterRecords,
+      );
 
       await database.upsertAssistantMessageAndSummarizeTurn(
         ChatMessagesCompanion.insert(
@@ -110,14 +114,18 @@ void main() {
       }
       final finalByTemporal = <String, int>{};
       for (final r in finalRecords) {
-        finalByTemporal[r.temporalStatus] = (finalByTemporal[r.temporalStatus] ?? 0) + 1;
+        finalByTemporal[r.temporalStatus] =
+            (finalByTemporal[r.temporalStatus] ?? 0) + 1;
       }
       final finalByReceipt = <String, int>{};
       for (final r in finalRecords) {
-        finalByReceipt[r.receiptState] = (finalByReceipt[r.receiptState] ?? 0) + 1;
+        finalByReceipt[r.receiptState] =
+            (finalByReceipt[r.receiptState] ?? 0) + 1;
       }
 
-      final pendingReceipts = await database.readPendingMemoryReceipts(limit: 4);
+      final pendingReceipts = await database.readPendingMemoryReceipts(
+        limit: 4,
+      );
 
       trace.add({
         'turn_index': turnIdx,
@@ -146,7 +154,7 @@ void main() {
         },
       });
 
-      if (lastAssistantText != null && _shouldStartNewSession(text)) {
+      if (_shouldStartNewSession(text)) {
         sessionCount++;
       }
     }
@@ -156,7 +164,8 @@ void main() {
       'total_turns': turns.length,
       'turns': trace,
       'final_db_state': {
-        'total_records': (await database.select(database.memoryRecords).get()).length,
+        'total_records':
+            (await database.select(database.memoryRecords).get()).length,
       },
     };
 
@@ -206,7 +215,11 @@ String _generateMockResponse(
   if (_containsAny(normalized, ['namaste', 'hi', 'hello', 'hey'])) {
     return 'Namaste! Kaise ho aap?';
   }
-  if (_containsAny(normalized, ['naam kya hai', 'naam yaad hai', 'mere baare mein'])) {
+  if (_containsAny(normalized, [
+    'naam kya hai',
+    'naam yaad hai',
+    'mere baare mein',
+  ])) {
     final name = allRecords
         .where((r) => r.label == 'preferred_name')
         .map((r) => r.content)
@@ -217,7 +230,8 @@ String _generateMockResponse(
     }
     return 'Haan, mujhe yaad hai aapke baare mein.';
   }
-  if (_containsAny(normalized, ['naam']) || retrievedLabels.contains('preferred_name')) {
+  if (_containsAny(normalized, ['naam']) ||
+      retrievedLabels.contains('preferred_name')) {
     final name = allRecords
         .where((r) => r.label == 'preferred_name')
         .map((r) => r.content)
@@ -227,7 +241,13 @@ String _generateMockResponse(
       return 'Achha $extracted, yaad rakhoonga.';
     }
   }
-  if (_containsAny(normalized, ['office', 'manager', 'boss', 'kaam', 'pressure'])) {
+  if (_containsAny(normalized, [
+    'office',
+    'manager',
+    'boss',
+    'kaam',
+    'pressure',
+  ])) {
     return 'Main samajh raha hoon, office ka pressure tough hota hai. Aap apna dhyaan rakhiye.';
   }
   if (_containsAny(normalized, ['walk', 'exercise', 'subah', 'routine'])) {
@@ -242,13 +262,23 @@ String _generateMockResponse(
   if (_containsAny(normalized, ['mat karna', 'mat kar', 'boundary', 'call'])) {
     return 'Theek hai, avoid karoonga.';
   }
-  if (_containsAny(normalized, ['behen', 'bhai', 'sister', 'brother', 'family'])) {
+  if (_containsAny(normalized, [
+    'behen',
+    'bhai',
+    'sister',
+    'brother',
+    'family',
+  ])) {
     return 'Achha, yaad rakhoonga aapki family ke baare mein.';
   }
   if (_containsAny(normalized, ['yaad rakhna', 'yaad rakho'])) {
     return 'Haan, zaroor yaad rakhoonga.';
   }
-  if (_containsAny(normalized, ['yaad mat rakhna', 'yaad mat karo', 'nahi yaad'])) {
+  if (_containsAny(normalized, [
+    'yaad mat rakhna',
+    'yaad mat karo',
+    'nahi yaad',
+  ])) {
     return 'Theek hai, nahi rakhoonga yaad.';
   }
   return 'Haan, main sun raha hoon. Aap batao na.';

@@ -32,7 +32,15 @@ tmp_dir="$repo_root/tmp/memory_quality_lab_$$"
 mobile_dir="$repo_root/apps/mobile"
 agent_dir="$repo_root/services/realtime-agent"
 
-PYTHON="python3"
+# Fixture validation needs PyYAML + jsonschema. Both are declared and locked by
+# the realtime-agent project, so use that managed interpreter instead of an
+# arbitrary system Python whose packages vary by developer machine.
+PYTHON="$agent_dir/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]] || ! "$PYTHON" -c 'import jsonschema, yaml' >/dev/null 2>&1; then
+  echo "ERROR: memory-lab Python dependencies are unavailable." >&2
+  echo "Run 'uv sync' in $agent_dir, then retry." >&2
+  exit 4
+fi
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -202,7 +210,7 @@ with open('$json_path', 'w', encoding='utf-8') as f:
 # ---------------------------------------------------------------------------
 validate_fixture() {
   local fixture_path="$1"
-  $PYTHON "$schema_dir/validate_schemas.py" --fixture "$fixture_path" 2>/dev/null
+  "$PYTHON" "$schema_dir/validate_schemas.py" --fixture "$fixture_path"
 }
 
 # ---------------------------------------------------------------------------
@@ -341,6 +349,16 @@ print('yes' if d.get('agent_context_expect') else 'no')
       echo "OK"
     else
       echo "FAILED"
+      echo "$agent_output" | $PYTHON -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    print('    agent contract returned invalid JSON')
+else:
+    for failure in data.get('agent_failures', []):
+        print(f'    {failure}')
+" 2>/dev/null || true
       agent_pass=false
     fi
   else
@@ -418,6 +436,7 @@ if $RUN_BENCHMARK; then
   echo "=== Stage 4: Retrieval benchmark ==="
   if [[ ! -f "$benchmark_json_path" ]]; then
     echo "  SKIP: benchmark config not found at $benchmark_json_path"
+    benchmark_passed=false
   else
     benchmark_start_sec=$SECONDS
     benchmark_output_json="$tmp_dir/benchmark_output.json"
@@ -438,9 +457,20 @@ m = re.search(r'\{.*\}', line)
 if m:
     with open('$benchmark_output_json', 'w') as f:
         json.dump(json.loads(m.group(0)), f, indent=2)
-    print('OK')
 " 2>/dev/null
-        benchmark_passed=true
+        if "$PYTHON" -c "
+import json, sys
+with open('$benchmark_output_json', encoding='utf-8') as f:
+    data = json.load(f)
+overall = data.get('overall', {})
+sys.exit(0 if overall.get('fail_count', 1) == 0 and overall.get('total_irrelevant_intrusions', 1) == 0 else 1)
+"; then
+          echo "OK"
+          benchmark_passed=true
+        else
+          echo "FAILED (retrieval assertions)"
+          benchmark_passed=false
+        fi
       else
         echo "FAILED (no output)"
         benchmark_passed=false
@@ -460,6 +490,9 @@ total_duration_ms=$(( ($SECONDS - overall_start_sec) * 1000 ))
 # ---------------------------------------------------------------------------
 ready=1
 if [[ "$p0_failures" -gt 0 || "$p1_failures" -gt 0 ]] || ! $gate_passed; then
+  ready=0
+fi
+if $RUN_BENCHMARK && ! $benchmark_passed; then
   ready=0
 fi
 
@@ -607,7 +640,7 @@ if [[ "$MODE" == "baseline" ]]; then
   echo ""
   echo "Baseline saved: $baseline_file"
   rm -rf "$tmp_dir"
-  exit 0
+  if [[ "$ready" -eq 1 ]]; then exit 0; else exit 1; fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -638,6 +671,7 @@ improvements = []
 unchanged = []
 new_fixtures = []
 removed_fixtures = []
+benchmark_regressions = []
 
 for fid in all_ids:
     bl = baseline_results.get(fid)
@@ -652,6 +686,17 @@ for fid in all_ids:
         improvements.append(fid)
     else:
         unchanged.append(fid)
+
+baseline_benchmark = baseline.get('benchmark', {}).get('overall')
+candidate_benchmark = candidate.get('benchmark', {}).get('overall')
+if baseline_benchmark and not candidate_benchmark:
+    benchmark_regressions.append('benchmark results missing')
+elif baseline_benchmark and candidate_benchmark:
+    for metric in ('precision', 'recall', 'mrr'):
+        if candidate_benchmark.get(metric, 0) < baseline_benchmark.get(metric, 0):
+            benchmark_regressions.append(f'{metric} decreased')
+    if candidate_benchmark.get('irrelevant_intrusions', 0) > baseline_benchmark.get('irrelevant_intrusions', 0):
+        benchmark_regressions.append('irrelevant intrusions increased')
 
 comparison = {
     'baseline': {
@@ -675,9 +720,11 @@ comparison = {
     'unchanged': unchanged,
     'new_fixtures': new_fixtures,
     'removed_fixtures': removed_fixtures,
+    'readiness_regression': bool(baseline['summary']['ready'] and not candidate['summary']['ready']),
+    'benchmark_regressions': benchmark_regressions,
     'regression_count': len(regressions),
     'improvement_count': len(improvements),
-    'verdict': 'reject' if regressions else ('improved' if improvements else 'unchanged'),
+    'verdict': 'reject' if regressions or benchmark_regressions or (baseline['summary']['ready'] and not candidate['summary']['ready']) else ('improved' if improvements else 'unchanged'),
 }
 with open('$comparison_json', 'w', encoding='utf-8') as f:
     json.dump(comparison, f, indent=2, ensure_ascii=False)
@@ -699,6 +746,10 @@ print(f\"Candidate: {cd['pass']}P/{cd['fail']}F/{cd['total']}T  (ready: {cd['rea
 print()
 print(f\"Regressions: {c['regression_count']}\")
 for r in c['regressions']: print(f'  FAIL (was pass): {r}')
+if c.get('readiness_regression'):
+    print('  FAIL: candidate readiness regressed')
+for regression in c.get('benchmark_regressions', []):
+    print(f'  FAIL: benchmark {regression}')
 print(f\"Improvements: {c['improvement_count']}\")
 for i in c['improvements']: print(f'  PASS (was fail): {i}')
 print(f\"Unchanged: {len(c['unchanged'])}\")
@@ -717,7 +768,7 @@ print(f\"Verdict: {c['verdict'].upper()}\")
 import json, sys
 with open('$comparison_json', encoding='utf-8') as f:
     c = json.load(f)
-sys.exit(0 if c.get('regression_count', 0) == 0 else 1)
+sys.exit(0 if c.get('regression_count', 0) == 0 and not c.get('readiness_regression', False) and not c.get('benchmark_regressions') else 1)
 " 2>/dev/null; then
     exit 0
   else

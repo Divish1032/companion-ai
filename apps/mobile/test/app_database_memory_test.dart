@@ -53,7 +53,7 @@ void main() {
       limit: 6,
     );
     final languageMemories = await database.readMemoryContext(
-      latestUserText: 'मुझे किस language में reply पसंद है?',
+      latestUserText: 'मुझे किस भाषा में जवाब पसंद है?',
       limit: 6,
     );
 
@@ -100,6 +100,32 @@ void main() {
     );
   });
 
+  test('vague mood turns do not match unrelated semantic stopwords', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    for (final entry in [
+      ('comfort', 'turn_comfort', 'advice se pehle bas sunna pasand hai'),
+      ('goal', 'turn_goal', 'mera goal fitness improve karna hai'),
+      ('traffic', 'turn_traffic', 'traffic se stress hota hai'),
+    ]) {
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: entry.$1,
+          turnId: entry.$2,
+          text: entry.$3,
+          confidence: 0.96,
+        ),
+      );
+    }
+
+    final memories = await database.readMemoryContext(
+      latestUserText: 'aaj mood off hai',
+      limit: 6,
+    );
+
+    expect(memories, isEmpty);
+  });
+
   test(
     'question-shaped recall turns do not overwrite preferred name memory',
     () async {
@@ -122,7 +148,6 @@ void main() {
           confidence: 0.98,
         ),
       );
-
       final memories = await database.readMemoryContext(
         latestUserText: 'मेरा नाम क्या है?',
         limit: 6,
@@ -182,7 +207,6 @@ void main() {
           text: 'ठीक है, चाय याद रखूँगा।',
         ),
       );
-
       final memories = await database.readMemoryContext(
         latestUserText: 'मेरा नाम क्या है?',
         limit: 6,
@@ -381,6 +405,7 @@ void main() {
           confidence: 0.96,
         ),
       );
+      await database.confirmMemory('memory_semantic_work_stress_manager');
 
       final memories = await database.readMemoryContext(
         latestUserText: 'aaj office se aaya, bad day tha',
@@ -525,6 +550,7 @@ void main() {
           confidence: 0.96,
         ),
       );
+      await database.confirmMemory('memory_semantic_work_stress_manager');
 
       final memories = await database.readMemoryContext(
         latestUserText: 'aaj ऑफिस se aaya, sir ki wajah se bad day tha',
@@ -1014,35 +1040,38 @@ void main() {
     expect(throttled, isEmpty);
   });
 
-  test('memory retrieval does not throttle pending receipt prompt', () async {
-    final database = AppDatabase.forTesting(NativeDatabase.memory());
-    addTearDown(database.close);
+  test(
+    'pending receipt remains promptable but is excluded from retrieval',
+    () async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
 
-    await database.upsertUserMessageAndExtractMemory(
-      _message(
-        id: 'u_receipt_seed',
-        turnId: 'turn_receipt_seed',
-        text: 'office mein manager bahut pressure deta hai',
-        confidence: 0.96,
-        createdAt: 1,
-      ),
-    );
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: 'u_receipt_seed',
+          turnId: 'turn_receipt_seed',
+          text: 'office mein manager bahut pressure deta hai',
+          confidence: 0.96,
+          createdAt: 1,
+        ),
+      );
 
-    final retrieved = await database.readMemoryContext(
-      latestUserText: 'aaj office se aaya bad day tha',
-      limit: 6,
-    );
-    expect(
-      retrieved.map((memory) => memory.id),
-      contains('memory_semantic_work_stress_manager'),
-    );
+      final retrieved = await database.readMemoryContext(
+        latestUserText: 'aaj office se aaya bad day tha',
+        limit: 6,
+      );
+      expect(
+        retrieved.map((memory) => memory.id),
+        isNot(contains('memory_semantic_work_stress_manager')),
+      );
 
-    final pending = await database.readPendingMemoryReceipts(limit: 4);
-    expect(
-      pending.map((memory) => memory.id),
-      contains('memory_semantic_work_stress_manager'),
-    );
-  });
+      final pending = await database.readPendingMemoryReceipts(limit: 4);
+      expect(
+        pending.map((memory) => memory.id),
+        contains('memory_semantic_work_stress_manager'),
+      );
+    },
+  );
 
   test(
     'redacted memory diagnostics snapshot reports counts without text',
