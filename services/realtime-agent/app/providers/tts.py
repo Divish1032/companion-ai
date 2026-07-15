@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
-import json
 import time
-import urllib.error
-import urllib.request
-import wave
 from collections.abc import AsyncIterator
+from typing import Any
+
+from sarvamai import AsyncSarvamAI
+from sarvamai.environment import SarvamAIEnvironment
 
 from app.audio_pipeline import CanonicalAudioFrame, to_mono_pcm16
 from app.providers.interfaces import TTSAudioFrame, TTSProvider
@@ -31,6 +29,7 @@ class SarvamBulbulTTSProvider(TTSProvider):
         sample_rate: int = 24000,
         timeout_seconds: float = 12.0,
         price_per_10k_chars: float = 30.0,
+        client: Any | None = None,
     ) -> None:
         if not api_key:
             raise TTSProviderUnavailable("AGENT_SARVAM_API_KEY is required for Sarvam TTS.")
@@ -41,67 +40,99 @@ class SarvamBulbulTTSProvider(TTSProvider):
         self.sample_rate = sample_rate
         self.timeout_seconds = timeout_seconds
         self.price_per_10k_chars = price_per_10k_chars
+        self.client = client or AsyncSarvamAI(
+            api_subscription_key=api_key,
+            environment=_sarvam_environment(self.base_url),
+            timeout=timeout_seconds,
+        )
 
     async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
         started = time.perf_counter()
+        emitted_frame = False
         for chunk in chunk_tts_text(text):
-            wav_audio = await asyncio.to_thread(self._convert, chunk, language)
-            frames = _wav_to_canonical_frames(wav_audio, frame_ms=20)
-            if not frames:
-                continue
-            latency_ms = round((time.perf_counter() - started) * 1000)
             chars = len(chunk)
             billed_units = float(chars)
             cost_units = billed_units * self.price_per_10k_chars / 10_000
-            audio_ms = sum(frame.duration_ms for frame in frames)
-            for index, frame in enumerate(frames):
+            pending = bytearray()
+            first_chunk_frame = True
+            emitted_chunk_frame = False
+            try:
+                request = {
+                    "text": chunk,
+                    "target_language_code": language,
+                    "speaker": self.speaker,
+                    "model": self.model_name,
+                    "speech_sample_rate": self.sample_rate,
+                    "output_audio_codec": "linear16",
+                    "pace": 1.0,
+                }
+                if self.model_name == "bulbul:v3":
+                    request["temperature"] = 0.6
+                stream = self.client.text_to_speech.convert_stream(**request)
+                async for audio_chunk in stream:
+                    pending.extend(audio_chunk)
+                    while len(pending) >= _pcm16_frame_bytes(self.sample_rate, frame_ms=20):
+                        frame = _take_pcm16_frame(pending, self.sample_rate, frame_ms=20)
+                        emitted_frame = True
+                        emitted_chunk_frame = True
+                        yield self._audio_frame(
+                            frame,
+                            chunk=chunk,
+                            first_chunk_frame=first_chunk_frame,
+                            started=started,
+                            chars=chars,
+                            billed_units=billed_units,
+                            cost_units=cost_units,
+                        )
+                        first_chunk_frame = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                raise TTSProviderUnavailable(f"Sarvam TTS stream failed: {error}") from error
+
+            if pending:
+                frame = _pcm16_frame(bytes(pending), self.sample_rate)
+                emitted_frame = True
+                emitted_chunk_frame = True
                 yield TTSAudioFrame(
                     frame=frame,
                     provider=self.provider_name,
                     model=self.model_name,
-                    text=chunk if index == 0 else "",
-                    latency_ms=latency_ms,
-                    audio_ms=audio_ms if index == 0 else 0,
-                    chars=chars if index == 0 else 0,
-                    billed_units=billed_units if index == 0 else 0,
-                    cost_units=cost_units if index == 0 else 0,
+                    text=chunk if first_chunk_frame else "",
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                    audio_ms=frame.duration_ms,
+                    chars=chars if first_chunk_frame else 0,
+                    billed_units=billed_units if first_chunk_frame else 0,
+                    cost_units=cost_units if first_chunk_frame else 0,
                 )
+            if not emitted_chunk_frame:
+                raise TTSProviderUnavailable("Sarvam TTS stream returned no audio for a text chunk.")
 
-    def _convert(self, text: str, language: str) -> bytes:
-        payload = {
-            "text": text,
-            "target_language_code": language,
-            "speaker": self.speaker,
-            "model": self.model_name,
-            "speech_sample_rate": self.sample_rate,
-            "output_audio_codec": "wav",
-        }
-        if self.model_name == "bulbul:v3":
-            payload["temperature"] = 0.6
-            payload["pace"] = 1.0
+        if not emitted_frame and text.strip():
+            raise TTSProviderUnavailable("Sarvam TTS stream returned no audio.")
 
-        request = urllib.request.Request(
-            f"{self.base_url}/text-to-speech",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "api-subscription-key": self.api_key,
-                "Content-Type": "application/json",
-            },
-            method="POST",
+    def _audio_frame(
+        self,
+        frame: CanonicalAudioFrame,
+        *,
+        chunk: str,
+        first_chunk_frame: bool,
+        started: float,
+        chars: int,
+        billed_units: float,
+        cost_units: float,
+    ) -> TTSAudioFrame:
+        return TTSAudioFrame(
+            frame=frame,
+            provider=self.provider_name,
+            model=self.model_name,
+            text=chunk if first_chunk_frame else "",
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            audio_ms=frame.duration_ms,
+            chars=chars if first_chunk_frame else 0,
+            billed_units=billed_units if first_chunk_frame else 0,
+            cost_units=cost_units if first_chunk_frame else 0,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                decoded = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise TTSProviderUnavailable(f"Sarvam TTS request failed: {error}") from error
-
-        audios = decoded.get("audios") if isinstance(decoded, dict) else None
-        if not isinstance(audios, list) or not audios or not isinstance(audios[0], str):
-            raise TTSProviderUnavailable("Sarvam TTS response did not include audio.")
-        try:
-            return base64.b64decode(audios[0])
-        except ValueError as error:
-            raise TTSProviderUnavailable("Sarvam TTS response included invalid base64 audio.") from error
 
 
 def chunk_tts_text(text: str, *, max_chars: int = 300) -> list[str]:
@@ -138,39 +169,42 @@ def _safe_boundary(text: str, max_chars: int) -> int:
     return max_chars
 
 
-def _wav_to_canonical_frames(wav_audio: bytes, *, frame_ms: int) -> list[CanonicalAudioFrame]:
-    with wave.open(io.BytesIO(wav_audio), "rb") as wav_file:
-        sample_rate = wav_file.getframerate()
-        num_channels = wav_file.getnchannels()
-        sample_width = wav_file.getsampwidth()
-        if sample_width != 2:
-            raise TTSProviderUnavailable("Sarvam TTS WAV output was not PCM16.")
-        pcm = wav_file.readframes(wav_file.getnframes())
+def _sarvam_environment(base_url: str) -> SarvamAIEnvironment:
+    websocket_url = base_url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+    return SarvamAIEnvironment(base=base_url, production=websocket_url)
 
-    canonical_pcm = to_mono_pcm16(
+
+def _pcm16_frame_bytes(sample_rate: int, *, frame_ms: int) -> int:
+    return max(round(sample_rate * frame_ms / 1000), 1) * 2
+
+
+def _take_pcm16_frame(
+    pending: bytearray,
+    sample_rate: int,
+    *,
+    frame_ms: int,
+) -> CanonicalAudioFrame:
+    byte_count = _pcm16_frame_bytes(sample_rate, frame_ms=frame_ms)
+    pcm = bytes(pending[:byte_count])
+    del pending[:byte_count]
+    return _pcm16_frame(pcm, sample_rate)
+
+
+def _pcm16_frame(pcm: bytes, sample_rate: int) -> CanonicalAudioFrame:
+    if len(pcm) % 2:
+        raise TTSProviderUnavailable("Sarvam TTS stream returned misaligned PCM16 audio.")
+    canonical = to_mono_pcm16(
         CanonicalAudioFrame(
             pcm16=pcm,
             sample_rate=sample_rate,
-            num_channels=num_channels,
-            duration_ms=max(round(len(pcm) / (2 * max(num_channels, 1)) / sample_rate * 1000), 1),
+            num_channels=1,
+            duration_ms=max(round((len(pcm) // 2) / sample_rate * 1000), 1),
         ),
         target_sample_rate=sample_rate,
     )
-    samples_per_frame = max(round(sample_rate * frame_ms / 1000), 1)
-    bytes_per_frame = samples_per_frame * 2
-    frames: list[CanonicalAudioFrame] = []
-    for start in range(0, len(canonical_pcm), bytes_per_frame):
-        chunk = canonical_pcm[start : start + bytes_per_frame]
-        if not chunk:
-            continue
-        sample_count = len(chunk) // 2
-        duration_ms = max(round(sample_count / sample_rate * 1000), 1)
-        frames.append(
-            CanonicalAudioFrame(
-                pcm16=chunk,
-                sample_rate=sample_rate,
-                num_channels=1,
-                duration_ms=duration_ms,
-            )
-        )
-    return frames
+    return CanonicalAudioFrame(
+        pcm16=canonical,
+        sample_rate=sample_rate,
+        num_channels=1,
+        duration_ms=max(round((len(canonical) // 2) / sample_rate * 1000), 1),
+    )

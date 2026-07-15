@@ -250,60 +250,39 @@ def test_tts_chunking_preserves_hindi_hinglish_word_boundaries() -> None:
     assert chunks[0].endswith(".")
 
 
-def test_sarvam_tts_uses_current_bulbul_request_shape(monkeypatch) -> None:  # noqa: ANN001
+def test_sarvam_tts_streams_linear16_as_canonical_frames() -> None:
     import asyncio
-    import base64
-    import json
 
     captured = {}
 
-    class FakeResponse:
-        def __enter__(self):  # noqa: ANN001
-            return self
+    class FakeTextToSpeech:
+        async def convert_stream(self, **kwargs):  # noqa: ANN003, ANN202
+            captured.update(kwargs)
+            yield b"\x00\x00" * 700
+            yield b"\x00\x00" * 500
 
-        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps({"audios": [base64.b64encode(_tiny_wav()).decode()]}).encode()
-
-    def fake_urlopen(request, timeout):  # noqa: ANN001
-        captured["url"] = request.full_url
-        captured["timeout"] = timeout
-        captured["headers"] = dict(request.header_items())
-        captured["payload"] = json.loads(request.data.decode())
-        return FakeResponse()
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    class FakeClient:
+        text_to_speech = FakeTextToSpeech()
 
     async def scenario():
-        provider = SarvamBulbulTTSProvider(api_key="sk_test", timeout_seconds=3)
+        provider = SarvamBulbulTTSProvider(
+            api_key="sk_test",
+            timeout_seconds=3,
+            client=FakeClient(),
+        )
         return [frame async for frame in provider.synthesize("Namaste.", "hi-IN")]
 
     frames = asyncio.run(scenario())
 
     assert frames
-    assert captured["url"] == "https://api.sarvam.ai/text-to-speech"
-    assert captured["timeout"] == 3
-    assert captured["headers"]["Api-subscription-key"] == "sk_test"
-    assert captured["payload"]["model"] == "bulbul:v3"
-    assert captured["payload"]["target_language_code"] == "hi-IN"
-    assert captured["payload"]["speaker"] == "shubh"
-    assert captured["payload"]["speech_sample_rate"] == 24000
-    assert captured["payload"]["output_audio_codec"] == "wav"
+    assert captured["model"] == "bulbul:v3"
+    assert captured["target_language_code"] == "hi-IN"
+    assert captured["speaker"] == "shubh"
+    assert captured["speech_sample_rate"] == 24000
+    assert captured["output_audio_codec"] == "linear16"
     assert frames[0].provider == "sarvam"
     assert frames[0].billed_units == len("Namaste.")
-
-
-def _tiny_wav() -> bytes:
-    import io
-    import struct
-    import wave
-
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(24000)
-        wav_file.writeframes(struct.pack("<" + "h" * 480, *([0] * 480)))
-    return buffer.getvalue()
+    assert sum(frame.audio_ms for frame in frames) == 50
+    assert all(frame.frame.sample_rate == 24000 for frame in frames)
+    assert all(frame.frame.num_channels == 1 for frame in frames)
+    assert all(len(frame.frame.pcm16) <= 960 for frame in frames)

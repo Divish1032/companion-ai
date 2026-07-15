@@ -148,10 +148,19 @@ def filter_source_safe_candidates(
             if "assistant" not in roles or candidate.evidence_role not in {
                 "assistant",
                 "mixed",
-            }:
+            } or candidate.explicitness != "assistant_only":
                 continue
-        elif "user" not in roles or candidate.evidence_role == "assistant":
-            continue
+        else:
+            if (
+                "user" not in roles
+                or candidate.evidence_role == "assistant"
+                or candidate.explicitness == "assistant_only"
+            ):
+                continue
+            if candidate.evidence_role == "user" and roles != {"user"}:
+                continue
+            if candidate.evidence_role == "mixed" and roles != {"user", "assistant"}:
+                continue
         evidence = " ".join(
             [
                 candidate.subject,
@@ -260,6 +269,22 @@ material accurately. Preserve the user's language and exact names/key nouns in o
 be checked locally. Use assistant_only explicitness/evidence for assistant-only commitments. Use NOOP
 when the text is merely conversational, hypothetical, quoted, uncertain, or low-confidence. A future
 plan or promised follow-up is open_thread. An event worth remembering as an experience is episode.
+A concrete completed personal milestone or recent experience explicitly stated by the user—such as an
+interview, exam, new job, trip, achievement, loss, or important project—is normally a useful episode.
+Capture both the event and the user's explicit assessment of it. For example, if the user says they had
+a design interview and the system-design round felt difficult, create one grounded past episode that
+preserves those key nouns and assessment. Do not invent an exact date when a relative date cannot be
+safely resolved.
+For every non-assistant memory with evidence_role=user, source_turn_ids must contain user turns only;
+never cite an assistant question or paraphrase as user evidence. object_text must be a standalone,
+complete recall-worthy statement containing all important explicit details and the user's assessment,
+not merely a topic label. Use a stable semantic predicate such as had_difficult_interview_round, never
+conversational question wording such as kaisa_gaya. Ordinary career and education events—including an
+interview, exam, project, or the user's assessment that a round was difficult—have sensitivity=normal
+unless the actual evidence contains medical, financial, legal, precise-contact, protected-trait,
+sexual, or crisis information.
+For a newly stated, grounded completed episode with useful future context, suggested_action must be ADD,
+not NOOP. Reserve NOOP for content that does not qualify as a useful memory under the rules above.
 Use SUPERSEDE only for an explicit changed routine or goal, keeping subject and predicate identical to
 the prior concept; otherwise use ADD or REINFORCE. Never use SUPERSEDE for identity or relationship data.
 proactive_allowed must be false unless the user explicitly asked the assistant to follow up."""

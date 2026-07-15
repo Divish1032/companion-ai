@@ -348,6 +348,48 @@ void main() {
     },
   );
 
+  test(
+    'grounded Hindi interview episode is admitted for durable recall',
+    () async {
+      const transcript =
+          'मेरा डिजाइन इंटरव्यू हुआ था सिस्टम डिजाइन राउंड मुझे अच्छा नहीं लगता';
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't1',
+        userText: transcript,
+        runDeterministicMemory: false,
+      );
+      final job = await _claimJob(database, 's1', 't1');
+
+      await database.validateAndApplyMemoryCandidates(
+        job: job,
+        candidates: const [
+          ExtractedMemoryCandidate(
+            kind: 'episode',
+            subject: 'Design interview',
+            predicate: 'had_difficult_system_design_round',
+            objectText: transcript,
+            temporalStatus: 'past',
+            explicitness: 'explicit',
+            confidence: 0.9,
+            futureUtility: 0.8,
+            sensitivity: 'normal',
+            sourceTurnIds: ['t1'],
+            evidenceRole: 'user',
+            suggestedAction: 'ADD',
+            followUpAllowed: false,
+            proactiveAllowed: false,
+          ),
+        ],
+      );
+
+      final episodes = await database.select(database.memoryEpisodes).get();
+      expect(episodes, hasLength(1));
+      expect(episodes.single.summary, transcript);
+    },
+  );
+
   test('assistant-only text cannot become a user fact', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final job = await _claimJob(database, 's1', 't1');

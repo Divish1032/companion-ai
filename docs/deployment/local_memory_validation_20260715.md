@@ -15,7 +15,9 @@ public-network, TURN, or production readiness evidence.
 - Preparation result: created successfully; a second run returned `exists`
   with `revision_verified=true` from local revision metadata.
 - API image: arm64
-  `sha256:feeaef49189d0b07b7a8b1651c14d3f26cbae1640c32dfcd92dc08b5b76a4e61`.
+  `sha256:f53d00f74cef4a8d41b5e1428aa0f9ea963c963b11f7616449c37ede80611308`.
+- Realtime-agent image: arm64
+  `sha256:894ec58183c769c27863f1d93bb31fe8ffa39f8a0d41d9840e3221afd9980aee`.
 - Gated repository access succeeded with a local read-only token. Legal and
   licence approval are deployment-owner decisions and were not asserted by
   this technical validation.
@@ -59,11 +61,19 @@ These values are a development-machine sample, not a production SLO.
 - An unavailable-provider endpoint returned HTTP 503 quickly, while mobile
   retry/backoff, lease recovery, backlog continuation, and non-blocking behavior
   are covered by automated tests.
+- The first physical-phone interview case initially returned no candidate. A
+  real-provider replay exposed both under-extraction and assistant-wording
+  provenance errors. The extractor now treats explicit completed personal
+  milestones as episodes, requires user-only sources for `evidence_role=user`,
+  and requires `ADD` for a newly stated grounded episode. The rebuilt live API
+  returned one normal-sensitivity `episode`, grounded only to the user turn,
+  with the system-design assessment and action `ADD`.
 
 ## Remaining external evidence
 
-- Physical Android voice capture, asynchronous extraction, app relaunch, and
-  encrypted release-device migration.
+- Physical Android durable-episode display/relaunch recall on the rebuilt stack
+  and encrypted release-device migration. Debug voice capture, response, session
+  summary display, and encrypted local database creation are confirmed.
 - Full-Xcode iOS compile and iPhone behavior.
 - Ubuntu host capacity, private gateway/rate limits, public mobile networking,
   and TURN fallback.
@@ -81,3 +91,22 @@ and HTTP 502/503/504 responses. Final assignment failure and normal session end
 also call the realtime cancellation endpoint so orphan agents cannot consume
 the concurrency limit. The rebuilt local stack created and ended a session
 successfully; active-agent count returned to zero.
+
+## Android memory and TTS observation
+
+On the next Wi-Fi debug run, the phone captured a design-interview utterance,
+showed the assistant text response, completed the voice session, and displayed
+a session summary in `What I remember`. The provider transcript changed the
+original wording from "mushkil laga" to an equivalent dislike assessment, which
+is a separate STT-quality observation. Same-session recall worked, but the old
+extractor returned zero durable candidates for the replay, leading to the
+episode-extraction correction recorded above.
+
+The same run showed assistant text much earlier than voice. Agent metrics
+confirmed the old REST TTS path waited approximately 4.3-5.8 seconds for first
+audio and buffered a complete WAV before publishing it. The agent now uses the
+official Sarvam asynchronous HTTP streaming SDK with `linear16` output and
+publishes canonical 20 ms frames as they arrive. Three local provider probes
+produced first frames in 494, 1,487, and 1,462 ms; a probe from the rebuilt
+container produced the first frame in 493 ms. These are development samples,
+not a production latency SLO; physical-phone playback remains to be confirmed.

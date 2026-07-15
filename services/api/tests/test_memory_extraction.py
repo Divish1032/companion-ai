@@ -181,6 +181,11 @@ def test_openai_compatible_extractor_uses_strict_schema_and_parses_candidate() -
     assert candidates[0].candidate_kind == "episode"
     assert captured["temperature"] == 0
     assert captured["store"] is False
+    system_prompt = captured["messages"][0]["content"]
+    assert "completed personal milestone or recent experience" in system_prompt
+    assert "Do not invent an exact date" in system_prompt
+    assert "never cite an assistant question" in system_prompt
+    assert "suggested_action must be ADD" in system_prompt
     assert captured["response_format"]["json_schema"]["strict"] is True
     schema = captured["response_format"]["json_schema"]["schema"]
     assert schema["additionalProperties"] is False
@@ -274,6 +279,36 @@ def test_server_filter_rejects_sensitive_and_role_inconsistent_candidates() -> N
     )
 
     assert safe == [valid_commitment]
+
+
+def test_server_filter_rejects_assistant_citation_claimed_as_user_evidence() -> None:
+    request = MemoryExtractionRequest.model_validate(
+        {
+            "job_id": "filter-provenance",
+            "extraction_version": "v1",
+            "turns": [
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "text": "Mera design interview hua tha.",
+                    "created_at_ms": 1,
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "text": "Interview kaisa gaya?",
+                    "created_at_ms": 2,
+                },
+            ],
+        }
+    )
+    invalid = _candidate(
+        kind="episode",
+        source_turn_ids=["u1", "a1"],
+        evidence_role="user",
+    ).model_copy(update={"explicitness": "explicit"})
+
+    assert filter_source_safe_candidates(request, [invalid]) == []
 
 
 def _request() -> MemoryExtractionRequest:
