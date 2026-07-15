@@ -67,7 +67,8 @@ def test_create_session_accepts_bounded_context_and_token(tmp_path: Path) -> Non
 
 
 def test_one_active_session_per_device_until_end(tmp_path: Path) -> None:
-    client, _store = _client(tmp_path)
+    assigner = _FakeAgentAssigner()
+    client, _store = _client(tmp_path, assigner=assigner)
 
     first = client.post("/v1/session", json={"device_id": "anon_test_device"})
     assert first.status_code == 200
@@ -85,6 +86,7 @@ def test_one_active_session_per_device_until_end(tmp_path: Path) -> None:
     )
     assert ended.status_code == 200
     assert ended.json()["ended"] is True
+    assert assigner.cancelled_session_ids == [first.json()["session_id"]]
 
     third = client.post("/v1/session", json={"device_id": "anon_test_device"})
     assert third.status_code == 200
@@ -123,19 +125,24 @@ def test_session_counter_is_durable(tmp_path: Path) -> None:
         recent_context=[],
         session_create_limit_per_day=50,
     )
-    assert second.session_id == first_store.get_active_session(
-        session_id=second.session_id,
-        device_id="anon_test_device",
-    ).session_id
+    assert (
+        second.session_id
+        == first_store.get_active_session(
+            session_id=second.session_id,
+            device_id="anon_test_device",
+        ).session_id
+    )
 
 
 def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -> None:
-    client, store = _client(tmp_path, assigner=_FailingAgentAssigner())
+    assigner = _FailingAgentAssigner()
+    client, store = _client(tmp_path, assigner=assigner)
 
     response = client.post("/v1/session", json={"device_id": "anon_test_device"})
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "agent_assignment_failed"
+    assert len(assigner.cancelled_session_ids) == 1
     active = store.get_active_session(
         session_id="missing_after_failure",
         device_id="anon_test_device",
@@ -144,6 +151,7 @@ def test_agent_assignment_failure_returns_503_and_ends_session(tmp_path: Path) -
 
     retry = client.post("/v1/session", json={"device_id": "anon_test_device"})
     assert retry.status_code == 503
+    assert len(assigner.cancelled_session_ids) == 2
 
 
 def test_stateless_embeddings_and_rerank_do_not_require_session(tmp_path: Path) -> None:
@@ -263,15 +271,27 @@ class _FakeAgentAssigner:
     def __init__(self) -> None:
         self.assigned_session_ids: list[str] = []
         self.assigned_contexts: list[dict[str, object]] = []
+        self.cancelled_session_ids: list[str] = []
 
     async def assign(self, *, session) -> None:  # noqa: ANN001
         self.assigned_session_ids.append(session.session_id)
         self.assigned_contexts.append(session.recent_context())
 
+    async def cancel(self, *, session_id: str) -> bool:
+        self.cancelled_session_ids.append(session_id)
+        return True
+
 
 class _FailingAgentAssigner:
+    def __init__(self) -> None:
+        self.cancelled_session_ids: list[str] = []
+
     async def assign(self, *, session) -> None:  # noqa: ANN001
         raise AgentAssignmentFailed("boom")
+
+    async def cancel(self, *, session_id: str) -> bool:
+        self.cancelled_session_ids.append(session_id)
+        return True
 
 
 class _FakeModelServing:

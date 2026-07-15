@@ -15,7 +15,7 @@ public-network, TURN, or production readiness evidence.
 - Preparation result: created successfully; a second run returned `exists`
   with `revision_verified=true` from local revision metadata.
 - API image: arm64
-  `sha256:2138bb0976660cdcb40c7c9fc7091e705da396b2a558e18e7c8bd4c68d5247b2`.
+  `sha256:feeaef49189d0b07b7a8b1651c14d3f26cbae1640c32dfcd92dc08b5b76a4e61`.
 - Gated repository access succeeded with a local read-only token. Legal and
   licence approval are deployment-owner decisions and were not asserted by
   this technical validation.
@@ -67,3 +67,17 @@ These values are a development-machine sample, not a production SLO.
 - Full-Xcode iOS compile and iPhone behavior.
 - Ubuntu host capacity, private gateway/rate limits, public mobile networking,
   and TURN fallback.
+
+## Android startup incident
+
+The first Wi-Fi debug phone attempt returned HTTP 503 from session creation even
+though the realtime service recorded a successful assignment. A later attempt
+joined LiveKit with excellent connection quality and published audio. This
+identified a transient assignment-response race rather than a LAN/WebRTC
+failure.
+
+The API now retries the same idempotent assignment once for transport errors
+and HTTP 502/503/504 responses. Final assignment failure and normal session end
+also call the realtime cancellation endpoint so orphan agents cannot consume
+the concurrency limit. The rebuilt local stack created and ended a session
+successfully; active-agent count returned to zero.

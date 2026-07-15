@@ -340,6 +340,7 @@ async def create_session(
     try:
         await assigner.assign(session=session)
     except AgentAssignmentFailed as error:
+        await assigner.cancel(session_id=session.session_id)
         session_store.end_session(
             session_id=session.session_id,
             device_id=request.device_id,
@@ -413,9 +414,12 @@ async def livekit_token(
 async def end_session(
     request: EndSessionRequest,
     session_store: Annotated[SessionStore, Depends(get_store)],
+    assigner: Annotated[AgentAssigner, Depends(get_agent_assigner)],
 ) -> dict[str, bool]:
     ended = session_store.end_session(
         session_id=request.session_id,
         device_id=request.device_id,
     )
+    if ended:
+        await assigner.cancel(session_id=request.session_id)
     return {"ended": ended}
