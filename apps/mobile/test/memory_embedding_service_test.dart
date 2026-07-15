@@ -107,6 +107,7 @@ void main() {
         text: 'office mein manager pressure deta hai',
       ),
     );
+    await database.confirmMemory('memory_semantic_work_stress_manager');
 
     final sync = MemoryEmbeddingSync(
       database: database,
@@ -153,6 +154,33 @@ void main() {
 
     expect(memories.single.label, 'preferred_name');
     expect(hits, isEmpty);
+  });
+
+  test('unconfirmed memories are never written to the vector index', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    final vectorIndex = InMemoryMemoryVectorIndex();
+    addTearDown(database.close);
+    await database
+        .into(database.memoryRecords)
+        .insert(
+          _memory(
+            id: 'memory_unconfirmed',
+            kind: 'semantic',
+            label: 'relationship',
+            content: 'Unconfirmed relationship hypothesis.',
+            receiptState: 'unconfirmed',
+            sourceTurnId: 'turn_1',
+          ),
+        );
+    final sync = MemoryEmbeddingSync(
+      database: database,
+      embeddingClient: _FakeEmbeddingClient(),
+      vectorIndexLoader: () async => vectorIndex,
+    );
+
+    await sync.syncTurnMemories('turn_1');
+
+    expect(await vectorIndex.count(), 0);
   });
 
   test(
@@ -210,6 +238,7 @@ void main() {
           text: 'office mein manager pressure deta hai',
         ),
       );
+      await database.confirmMemory('memory_semantic_work_stress_manager');
 
       final lookup = MemoryLookupService(
         database: database,
@@ -239,6 +268,7 @@ void main() {
         text: 'office mein manager pressure deta hai',
       ),
     );
+    await database.confirmMemory('memory_semantic_work_stress_manager');
     final lookup = MemoryLookupService(
       database: database,
       embeddingClient: _FailingEmbeddingClient(),
@@ -505,6 +535,8 @@ MemoryRecordsCompanion _memory({
   String canonicalText = 'generic memory text',
   String sensitivity = 'normal',
   String temporalStatus = 'current',
+  String receiptState = 'implicit',
+  String sourceTurnId = 'turn_old',
 }) {
   return MemoryRecordsCompanion.insert(
     id: id,
@@ -515,7 +547,7 @@ MemoryRecordsCompanion _memory({
     canonicalText: Value(canonicalText),
     language: const Value('hi-IN'),
     script: const Value('mixed'),
-    sourceTurnIdsJson: jsonEncode(['turn_old']),
+    sourceTurnIdsJson: jsonEncode([sourceTurnId]),
     sourceRole: 'user',
     transcriptStatus: 'final',
     sttConfidence: const Value(0.96),
@@ -526,7 +558,7 @@ MemoryRecordsCompanion _memory({
     recurrenceCount: const Value(1),
     sensitivity: Value(sensitivity),
     temporalStatus: Value(temporalStatus),
-    receiptState: const Value('implicit'),
+    receiptState: Value(receiptState),
     evidenceSummary: const Value('test memory'),
   );
 }

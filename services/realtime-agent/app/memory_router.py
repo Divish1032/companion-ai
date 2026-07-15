@@ -36,7 +36,27 @@ def route_memory_query(text: str) -> MemoryRoutingDecision:
         return MemoryRoutingDecision("core_profile", 0.88, "profile_or_preference_recall", 3)
     if _contains_any(normalized, ("office", "work", "kaam", "ऑफिस", "काम")):
         return MemoryRoutingDecision("semantic", 0.82, "work_context", 6)
-    if _contains_any(normalized, ("kal", "yesterday", "last time", "pichli", "पिछली")):
+    if _contains_any(
+        normalized,
+        (
+            "kal",
+            "yesterday",
+            "last time",
+            "pichli",
+            "पिछली",
+            "kaisa raha",
+            "kaisi rahi",
+            "how did it go",
+            "what happened",
+            "uska kya hua",
+            "उसका क्या हुआ",
+            "कैसा रहा",
+            "कैसी रही",
+            "interview",
+            "appointment",
+            "exam",
+        ),
+    ):
         return MemoryRoutingDecision("episodic", 0.78, "temporal_recall", 6)
     if _contains_any(normalized, ("summary", "summarize", "kya yaad", "what do you remember")):
         return MemoryRoutingDecision("summary", 0.72, "broad_memory_summary", 6)

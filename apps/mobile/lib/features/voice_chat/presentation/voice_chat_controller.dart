@@ -11,6 +11,7 @@ import '../../../core/permissions/microphone_permission_service.dart';
 import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
 import '../../chat_history/data/companion_memory_store.dart';
+import '../../chat_history/data/long_term_memory_service.dart';
 import '../../chat_history/data/memory_embedding_service.dart';
 import '../../chat_history/data/objectbox_memory_vector_index.dart';
 import '../../livekit_session/data/livekit_connection_service.dart';
@@ -42,6 +43,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   @override
   VoiceChatState build() {
     final liveKitService = ref.read(liveKitConnectionServiceProvider);
+    unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
+    unawaited(ref.read(appDatabaseProvider).consolidateLocalMemory());
     ref.onDispose(() {
       _connectionSubscription?.cancel();
       _eventSubscription?.cancel();
@@ -175,6 +178,8 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     await _connectionSubscription?.cancel();
     await _eventSubscription?.cancel();
     await ref.read(liveKitConnectionServiceProvider).disconnect();
+    unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
+    await ref.read(appDatabaseProvider).consolidateLocalMemory();
     _activeDeviceId = null;
     state = state.copyWith(
       phase: VoiceSessionPhase.ended,
@@ -377,7 +382,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       'elapsed_ms': elapsedMs,
       'memory_packets': memories.length,
       'pending_receipts': pendingReceipts.length,
-      'memory_labels': [for (final memory in memories) memory.label],
+      'memory_kinds': [for (final memory in memories) memory.kind],
       'memory_retrieval_strategy': retrievalStrategy,
       'memory_reranker_strategy': rerankerStrategy,
     });
@@ -525,7 +530,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
     await ref
         .read(appDatabaseProvider)
-        .upsertMessage(
+        .upsertUserMessageAndExtractMemory(
           ChatMessagesCompanion.insert(
             id: 'msg_${event.sessionId}_${turnId}_user',
             sessionId: event.sessionId,
@@ -591,6 +596,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
           ),
         );
     await ref.read(memoryEmbeddingSyncProvider).syncTurnMemories(turnId);
+    await ref
+        .read(longTermMemoryCoordinatorProvider)
+        .enqueueCompletedTurn(sessionId: event.sessionId, turnId: turnId);
   }
 
   String _startErrorMessage(Object error) {

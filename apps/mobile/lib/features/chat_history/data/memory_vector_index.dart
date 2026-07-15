@@ -13,6 +13,8 @@ abstract interface class MemoryVectorIndex {
 
   Future<int> count();
 
+  Future<void> delete(String memoryId);
+
   Future<void> deleteAll();
 }
 
@@ -51,6 +53,11 @@ class InMemoryMemoryVectorIndex implements MemoryVectorIndex {
 
   @override
   Future<int> count() async => _vectors.length;
+
+  @override
+  Future<void> delete(String memoryId) async {
+    _vectors.remove(memoryId);
+  }
 
   @override
   Future<void> deleteAll() async {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit, urlunsplit
+
 import httpx
 
 from app.config import Settings
@@ -8,6 +10,17 @@ from app.session_store import SessionRecord
 
 class AgentAssignmentFailed(Exception):
     pass
+
+
+def agent_cancel_url(assignment_url: str) -> str:
+    """Return the sibling cancellation endpoint without corrupting host ports."""
+    parsed = urlsplit(assignment_url)
+    path = parsed.path
+    if path.endswith("/assign"):
+        path = f"{path[: -len('/assign')]}/cancel"
+    else:
+        path = f"{path.rstrip('/')}/cancel"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
 
 class AgentAssigner:

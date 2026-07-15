@@ -134,6 +134,18 @@ class ObjectBoxMemoryVectorIndex implements MemoryVectorIndex {
   Future<int> count() async => _box.count();
 
   @override
+  Future<void> delete(String memoryId) async {
+    final query = _box
+        .query(ObjectBoxMemoryVector_.memoryId.equals(memoryId))
+        .build();
+    try {
+      query.remove();
+    } finally {
+      query.close();
+    }
+  }
+
+  @override
   Future<void> deleteAll() async {
     _box.removeAll();
   }

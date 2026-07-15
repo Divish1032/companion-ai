@@ -131,7 +131,12 @@ All items below should be true before real-user field testing:
 - consent screen is implemented and acceptance is stored locally
 - consent copy versioning exists
 - chat history clear action works
-- local transcript storage is encrypted, or field test is restricted to scripted non-sensitive conversations
+- local transcript and structured-memory storage uses SQLite3MultipleCiphers;
+  the random 256-bit database passphrase is held in platform secure storage.
+  Existing plaintext prototype databases are checkpointed, migrated, verified,
+  and only then removed. ObjectBox stores derived IDs/vectors, not transcript or
+  memory text. Real-device key-loss and backup/restore behavior still requires
+  the normal field-test protocol before sensitive production use
 - no raw audio is stored anywhere in app or backend
 - backend logs are reviewed to ensure transcripts are not logged by default
 - processor list is updated with exact deployed vendors
@@ -157,4 +162,3 @@ Sprint -1 outcome:
 - MVP privacy direction is now explicit enough to guide Sprint 1 consent UX and local-storage decisions.
 - Field testing remains blocked until transcript encryption or equivalent scripted-test restriction is in place.
 - Processor disclosure remains a required pre-field-test checklist item, not an optional polish task.
-

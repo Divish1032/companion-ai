@@ -1,4 +1,4 @@
-# Hindi/Hinglish Deterministic Memory Evaluation
+# Hindi/Hinglish Long-Term Memory Evaluation
 
 Run the automated suite from the repository root:
 
@@ -24,6 +24,16 @@ pass before a real-phone memory validation run.
 | Timeout/failure | Lookup continues without memory when mobile/vector/rerank paths fail. |
 | Context budget | Prompt context remains bounded and reports its character count. |
 | Strategy isolation | `hi-IN` resolves deterministic retrieval/reranking/planning and invokes no model path. |
+| Live ingestion | Final LiveKit user/assistant events run exact admission and enqueue one idempotent background job. |
+| Candidate provenance | Assistant-only text cannot become a user fact; unknown source turns are rejected. |
+| Window isolation | A valid turn from the same session but outside the claimed extraction window is rejected. |
+| Local schema defense | Malformed items, out-of-range scores, extra output properties, and incomplete strict schemas fail closed. |
+| Retry lifecycle | HTTP timeout, terminal 4xx, exponential retry cap, stale lease recovery, and backlog continuation are covered. |
+| Episodes | Typed episodes retain source turn IDs and retrieval expands the surrounding raw turns. |
+| Open threads | A future event can be found from a vague Hindi/Hinglish follow-up. |
+| Sensitive candidates | The LLM proposal is rejected locally and never becomes a retrievable record. |
+| Receipt isolation | Unconfirmed memory is excluded from lexical, graph, vector, session-start, and realtime prompt paths. |
+| Encryption migration | Existing plaintext SQLite data is migrated to SQLite3MultipleCiphers without row loss. |
 
 ## Pass criteria
 
@@ -32,6 +42,8 @@ pass before a real-phone memory validation run.
 - Hindi/Hinglish strategy isolation remains true.
 - Safety/sensitive-memory exclusion has zero failures.
 - Context injection stays within the configured six packets and character budget.
+- The stateless extraction API accepts only its strict bounded schema and is
+  fail-closed while disabled or unavailable.
 
 ## Real-phone protocol
 

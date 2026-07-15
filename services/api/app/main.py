@@ -15,6 +15,13 @@ from app.embedding_service import (
     ModelServingUnavailable,
     RetrievalPlan,
 )
+from app.memory_extraction import (
+    MemoryCandidateExtractor,
+    MemoryExtractionRequest,
+    MemoryExtractionResponse,
+    MemoryExtractionUnavailable,
+    OpenAICompatibleMemoryCandidateExtractor,
+)
 from app.session_store import RateLimitExceeded, SessionStore
 
 settings = Settings()
@@ -30,6 +37,12 @@ model_serving = ModelServingService(
     reranker_model_name=settings.memory_reranker_model,
     planner_enabled=settings.enable_memory_planner,
     planner_model_name=settings.memory_planner_model,
+)
+memory_candidate_extractor: MemoryCandidateExtractor = OpenAICompatibleMemoryCandidateExtractor(
+    base_url=settings.memory_extraction_base_url,
+    api_key=settings.memory_extraction_api_key,
+    model=settings.memory_extraction_model,
+    timeout_seconds=settings.memory_extraction_timeout_seconds,
 )
 
 
@@ -173,6 +186,10 @@ def get_model_serving() -> ModelServingService:
     return model_serving
 
 
+def get_memory_candidate_extractor() -> MemoryCandidateExtractor:
+    return memory_candidate_extractor
+
+
 @app.get("/health")
 async def health() -> dict[str, object]:
     return {"status": "ok", "service": settings.service_name}
@@ -268,6 +285,32 @@ async def memory_plan(
         entities=list(plan.entities),
         time_hint=plan.time_hint,
         top_k=plan.top_k,
+    )
+
+
+@app.post("/v1/memory-candidates", response_model=MemoryExtractionResponse)
+async def memory_candidates(
+    request: MemoryExtractionRequest,
+    extractor: Annotated[MemoryCandidateExtractor, Depends(get_memory_candidate_extractor)],
+) -> MemoryExtractionResponse:
+    if not settings.enable_memory_extraction:
+        raise HTTPException(status_code=503, detail={"code": "memory_extraction_disabled"})
+    try:
+        candidates = await extractor.extract(request)
+    except MemoryExtractionUnavailable as error:
+        raise HTTPException(
+            status_code=503, detail={"code": "memory_extraction_unavailable"}
+        ) from error
+    source_turn_ids = {turn.turn_id for turn in request.turns}
+    safe_candidates = [
+        candidate
+        for candidate in candidates
+        if set(candidate.source_turn_ids).issubset(source_turn_ids)
+    ]
+    return MemoryExtractionResponse(
+        job_id=request.job_id,
+        extraction_version=request.extraction_version,
+        candidates=safe_candidates,
     )
 
 

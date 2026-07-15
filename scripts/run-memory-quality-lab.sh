@@ -32,7 +32,15 @@ tmp_dir="$repo_root/tmp/memory_quality_lab_$$"
 mobile_dir="$repo_root/apps/mobile"
 agent_dir="$repo_root/services/realtime-agent"
 
-PYTHON="python3"
+# Fixture validation needs PyYAML + jsonschema. Both are declared and locked by
+# the realtime-agent project, so use that managed interpreter instead of an
+# arbitrary system Python whose packages vary by developer machine.
+PYTHON="$agent_dir/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]] || ! "$PYTHON" -c 'import jsonschema, yaml' >/dev/null 2>&1; then
+  echo "ERROR: memory-lab Python dependencies are unavailable." >&2
+  echo "Run 'uv sync' in $agent_dir, then retry." >&2
+  exit 4
+fi
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -202,7 +210,7 @@ with open('$json_path', 'w', encoding='utf-8') as f:
 # ---------------------------------------------------------------------------
 validate_fixture() {
   local fixture_path="$1"
-  $PYTHON "$schema_dir/validate_schemas.py" --fixture "$fixture_path" 2>/dev/null
+  "$PYTHON" "$schema_dir/validate_schemas.py" --fixture "$fixture_path"
 }
 
 # ---------------------------------------------------------------------------
@@ -341,6 +349,16 @@ print('yes' if d.get('agent_context_expect') else 'no')
       echo "OK"
     else
       echo "FAILED"
+      echo "$agent_output" | $PYTHON -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    print('    agent contract returned invalid JSON')
+else:
+    for failure in data.get('agent_failures', []):
+        print(f'    {failure}')
+" 2>/dev/null || true
       agent_pass=false
     fi
   else

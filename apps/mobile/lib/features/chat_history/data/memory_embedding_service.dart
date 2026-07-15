@@ -460,7 +460,10 @@ bool _embeddable(MemoryRecord memory) {
   if (memory.sensitivity != 'normal') {
     return false;
   }
-  if (memory.temporalStatus == 'expired') {
+  if ({'rejected', 'unconfirmed'}.contains(memory.receiptState)) {
+    return false;
+  }
+  if ({'expired', 'stale'}.contains(memory.temporalStatus)) {
     return false;
   }
   if (memory.content.trim().isEmpty) {

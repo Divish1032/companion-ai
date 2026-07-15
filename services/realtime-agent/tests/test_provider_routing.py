@@ -86,6 +86,13 @@ def test_ambiguous_topic_turn_does_not_request_memory_lookup() -> None:
     assert decision.max_blocks == 0
 
 
+def test_vague_follow_up_routes_to_episodes_and_open_threads() -> None:
+    decision = route_memory_query("Woh interview kaisa raha tha?")
+
+    assert decision.route == "episodic"
+    assert decision.max_blocks == 6
+
+
 async def _empty_audio():
     if False:
         yield pcm_sine_frame(duration_ms=30)

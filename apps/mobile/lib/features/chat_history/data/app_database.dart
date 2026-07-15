@@ -3,12 +3,13 @@ import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'memory_language_policy.dart';
+import 'memory_candidate_model.dart';
+import 'database_encryption.dart';
 
 import 'memory_vector_index.dart';
 
@@ -127,6 +128,104 @@ class MemoryContradictions extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+class MemoryEpisodes extends Table {
+  TextColumn get id => text()();
+  TextColumn get sessionId => text()();
+  TextColumn get title => text()();
+  TextColumn get summary => text()();
+  TextColumn get retrievalText => text()();
+  TextColumn get sourceTurnIdsJson => text()();
+  TextColumn get entityIdsJson => text().withDefault(const Constant('[]'))();
+  TextColumn get topicKeysJson => text().withDefault(const Constant('[]'))();
+  IntColumn get eventStartAt => integer().nullable()();
+  IntColumn get eventEndAt => integer().nullable()();
+  TextColumn get temporalStatus => text().withDefault(const Constant('past'))();
+  TextColumn get explicitness =>
+      text().withDefault(const Constant('explicit'))();
+  RealColumn get confidenceScore => real()();
+  RealColumn get importanceScore => real()();
+  TextColumn get sensitivity => text().withDefault(const Constant('normal'))();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+class MemoryOpenThreads extends Table {
+  TextColumn get id => text()();
+  TextColumn get episodeId => text().nullable()();
+  TextColumn get kind => text()();
+  TextColumn get subject => text()();
+  TextColumn get predicate => text()();
+  TextColumn get objectText => text()();
+  IntColumn get dueStartAt => integer().nullable()();
+  IntColumn get dueEndAt => integer().nullable()();
+  TextColumn get status => text().withDefault(const Constant('open'))();
+  BoolColumn get followUpAllowed =>
+      boolean().withDefault(const Constant(false))();
+  BoolColumn get proactiveAllowed =>
+      boolean().withDefault(const Constant(false))();
+  TextColumn get sourceTurnIdsJson => text()();
+  RealColumn get confidenceScore => real()();
+  TextColumn get sensitivity => text().withDefault(const Constant('normal'))();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+  IntColumn get closedAt => integer().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+class MemoryExtractionJobs extends Table {
+  TextColumn get id => text()();
+  TextColumn get sessionId => text()();
+  TextColumn get startTurnId => text()();
+  TextColumn get endTurnId => text()();
+  TextColumn get status => text().withDefault(const Constant('pending'))();
+  IntColumn get attempts => integer().withDefault(const Constant(0))();
+  TextColumn get extractionVersion => text()();
+  TextColumn get requestHash => text()();
+  TextColumn get lastErrorCode => text().nullable()();
+  IntColumn get nextAttemptAt => integer().nullable()();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+  IntColumn get completedAt => integer().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+class MemoryCandidates extends Table {
+  TextColumn get id => text()();
+  TextColumn get jobId => text()();
+  TextColumn get candidateKind => text()();
+  TextColumn get subject => text()();
+  TextColumn get predicate => text()();
+  TextColumn get objectText => text()();
+  IntColumn get eventStartAt => integer().nullable()();
+  IntColumn get eventEndAt => integer().nullable()();
+  TextColumn get temporalStatus => text()();
+  TextColumn get explicitness => text()();
+  RealColumn get confidenceScore => real()();
+  RealColumn get futureUtility => real()();
+  TextColumn get sensitivity => text()();
+  TextColumn get sourceTurnIdsJson => text()();
+  TextColumn get evidenceRole => text()();
+  TextColumn get suggestedAction => text()();
+  BoolColumn get followUpAllowed =>
+      boolean().withDefault(const Constant(false))();
+  BoolColumn get proactiveAllowed =>
+      boolean().withDefault(const Constant(false))();
+  TextColumn get decisionState => text()();
+  TextColumn get decisionReason => text()();
+  TextColumn get targetMemoryId => text().nullable()();
+  IntColumn get createdAt => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 @DriftDatabase(
   tables: [
     ChatSessions,
@@ -135,6 +234,10 @@ class MemoryContradictions extends Table {
     MemoryEntities,
     MemoryEdges,
     MemoryContradictions,
+    MemoryEpisodes,
+    MemoryOpenThreads,
+    MemoryExtractionJobs,
+    MemoryCandidates,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -143,17 +246,24 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
-    onCreate: (m) => m.createAll(),
+    onCreate: (m) async {
+      await m.createAll();
+      await _ensureMemoryFtsSchema();
+    },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
         await m.addColumn(chatMessages, chatMessages.sttConfidence);
+        // Drift creates the current table definition here. For a v1 database,
+        // do not subsequently add v3/v4 columns a second time.
         await m.createTable(memoryRecords);
-      }
-      if (from < 3) {
+        await m.createTable(memoryEntities);
+        await m.createTable(memoryEdges);
+        await m.createTable(memoryContradictions);
+      } else if (from < 3) {
         await m.addColumn(memoryRecords, memoryRecords.originalText);
         await m.addColumn(memoryRecords, memoryRecords.canonicalText);
         await m.addColumn(memoryRecords, memoryRecords.language);
@@ -168,14 +278,59 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(memoryEdges);
         await m.createTable(memoryContradictions);
       }
-      if (from < 4) {
+      if (from >= 2 && from < 4) {
         await m.addColumn(memoryRecords, memoryRecords.receiptPromptedAt);
+      }
+      if (from < 5) {
+        await m.createTable(memoryEpisodes);
+        await m.createTable(memoryOpenThreads);
+        await m.createTable(memoryExtractionJobs);
+        await m.createTable(memoryCandidates);
       }
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');
+      await _ensureMemoryFtsSchema();
     },
   );
+
+  Future<void> _ensureMemoryFtsSchema() async {
+    await customStatement('''
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts USING fts5(
+        memory_id UNINDEXED,
+        label,
+        content,
+        canonical_text,
+        tokenize = 'unicode61 remove_diacritics 2'
+      )
+    ''');
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS memory_records_fts_insert
+      AFTER INSERT ON memory_records BEGIN
+        INSERT INTO memory_records_fts(memory_id, label, content, canonical_text)
+        VALUES (new.id, new.label, new.content, new.canonical_text);
+      END
+    ''');
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS memory_records_fts_update
+      AFTER UPDATE ON memory_records BEGIN
+        DELETE FROM memory_records_fts WHERE memory_id = old.id;
+        INSERT INTO memory_records_fts(memory_id, label, content, canonical_text)
+        VALUES (new.id, new.label, new.content, new.canonical_text);
+      END
+    ''');
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS memory_records_fts_delete
+      AFTER DELETE ON memory_records BEGIN
+        DELETE FROM memory_records_fts WHERE memory_id = old.id;
+      END
+    ''');
+    await customStatement('''
+      INSERT INTO memory_records_fts(memory_id, label, content, canonical_text)
+      SELECT id, label, content, canonical_text FROM memory_records
+      WHERE id NOT IN (SELECT memory_id FROM memory_records_fts)
+    ''');
+  }
 
   Stream<List<ChatMessage>> watchMessages() {
     return (select(
@@ -298,6 +453,7 @@ class AppDatabase extends _$AppDatabase {
     final vectorScores = {
       for (final hit in vectorHits) hit.memoryId: hit.score,
     };
+    final ftsScores = await _memoryFtsScores(latestUserText);
     final rows =
         await (select(memoryRecords)
               ..where((row) => row.supersededBy.isNull())
@@ -311,6 +467,13 @@ class AppDatabase extends _$AppDatabase {
         if (_memoryRelevant(row, latestUserText, intent))
           _RankedMemory(row, _memoryRank(row, latestUserText, intent)),
       for (final row in rows)
+        if (ftsScores.containsKey(row.id) &&
+            _memoryAllowedForRetrieval(row, latestUserText))
+          _RankedMemory(
+            row,
+            _memoryRank(row, latestUserText, intent) + ftsScores[row.id]!,
+          ),
+      for (final row in rows)
         if (vectorScores.containsKey(row.id) &&
             _memoryAllowedForRetrieval(row, latestUserText))
           _RankedMemory(
@@ -320,6 +483,7 @@ class AppDatabase extends _$AppDatabase {
                 vectorScores[row.id]!.clamp(0.0, 1.0),
           ),
       ...await _graphExpandedMemories(latestUserText, intent),
+      ...await _openThreadExpandedMemories(latestUserText, intent, route),
     ]..sort((a, b) => b.score.compareTo(a.score));
     final selected = _selectBoundedMemories(
       ranked,
@@ -336,9 +500,71 @@ class AppDatabase extends _$AppDatabase {
       'candidate_count': rows.length,
       'vector_hit_count': vectorHits.length,
       'selected_count': selected.length,
-      'selected_labels': [for (final row in selected) row.label],
+      'selected_kinds': [for (final row in selected) row.kind],
     });
-    return selected;
+    return Future.wait(selected.map(_expandEpisodeWindow));
+  }
+
+  Future<Map<String, double>> _memoryFtsScores(String query) async {
+    final tokens = _canonicalMemoryText(query)
+        .split(RegExp(r'\s+'))
+        .where((token) => token.length >= 2)
+        .take(8)
+        .toList();
+    if (tokens.isEmpty) return const {};
+    final match = tokens
+        .map((token) => '"${token.replaceAll('"', '')}"')
+        .join(' OR ');
+    try {
+      final rows = await customSelect(
+        'SELECT memory_id, bm25(memory_records_fts) AS rank '
+        'FROM memory_records_fts WHERE memory_records_fts MATCH ? LIMIT 20',
+        variables: [Variable<String>(match)],
+      ).get();
+      return {
+        for (final row in rows)
+          row.read<String>('memory_id'):
+              (1 / (1 + row.read<double>('rank').abs())).clamp(0.0, 1.0),
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  Future<MemoryRecord> _expandEpisodeWindow(MemoryRecord memory) async {
+    if (memory.kind != 'episodic') return memory;
+    final sourceIds = _decodeStringList(memory.sourceTurnIdsJson);
+    if (sourceIds.isEmpty) return memory;
+    final sources =
+        await (select(chatMessages)
+              ..where((row) => row.turnId.isIn(sourceIds))
+              ..orderBy([(row) => OrderingTerm.asc(row.createdAt)]))
+            .get();
+    if (sources.isEmpty) return memory;
+    final anchor = sources.first.createdAt;
+    final surrounding =
+        await (select(chatMessages)
+              ..where(
+                (row) =>
+                    row.sessionId.equals(sources.first.sessionId) &
+                    row.createdAt.isBetweenValues(
+                      anchor - 120000,
+                      anchor + 120000,
+                    ) &
+                    (row.status.like('final%') |
+                        row.status.equals('safety_override')),
+              )
+              ..orderBy([(row) => OrderingTerm.asc(row.createdAt)])
+              ..limit(6))
+            .get();
+    if (surrounding.isEmpty) return memory;
+    final window = surrounding
+        .map(
+          (row) =>
+              '${row.role}: ${_cleanMemoryText(row.messageText, maxChars: 140)}',
+        )
+        .join('\n');
+    return memory.copyWith(content: '${memory.content}\nContext:\n$window');
   }
 
   Future<List<MemoryRecord>> readMemoryRecordsForTurn({
@@ -359,8 +585,8 @@ class AppDatabase extends _$AppDatabase {
             (row) =>
                 row.supersededBy.isNull() &
                 row.sensitivity.equals('normal') &
-                row.receiptState.isNotIn(['rejected']) &
-                row.temporalStatus.isNotIn(['expired']) &
+                row.receiptState.isNotIn(['rejected', 'unconfirmed']) &
+                row.temporalStatus.isNotIn(['expired', 'stale']) &
                 row.content.isNotValue(''),
           )
           ..orderBy([(row) => OrderingTerm.asc(row.updatedAt)]))
@@ -375,7 +601,7 @@ class AppDatabase extends _$AppDatabase {
             (row) =>
                 row.supersededBy.isNull() &
                 row.sensitivity.equals('normal') &
-                row.receiptState.isNotIn(['rejected']) &
+                row.receiptState.isNotIn(['rejected', 'unconfirmed']) &
                 row.temporalStatus.isNotIn(['expired', 'stale']) &
                 (row.kind.equals('core_profile') |
                     (row.kind.equals('procedural') &
@@ -402,6 +628,10 @@ class AppDatabase extends _$AppDatabase {
 
   Future<void> clearHistory() async {
     await transaction(() async {
+      await delete(memoryCandidates).go();
+      await delete(memoryExtractionJobs).go();
+      await delete(memoryOpenThreads).go();
+      await delete(memoryEpisodes).go();
       await delete(memoryContradictions).go();
       await delete(memoryEdges).go();
       await delete(memoryEntities).go();
@@ -411,10 +641,643 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  Stream<List<MemoryRecord>> watchManageableMemories() {
+    return (select(memoryRecords)
+          ..where(
+            (row) =>
+                row.supersededBy.isNull() &
+                row.temporalStatus.isNotIn(['expired']),
+          )
+          ..orderBy([
+            (row) => OrderingTerm.desc(row.importanceScore),
+            (row) => OrderingTerm.desc(row.updatedAt),
+          ]))
+        .watch();
+  }
+
+  Future<void> confirmMemory(String memoryId) async {
+    await transaction(() async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await (update(
+        memoryRecords,
+      )..where((row) => row.id.equals(memoryId))).write(
+        MemoryRecordsCompanion(
+          receiptState: const Value('confirmed'),
+          confidenceScore: const Value(0.95),
+          updatedAt: Value(now),
+        ),
+      );
+      await (update(
+        memoryCandidates,
+      )..where((row) => row.targetMemoryId.equals(memoryId))).write(
+        const MemoryCandidatesCompanion(
+          decisionState: Value('confirmed'),
+          decisionReason: Value('explicit_user_confirmation'),
+        ),
+      );
+    });
+  }
+
+  Future<void> forgetMemory(String memoryId) async {
+    await transaction(() async {
+      await (delete(memoryContradictions)..where(
+            (row) =>
+                row.oldMemoryId.equals(memoryId) |
+                row.newMemoryId.equals(memoryId),
+          ))
+          .go();
+      await (delete(
+        memoryCandidates,
+      )..where((row) => row.targetMemoryId.equals(memoryId))).go();
+      await (delete(
+        memoryOpenThreads,
+      )..where((row) => row.id.equals(memoryId))).go();
+      await (delete(
+        memoryEpisodes,
+      )..where((row) => row.id.equals(memoryId))).go();
+      await (delete(
+        memoryRecords,
+      )..where((row) => row.id.equals(memoryId))).go();
+    });
+  }
+
+  Future<void> enqueueMemoryExtractionJob({
+    required String sessionId,
+    required String turnId,
+    required String extractionVersion,
+  }) async {
+    final messages =
+        await (select(chatMessages)..where(
+              (row) =>
+                  row.sessionId.equals(sessionId) &
+                  row.turnId.equals(turnId) &
+                  (row.status.like('final%') |
+                      row.status.equals('safety_override')),
+            ))
+            .get();
+    if (!messages.any((row) => row.role == 'user') ||
+        !messages.any((row) => row.role == 'assistant' || row.role == 'ai')) {
+      return;
+    }
+    final duplicate =
+        await (select(memoryExtractionJobs)..where(
+              (row) =>
+                  row.sessionId.equals(sessionId) &
+                  row.endTurnId.equals(turnId) &
+                  row.extractionVersion.equals(extractionVersion),
+            ))
+            .getSingleOrNull();
+    if (duplicate != null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final pending =
+        await (select(memoryExtractionJobs)
+              ..where(
+                (row) =>
+                    row.sessionId.equals(sessionId) &
+                    row.extractionVersion.equals(extractionVersion) &
+                    row.status.equals('pending'),
+              )
+              ..orderBy([(row) => OrderingTerm.desc(row.createdAt)])
+              ..limit(1))
+            .getSingleOrNull();
+    if (pending != null) {
+      final startMessage =
+          await (select(chatMessages)
+                ..where(
+                  (row) =>
+                      row.sessionId.equals(sessionId) &
+                      row.turnId.equals(pending.startTurnId) &
+                      row.role.equals('user'),
+                )
+                ..orderBy([(row) => OrderingTerm.asc(row.createdAt)])
+                ..limit(1))
+              .getSingleOrNull();
+      final endMessage = messages.firstWhere((row) => row.role == 'user');
+      final boundedUsers = startMessage == null
+          ? const <ChatMessage>[]
+          : await (select(chatMessages)..where(
+                  (row) =>
+                      row.sessionId.equals(sessionId) &
+                      row.role.equals('user') &
+                      row.createdAt.isBetweenValues(
+                        startMessage.createdAt,
+                        endMessage.createdAt,
+                      ) &
+                      row.status.like('final%'),
+                ))
+                .get();
+      if (boundedUsers.map((row) => row.turnId).toSet().length <= 4) {
+        await (update(
+          memoryExtractionJobs,
+        )..where((row) => row.id.equals(pending.id))).write(
+          MemoryExtractionJobsCompanion(
+            endTurnId: Value(turnId),
+            requestHash: Value(
+              _stableMemoryHash(
+                '$sessionId|${pending.startTurnId}|$turnId|$extractionVersion',
+              ),
+            ),
+            updatedAt: Value(now),
+          ),
+        );
+        return;
+      }
+      await (update(
+        memoryExtractionJobs,
+      )..where((row) => row.id.equals(pending.id))).write(
+        MemoryExtractionJobsCompanion(
+          status: const Value('ready'),
+          updatedAt: Value(now),
+        ),
+      );
+    }
+    final hash = _stableMemoryHash('$sessionId|$turnId|$extractionVersion');
+    final jobId = 'memory_job_$hash';
+    await into(memoryExtractionJobs).insert(
+      MemoryExtractionJobsCompanion.insert(
+        id: jobId,
+        sessionId: sessionId,
+        startTurnId: turnId,
+        endTurnId: turnId,
+        extractionVersion: extractionVersion,
+        requestHash: hash,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+  }
+
+  Future<MemoryExtractionJob?> claimNextMemoryExtractionJob() async {
+    return transaction(() async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final staleLease = now - const Duration(minutes: 5).inMilliseconds;
+      final job =
+          await (select(memoryExtractionJobs)
+                ..where(
+                  (row) =>
+                      (((row.status.isIn(['pending', 'ready', 'retry'])) &
+                              (row.nextAttemptAt.isNull() |
+                                  row.nextAttemptAt.isSmallerOrEqualValue(
+                                    now,
+                                  ))) |
+                          (row.status.equals('processing') &
+                              row.updatedAt.isSmallerThanValue(staleLease))) &
+                      row.attempts.isSmallerThanValue(5),
+                )
+                ..orderBy([(row) => OrderingTerm.asc(row.createdAt)])
+                ..limit(1))
+              .getSingleOrNull();
+      if (job == null) return null;
+      await (update(
+        memoryExtractionJobs,
+      )..where((row) => row.id.equals(job.id))).write(
+        MemoryExtractionJobsCompanion(
+          status: const Value('processing'),
+          attempts: Value(job.attempts + 1),
+          updatedAt: Value(now),
+          lastErrorCode: const Value(null),
+        ),
+      );
+      return job.copyWith(
+        status: 'processing',
+        attempts: job.attempts + 1,
+        updatedAt: now,
+      );
+    });
+  }
+
+  Future<List<ChatMessage>> readExtractionWindow(
+    MemoryExtractionJob job,
+  ) async {
+    final start =
+        await (select(chatMessages)
+              ..where(
+                (row) =>
+                    row.sessionId.equals(job.sessionId) &
+                    row.turnId.equals(job.startTurnId),
+              )
+              ..orderBy([(row) => OrderingTerm.asc(row.createdAt)])
+              ..limit(1))
+            .getSingleOrNull();
+    final end =
+        await (select(chatMessages)
+              ..where(
+                (row) =>
+                    row.sessionId.equals(job.sessionId) &
+                    row.turnId.equals(job.endTurnId),
+              )
+              ..orderBy([(row) => OrderingTerm.desc(row.createdAt)])
+              ..limit(1))
+            .getSingleOrNull();
+    if (start == null || end == null) return const [];
+    return (select(chatMessages)
+          ..where(
+            (row) =>
+                row.sessionId.equals(job.sessionId) &
+                row.createdAt.isBetweenValues(start.createdAt, end.createdAt) &
+                (row.status.like('final%') |
+                    row.status.equals('safety_override')),
+          )
+          ..orderBy([(row) => OrderingTerm.asc(row.createdAt)])
+          ..limit(8))
+        .get();
+  }
+
+  Future<void> failMemoryExtractionJob(
+    MemoryExtractionJob job, {
+    required String errorCode,
+    required bool retryable,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final terminal = !retryable || job.attempts >= 5;
+    final delayMinutes = (1 << job.attempts.clamp(0, 5)).clamp(2, 32);
+    await (update(
+      memoryExtractionJobs,
+    )..where((row) => row.id.equals(job.id))).write(
+      MemoryExtractionJobsCompanion(
+        status: Value(terminal ? 'dead' : 'retry'),
+        lastErrorCode: Value(_truncateMemoryText(errorCode, 100)),
+        nextAttemptAt: terminal
+            ? const Value(null)
+            : Value(now + Duration(minutes: delayMinutes).inMilliseconds),
+        updatedAt: Value(now),
+      ),
+    );
+  }
+
+  Future<void> validateAndApplyMemoryCandidates({
+    required MemoryExtractionJob job,
+    required List<ExtractedMemoryCandidate> candidates,
+  }) async {
+    await transaction(() async {
+      final evidence = await readExtractionWindow(job);
+      final byTurn = <String, List<ChatMessage>>{};
+      for (final row in evidence) {
+        byTurn.putIfAbsent(row.turnId, () => []).add(row);
+      }
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (var index = 0; index < candidates.take(16).length; index += 1) {
+        final candidate = candidates[index];
+        final fingerprint = _candidateFingerprint(candidate);
+        final targetId = 'memory_llm_$fingerprint';
+        final prior =
+            await (select(memoryCandidates)..where(
+                  (row) =>
+                      row.candidateKind.equals(candidate.kind) &
+                      row.subject.equals(candidate.subject) &
+                      row.predicate.equals(candidate.predicate) &
+                      row.objectText.equals(candidate.objectText) &
+                      row.jobId.isNotValue(job.id) &
+                      row.decisionState.isIn([
+                        'admitted',
+                        'confirmed',
+                        'pending_confirmation',
+                      ]),
+                ))
+                .get();
+        final supersessionTargets =
+            await (select(memoryCandidates)..where(
+                  (row) =>
+                      row.candidateKind.equals(candidate.kind) &
+                      row.subject.equals(candidate.subject) &
+                      row.predicate.equals(candidate.predicate) &
+                      row.objectText.isNotValue(candidate.objectText) &
+                      row.targetMemoryId.isNotNull() &
+                      row.decisionState.isIn(['admitted', 'confirmed']),
+                ))
+                .get();
+        final exactTarget = await (select(
+          memoryRecords,
+        )..where((row) => row.id.equals(targetId))).getSingleOrNull();
+        final decision = _validateMemoryCandidate(
+          candidate,
+          byTurn,
+          prior.length,
+          hasSupersessionTarget: supersessionTargets.isNotEmpty,
+          hasExactTarget: exactTarget != null,
+        );
+        await into(memoryCandidates).insertOnConflictUpdate(
+          MemoryCandidatesCompanion.insert(
+            id: '${job.id}_$index',
+            jobId: job.id,
+            candidateKind: candidate.kind,
+            subject: candidate.subject,
+            predicate: candidate.predicate,
+            objectText: candidate.objectText,
+            eventStartAt: Value(candidate.eventStartAt),
+            eventEndAt: Value(candidate.eventEndAt),
+            temporalStatus: candidate.temporalStatus,
+            explicitness: candidate.explicitness,
+            confidenceScore: candidate.confidence,
+            futureUtility: candidate.futureUtility,
+            sensitivity: candidate.sensitivity,
+            sourceTurnIdsJson: jsonEncode(candidate.sourceTurnIds),
+            evidenceRole: candidate.evidenceRole,
+            suggestedAction: candidate.suggestedAction,
+            followUpAllowed: Value(candidate.followUpAllowed),
+            proactiveAllowed: Value(candidate.proactiveAllowed),
+            decisionState: decision.state,
+            decisionReason: decision.reason,
+            targetMemoryId: decision.admit
+                ? Value(targetId)
+                : const Value(null),
+            createdAt: now,
+          ),
+        );
+        _logMemoryDiagnostic('memory_candidate_decision', {
+          'job_id': job.id,
+          'candidate_kind': candidate.kind,
+          'decision_state': decision.state,
+          'decision_reason': decision.reason,
+        });
+        if (decision.admit) {
+          await _applyValidatedCandidate(
+            candidate: candidate,
+            job: job,
+            memoryId: targetId,
+            pendingConfirmation: decision.state == 'pending_confirmation',
+            now: now,
+          );
+        }
+      }
+      await (update(
+        memoryExtractionJobs,
+      )..where((row) => row.id.equals(job.id))).write(
+        MemoryExtractionJobsCompanion(
+          status: const Value('succeeded'),
+          completedAt: Value(now),
+          updatedAt: Value(now),
+          nextAttemptAt: const Value(null),
+        ),
+      );
+    });
+  }
+
+  Future<void> _applyValidatedCandidate({
+    required ExtractedMemoryCandidate candidate,
+    required MemoryExtractionJob job,
+    required String memoryId,
+    required bool pendingConfirmation,
+    required int now,
+  }) async {
+    if (candidate.suggestedAction == 'EXPIRE') {
+      await (update(
+        memoryRecords,
+      )..where((row) => row.id.equals(memoryId))).write(
+        MemoryRecordsCompanion(
+          temporalStatus: const Value('expired'),
+          updatedAt: Value(now),
+          replacementReason: const Value('explicit_user_expiration'),
+        ),
+      );
+      await (update(
+        memoryOpenThreads,
+      )..where((row) => row.id.equals(memoryId))).write(
+        MemoryOpenThreadsCompanion(
+          status: const Value('cancelled'),
+          closedAt: Value(now),
+          updatedAt: Value(now),
+        ),
+      );
+      return;
+    }
+    final existing = await (select(
+      memoryRecords,
+    )..where((row) => row.id.equals(memoryId))).getSingleOrNull();
+    final sources = <String>{
+      if (existing != null) ..._decodeStringList(existing.sourceTurnIdsJson),
+      ...candidate.sourceTurnIds,
+    }.toList();
+    final content = _candidateContent(candidate);
+    await into(memoryRecords).insertOnConflictUpdate(
+      MemoryRecordsCompanion.insert(
+        id: memoryId,
+        kind: candidate.kind == 'episode'
+            ? 'episodic'
+            : candidate.kind == 'open_thread' ||
+                  candidate.kind == 'assistant_commitment'
+            ? 'episodic'
+            : 'semantic',
+        label: 'llm_${candidate.kind}_${_safeMemoryToken(candidate.predicate)}',
+        content: content,
+        originalText: const Value(''),
+        canonicalText: Value(
+          _canonicalMemoryText('${candidate.predicate} $content'),
+        ),
+        language: const Value('und'),
+        script: const Value('mixed'),
+        sourceTurnIdsJson: jsonEncode(sources),
+        sourceRole: candidate.evidenceRole,
+        transcriptStatus: 'validated_completed_turn',
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        confidenceScore: existing == null
+            ? candidate.confidence
+            : (existing.confidenceScore + 0.05).clamp(0.0, 0.98),
+        importanceScore: (0.35 + candidate.futureUtility * 0.55).clamp(
+          0.0,
+          0.9,
+        ),
+        recurrenceCount: Value((existing?.recurrenceCount ?? 0) + 1),
+        sensitivity: const Value('normal'),
+        temporalStatus: Value(candidate.temporalStatus),
+        receiptState: Value(pendingConfirmation ? 'unconfirmed' : 'implicit'),
+        supersededBy: const Value(null),
+        evidenceSummary: Value(
+          pendingConfirmation
+              ? 'Proposed from your statement; waiting for your confirmation.'
+              : candidate.kind == 'assistant_commitment'
+              ? 'Remembered from the assistant’s explicit commitment.'
+              : 'Remembered from your ${candidate.explicitness} statement.',
+        ),
+      ),
+    );
+    if (candidate.suggestedAction == 'SUPERSEDE' && !pendingConfirmation) {
+      await _supersedePriorLlmSemanticMemories(
+        candidate: candidate,
+        newMemoryId: memoryId,
+        now: now,
+      );
+    }
+    if (candidate.kind == 'episode') {
+      await into(memoryEpisodes).insertOnConflictUpdate(
+        MemoryEpisodesCompanion.insert(
+          id: memoryId,
+          sessionId: job.sessionId,
+          title: _truncateMemoryText(candidate.objectText, 80),
+          summary: candidate.objectText,
+          retrievalText: content,
+          sourceTurnIdsJson: jsonEncode(candidate.sourceTurnIds),
+          eventStartAt: Value(candidate.eventStartAt),
+          eventEndAt: Value(candidate.eventEndAt),
+          temporalStatus: Value(candidate.temporalStatus),
+          explicitness: Value(candidate.explicitness),
+          confidenceScore: candidate.confidence,
+          importanceScore: candidate.futureUtility,
+          sensitivity: const Value('normal'),
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        ),
+      );
+    }
+    if (candidate.kind == 'open_thread' ||
+        candidate.kind == 'assistant_commitment') {
+      await into(memoryOpenThreads).insertOnConflictUpdate(
+        MemoryOpenThreadsCompanion.insert(
+          id: memoryId,
+          kind: candidate.kind,
+          subject: candidate.subject,
+          predicate: candidate.predicate,
+          objectText: candidate.objectText,
+          dueStartAt: Value(candidate.eventStartAt),
+          dueEndAt: Value(candidate.eventEndAt),
+          followUpAllowed: Value(candidate.followUpAllowed),
+          proactiveAllowed: Value(
+            candidate.proactiveAllowed && candidate.followUpAllowed,
+          ),
+          sourceTurnIdsJson: jsonEncode(candidate.sourceTurnIds),
+          confidenceScore: candidate.confidence,
+          sensitivity: const Value('normal'),
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        ),
+      );
+    }
+  }
+
+  Future<void> _supersedePriorLlmSemanticMemories({
+    required ExtractedMemoryCandidate candidate,
+    required String newMemoryId,
+    required int now,
+  }) async {
+    final priorCandidates =
+        await (select(memoryCandidates)..where(
+              (row) =>
+                  row.candidateKind.equals(candidate.kind) &
+                  row.subject.equals(candidate.subject) &
+                  row.predicate.equals(candidate.predicate) &
+                  row.objectText.isNotValue(candidate.objectText) &
+                  row.targetMemoryId.isNotNull() &
+                  row.decisionState.isIn(['admitted', 'confirmed']),
+            ))
+            .get();
+    final priorIds = priorCandidates
+        .map((row) => row.targetMemoryId)
+        .whereType<String>()
+        .where((id) => id != newMemoryId)
+        .toSet();
+    for (final oldMemoryId in priorIds) {
+      final oldMemory = await (select(
+        memoryRecords,
+      )..where((row) => row.id.equals(oldMemoryId))).getSingleOrNull();
+      if (oldMemory == null || oldMemory.supersededBy != null) continue;
+      await (update(
+        memoryRecords,
+      )..where((row) => row.id.equals(oldMemoryId))).write(
+        MemoryRecordsCompanion(
+          temporalStatus: const Value('past'),
+          supersededBy: Value(newMemoryId),
+          replacementReason: const Value('explicit_llm_semantic_supersession'),
+          updatedAt: Value(now),
+        ),
+      );
+      await into(memoryContradictions).insertOnConflictUpdate(
+        MemoryContradictionsCompanion.insert(
+          id: 'contradiction_${_stableMemoryHash('$oldMemoryId|$newMemoryId')}',
+          oldMemoryId: oldMemoryId,
+          newMemoryId: newMemoryId,
+          reason: 'explicit_llm_semantic_supersession',
+          evidenceTurnIdsJson: Value(jsonEncode(candidate.sourceTurnIds)),
+          createdAt: now,
+        ),
+      );
+    }
+  }
+
   Future<void> consolidateLocalMemory({int? nowMs}) async {
     await transaction(() async {
-      await _applyMemoryDecay(nowMs ?? DateTime.now().millisecondsSinceEpoch);
+      final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+      await _applyMemoryDecay(now);
+      await _consolidateOpenThreads(now);
+      await _pruneExtractionAudit(now);
     });
+  }
+
+  Future<void> _consolidateOpenThreads(int now) async {
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    final threads = await (select(
+      memoryOpenThreads,
+    )..where((row) => row.status.equals('open'))).get();
+    for (final thread in threads) {
+      final due = thread.dueEndAt ?? thread.dueStartAt;
+      if (due == null) {
+        if (now - thread.createdAt <= thirtyDaysMs) continue;
+        await (update(
+          memoryOpenThreads,
+        )..where((row) => row.id.equals(thread.id))).write(
+          MemoryOpenThreadsCompanion(
+            status: const Value('closed'),
+            closedAt: Value(now),
+            updatedAt: Value(now),
+          ),
+        );
+        await (update(
+          memoryRecords,
+        )..where((row) => row.id.equals(thread.id))).write(
+          MemoryRecordsCompanion(
+            temporalStatus: const Value('stale'),
+            updatedAt: Value(now),
+          ),
+        );
+        continue;
+      }
+      if (due >= now) continue;
+      if (now - due <= thirtyDaysMs) {
+        await (update(
+          memoryRecords,
+        )..where((row) => row.id.equals(thread.id))).write(
+          MemoryRecordsCompanion(
+            temporalStatus: const Value('past'),
+            updatedAt: Value(now),
+          ),
+        );
+      } else {
+        await (update(
+          memoryOpenThreads,
+        )..where((row) => row.id.equals(thread.id))).write(
+          MemoryOpenThreadsCompanion(
+            status: const Value('closed'),
+            closedAt: Value(now),
+            updatedAt: Value(now),
+          ),
+        );
+        await (update(
+          memoryRecords,
+        )..where((row) => row.id.equals(thread.id))).write(
+          MemoryRecordsCompanion(
+            temporalStatus: const Value('stale'),
+            updatedAt: Value(now),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _pruneExtractionAudit(int now) async {
+    const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    await (delete(memoryCandidates)..where(
+          (row) =>
+              row.decisionState.equals('rejected') &
+              row.createdAt.isSmallerThanValue(now - ninetyDaysMs),
+        ))
+        .go();
+    await (delete(memoryExtractionJobs)..where(
+          (row) =>
+              row.status.equals('succeeded') &
+              row.updatedAt.isSmallerThanValue(now - thirtyDaysMs),
+        ))
+        .go();
   }
 
   Future<List<MemoryRecord>> readPendingMemoryReceipts({required int limit}) {
@@ -676,12 +1539,62 @@ class AppDatabase extends _$AppDatabase {
             .get();
     return [
       for (final row in rows)
-        if (relatedTerms.any(
-          (term) =>
-              row.canonicalText.contains(term) ||
-              row.content.toLowerCase().contains(term),
-        ))
+        if (_memoryAllowedForRetrieval(row, latestUserText) &&
+            relatedTerms.any(
+              (term) =>
+                  row.canonicalText.contains(term) ||
+                  row.content.toLowerCase().contains(term),
+            ))
           _RankedMemory(row, _memoryRank(row, latestUserText, intent) + 0.65),
+    ];
+  }
+
+  Future<List<_RankedMemory>> _openThreadExpandedMemories(
+    String latestUserText,
+    _MemoryQueryIntent intent,
+    String? route,
+  ) async {
+    final normalized = _normalizeForMemory(latestUserText);
+    final vagueFollowUp =
+        route == 'episodic' ||
+        _containsAny(normalized, [
+          'kaisa raha',
+          'kaisi rahi',
+          'how did it go',
+          'what happened',
+          'uska kya hua',
+          'उसका क्या हुआ',
+          'कैसा रहा',
+          'कैसी रही',
+        ]);
+    if (!vagueFollowUp) return const [];
+    final threads =
+        await (select(memoryOpenThreads)
+              ..where(
+                (row) =>
+                    row.status.equals('open') &
+                    row.sensitivity.equals('normal'),
+              )
+              ..orderBy([
+                (row) => OrderingTerm.desc(row.dueStartAt),
+                (row) => OrderingTerm.desc(row.updatedAt),
+              ])
+              ..limit(4))
+            .get();
+    if (threads.isEmpty) return const [];
+    final ids = threads.map((thread) => thread.id).toList();
+    final rows =
+        await (select(memoryRecords)..where(
+              (row) =>
+                  row.id.isIn(ids) &
+                  row.supersededBy.isNull() &
+                  row.temporalStatus.isNotIn(['expired', 'stale']),
+            ))
+            .get();
+    return [
+      for (final row in rows)
+        if (_memoryAllowedForRetrieval(row, latestUserText))
+          _RankedMemory(row, _memoryRank(row, latestUserText, intent) + 1.1),
     ];
   }
 
@@ -899,9 +1812,42 @@ class AppDatabase extends _$AppDatabase {
           ),
         ),
       );
+      await (update(
+        memoryCandidates,
+      )..where((row) => row.targetMemoryId.equals(pending.id))).write(
+        const MemoryCandidatesCompanion(
+          decisionState: Value('confirmed'),
+          decisionReason: Value('explicit_voice_confirmation'),
+        ),
+      );
       _logMemoryDiagnostic('memory_receipt_result', {
         'memory_id': pending.id,
         'result': 'confirmed',
+      });
+      return true;
+    }
+    if (pending.id.startsWith('memory_llm_')) {
+      await (delete(memoryContradictions)..where(
+            (row) =>
+                row.oldMemoryId.equals(pending.id) |
+                row.newMemoryId.equals(pending.id),
+          ))
+          .go();
+      await (delete(
+        memoryCandidates,
+      )..where((row) => row.targetMemoryId.equals(pending.id))).go();
+      await (delete(
+        memoryOpenThreads,
+      )..where((row) => row.id.equals(pending.id))).go();
+      await (delete(
+        memoryEpisodes,
+      )..where((row) => row.id.equals(pending.id))).go();
+      await (delete(
+        memoryRecords,
+      )..where((row) => row.id.equals(pending.id))).go();
+      _logMemoryDiagnostic('memory_receipt_result', {
+        'memory_id': pending.id,
+        'result': 'forgotten',
       });
       return true;
     }
@@ -1830,7 +2776,7 @@ bool _memoryAllowedForRetrieval(MemoryRecord row, String latestUserText) {
     return false;
   }
   if (row.sensitivity != 'normal' ||
-      row.receiptState == 'rejected' ||
+      {'rejected', 'unconfirmed'}.contains(row.receiptState) ||
       row.temporalStatus == 'expired' ||
       row.temporalStatus == 'stale') {
     return false;
@@ -1865,11 +2811,18 @@ double _memoryRank(
     _ => 0.0,
   };
   final recurrence = (row.recurrenceCount.clamp(1, 12) - 1) * 0.025;
+  final temporalBoost = switch (row.temporalStatus) {
+    'future' => 0.32,
+    'current' => 0.18,
+    'uncertain' => -0.08,
+    _ => 0.0,
+  };
   return row.importanceScore +
       row.confidenceScore +
       relevance +
       typeBoost +
       recurrence +
+      temporalBoost +
       recency;
 }
 
@@ -2265,12 +3218,40 @@ bool _containsSensitiveMemoryBlocker(String normalized) {
     'आत्महत्या',
     'doctor',
     'medical',
+    'diagnosis',
+    'cancer',
+    'diabetes',
+    'therapy',
+    'medicine',
+    'medication',
     'dawai',
+    'बीमारी',
+    'दवाई',
+    'इलाज',
     'legal',
     'lawyer',
+    'court case',
+    'police case',
     'loan',
     'investment',
+    'salary',
+    'bank account',
+    'account number',
+    'credit card',
+    'debit card',
+    'upi pin',
+    'aadhaar',
+    'aadhar',
+    'pan number',
+    'password',
+    'otp',
     'sexual',
+    'religion',
+    'caste',
+    'political party',
+    'address is',
+    'phone number',
+    'email is',
     'sirf tum',
     'tumhare bina',
   ];
@@ -2307,6 +3288,365 @@ LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     final dir = await getApplicationDocumentsDirectory();
     final file = File(p.join(dir.path, 'companion_chat.sqlite'));
-    return NativeDatabase.createInBackground(file);
+    return openEncryptedCompanionDatabase(file);
   });
+}
+
+class _CandidateDecision {
+  const _CandidateDecision(this.state, this.reason);
+
+  final String state;
+  final String reason;
+  bool get admit => state == 'admitted' || state == 'pending_confirmation';
+}
+
+_CandidateDecision _validateMemoryCandidate(
+  ExtractedMemoryCandidate candidate,
+  Map<String, List<ChatMessage>> evidence,
+  int priorAdmissions, {
+  required bool hasSupersessionTarget,
+  required bool hasExactTarget,
+}) {
+  const allowedKinds = {
+    'profile',
+    'preference',
+    'relationship',
+    'routine',
+    'goal',
+    'boundary',
+    'episode',
+    'open_thread',
+    'assistant_commitment',
+  };
+  const allowedTemporalStatuses = {'current', 'past', 'future', 'uncertain'};
+  const allowedExplicitness = {'explicit', 'implied', 'assistant_only'};
+  const allowedEvidenceRoles = {'user', 'mixed', 'assistant'};
+  if (!allowedKinds.contains(candidate.kind) ||
+      candidate.subject.trim().isEmpty ||
+      candidate.subject.length > 100 ||
+      candidate.predicate.trim().isEmpty ||
+      candidate.predicate.length > 100 ||
+      candidate.objectText.trim().isEmpty ||
+      candidate.objectText.length > 500 ||
+      candidate.sourceTurnIds.isEmpty ||
+      candidate.sourceTurnIds.length > 8 ||
+      candidate.sourceTurnIds.toSet().length !=
+          candidate.sourceTurnIds.length ||
+      !allowedTemporalStatuses.contains(candidate.temporalStatus) ||
+      !allowedExplicitness.contains(candidate.explicitness) ||
+      !allowedEvidenceRoles.contains(candidate.evidenceRole) ||
+      !candidate.confidence.isFinite ||
+      candidate.confidence < 0 ||
+      candidate.confidence > 1 ||
+      !candidate.futureUtility.isFinite ||
+      candidate.futureUtility < 0 ||
+      candidate.futureUtility > 1 ||
+      (candidate.eventStartAt != null && candidate.eventStartAt! < 0) ||
+      (candidate.eventEndAt != null && candidate.eventEndAt! < 0) ||
+      (candidate.proactiveAllowed && !candidate.followUpAllowed) ||
+      candidate.sourceTurnIds.any((id) => !evidence.containsKey(id))) {
+    return const _CandidateDecision(
+      'rejected',
+      'invalid_or_unverifiable_schema',
+    );
+  }
+  final sourceMessages = [
+    for (final id in candidate.sourceTurnIds) ...evidence[id]!,
+  ];
+  final sensitivityEvidence = _normalizeForMemory(
+    '${candidate.subject} ${candidate.predicate} ${candidate.objectText} '
+    '${sourceMessages.map((row) => row.messageText).join(' ')}',
+  );
+  if (candidate.sensitivity != 'normal' ||
+      _containsSensitiveMemoryBlocker(sensitivityEvidence)) {
+    return const _CandidateDecision(
+      'rejected',
+      'sensitive_memory_requires_explicit_opt_in',
+    );
+  }
+  const allowedActions = {'ADD', 'REINFORCE', 'SUPERSEDE', 'EXPIRE', 'NOOP'};
+  if (!allowedActions.contains(candidate.suggestedAction)) {
+    return const _CandidateDecision(
+      'rejected',
+      'invalid_or_unverifiable_schema',
+    );
+  }
+  if (candidate.suggestedAction == 'NOOP') {
+    return const _CandidateDecision('rejected', 'unsafe_or_noop_action');
+  }
+  if (candidate.suggestedAction == 'SUPERSEDE' &&
+      (!{'routine', 'goal'}.contains(candidate.kind) ||
+          candidate.explicitness != 'explicit' ||
+          !hasSupersessionTarget)) {
+    return const _CandidateDecision(
+      'rejected',
+      'supersession_requires_prior_explicit_semantic_target',
+    );
+  }
+  final userEvidence = sourceMessages
+      .where((row) => row.role == 'user')
+      .toList();
+  final lowConfidence = userEvidence.any(
+    (row) =>
+        row.status == 'final_low_confidence' ||
+        (row.sttConfidence != null && row.sttConfidence! < 0.55),
+  );
+  if (lowConfidence) {
+    return const _CandidateDecision('rejected', 'low_confidence_transcript');
+  }
+  if (!_candidateEventTimeGrounded(candidate, sourceMessages)) {
+    return const _CandidateDecision('rejected', 'event_time_not_grounded');
+  }
+  if (candidate.kind == 'assistant_commitment') {
+    if (candidate.evidenceRole != 'assistant' &&
+        candidate.evidenceRole != 'mixed') {
+      return const _CandidateDecision(
+        'rejected',
+        'assistant_commitment_role_mismatch',
+      );
+    }
+    final assistantEvidence = sourceMessages
+        .where((row) => row.role == 'assistant' || row.role == 'ai')
+        .map((row) => row.messageText)
+        .join(' ');
+    if (!_candidateLexicallyAnchored(candidate, assistantEvidence)) {
+      return const _CandidateDecision(
+        'rejected',
+        'candidate_not_lexically_grounded',
+      );
+    }
+    return candidate.confidence >= 0.75
+        ? const _CandidateDecision('admitted', 'bounded_assistant_commitment')
+        : const _CandidateDecision('rejected', 'low_confidence_commitment');
+  }
+  if (userEvidence.isEmpty || candidate.evidenceRole == 'assistant') {
+    return const _CandidateDecision(
+      'rejected',
+      'assistant_cannot_prove_user_fact',
+    );
+  }
+  if (!_candidateLexicallyAnchored(
+    candidate,
+    userEvidence.map((row) => row.messageText).join(' '),
+  )) {
+    return const _CandidateDecision(
+      'rejected',
+      'candidate_not_lexically_grounded',
+    );
+  }
+  // Preferred identity is exclusively owned by the deterministic Companion
+  // State ledger. The LLM cannot create or overwrite it.
+  if (candidate.kind == 'profile') {
+    return const _CandidateDecision('rejected', 'exact_state_owned');
+  }
+  if (candidate.suggestedAction == 'EXPIRE') {
+    if (!hasExactTarget) {
+      return const _CandidateDecision(
+        'rejected',
+        'expiration_requires_existing_target',
+      );
+    }
+    return candidate.explicitness == 'explicit' && candidate.confidence >= 0.8
+        ? const _CandidateDecision('admitted', 'explicit_expiration')
+        : const _CandidateDecision(
+            'rejected',
+            'expiration_requires_explicit_evidence',
+          );
+  }
+  if (candidate.explicitness == 'explicit') {
+    final threshold =
+        candidate.kind == 'episode' || candidate.kind == 'open_thread'
+        ? 0.68
+        : 0.75;
+    if (candidate.confidence >= threshold && candidate.futureUtility >= 0.4) {
+      if ({'preference', 'boundary', 'relationship'}.contains(candidate.kind)) {
+        return const _CandidateDecision(
+          'pending_confirmation',
+          'exact_or_personal_fact_needs_receipt',
+        );
+      }
+      return const _CandidateDecision(
+        'admitted',
+        'explicit_low_risk_user_evidence',
+      );
+    }
+  }
+  if (candidate.explicitness == 'implied' &&
+      priorAdmissions >= 1 &&
+      candidate.confidence >= 0.72 &&
+      candidate.futureUtility >= 0.55) {
+    return const _CandidateDecision(
+      'pending_confirmation',
+      'recurring_cross_window_hypothesis',
+    );
+  }
+  return const _CandidateDecision(
+    'rejected',
+    'insufficient_explicit_future_value',
+  );
+}
+
+String _candidateFingerprint(ExtractedMemoryCandidate candidate) {
+  final eventIdentity = candidate.kind == 'episode'
+      ? '|${candidate.eventStartAt ?? candidate.sourceTurnIds.first}'
+      : candidate.kind == 'open_thread' && candidate.eventStartAt != null
+      ? '|${candidate.eventStartAt}'
+      : '';
+  return _stableMemoryHash(
+    '${candidate.kind}|${candidate.subject}|${candidate.predicate}|${candidate.objectText}$eventIdentity'
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' '),
+  );
+}
+
+bool _candidateLexicallyAnchored(
+  ExtractedMemoryCandidate candidate,
+  String evidenceText,
+) {
+  const stopWords = {
+    'user',
+    'has',
+    'had',
+    'is',
+    'was',
+    'the',
+    'and',
+    'with',
+    'will',
+    'mera',
+    'meri',
+    'mere',
+    'hai',
+    'tha',
+    'thi',
+    'ko',
+    'ka',
+    'ki',
+    'ke',
+  };
+  Set<String> tokens(String value) => value
+      .toLowerCase()
+      .split(RegExp(r'[^a-z0-9\u0900-\u097F]+'))
+      .where((token) => token.length >= 3 && !stopWords.contains(token))
+      .toSet();
+  final candidateTokens = tokens(
+    '${candidate.predicate} ${candidate.objectText}',
+  );
+  if (candidateTokens.isEmpty) return false;
+  final evidenceTokens = tokens(evidenceText);
+  return candidateTokens.intersection(evidenceTokens).isNotEmpty;
+}
+
+bool _candidateEventTimeGrounded(
+  ExtractedMemoryCandidate candidate,
+  List<ChatMessage> evidence,
+) {
+  final start = candidate.eventStartAt;
+  final end = candidate.eventEndAt;
+  if (start == null && end == null) return true;
+  if (start == null || (end != null && end < start)) return false;
+  final anchorMs = evidence
+      .map((row) => row.createdAt)
+      .reduce((left, right) => left < right ? left : right);
+  const fiveYearsMs = 5 * 366 * 24 * 60 * 60 * 1000;
+  if ((start - anchorMs).abs() > fiveYearsMs ||
+      (end != null && end - start > const Duration(days: 366).inMilliseconds)) {
+    return false;
+  }
+  final text = evidence.map((row) => row.messageText).join(' ').toLowerCase();
+  final proposed = DateTime.fromMillisecondsSinceEpoch(start);
+  final absolute = RegExp(
+    r'\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b',
+  ).firstMatch(text);
+  if (absolute != null) {
+    return proposed.year == int.parse(absolute.group(1)!) &&
+        proposed.month == int.parse(absolute.group(2)!) &&
+        proposed.day == int.parse(absolute.group(3)!);
+  }
+  const weekdays = <String, int>{
+    'monday': DateTime.monday,
+    'somvaar': DateTime.monday,
+    'सोमवार': DateTime.monday,
+    'tuesday': DateTime.tuesday,
+    'mangalvaar': DateTime.tuesday,
+    'मंगलवार': DateTime.tuesday,
+    'wednesday': DateTime.wednesday,
+    'budhvaar': DateTime.wednesday,
+    'बुधवार': DateTime.wednesday,
+    'thursday': DateTime.thursday,
+    'guruvaar': DateTime.thursday,
+    'गुरुवार': DateTime.thursday,
+    'friday': DateTime.friday,
+    'shukravaar': DateTime.friday,
+    'शुक्रवार': DateTime.friday,
+    'saturday': DateTime.saturday,
+    'शनिवार': DateTime.saturday,
+    'sunday': DateTime.sunday,
+    'रविवार': DateTime.sunday,
+  };
+  for (final entry in weekdays.entries) {
+    if (!text.contains(entry.key)) continue;
+    if (proposed.weekday != entry.value) return false;
+    final anchor = DateTime.fromMillisecondsSinceEpoch(anchorMs);
+    final anchorDay = DateTime(anchor.year, anchor.month, anchor.day);
+    final proposedDay = DateTime(proposed.year, proposed.month, proposed.day);
+    final dayDelta = proposedDay.difference(anchorDay).inDays;
+    return switch (candidate.temporalStatus) {
+      'future' => dayDelta >= 0 && dayDelta <= 7,
+      'past' => dayDelta <= 0 && dayDelta >= -7,
+      _ => dayDelta.abs() <= 7,
+    };
+  }
+  final anchor = DateTime.fromMillisecondsSinceEpoch(anchorMs);
+  if (text.contains('tomorrow') ||
+      text.contains('कल') && candidate.temporalStatus == 'future' ||
+      text.contains('kal') && candidate.temporalStatus == 'future') {
+    return _sameCalendarDay(proposed, anchor.add(const Duration(days: 1)));
+  }
+  if (text.contains('yesterday') ||
+      text.contains('कल') && candidate.temporalStatus == 'past' ||
+      text.contains('kal') && candidate.temporalStatus == 'past') {
+    return _sameCalendarDay(proposed, anchor.subtract(const Duration(days: 1)));
+  }
+  if (text.contains('today') || text.contains('आज') || text.contains('aaj')) {
+    return _sameCalendarDay(proposed, anchor);
+  }
+  return false;
+}
+
+bool _sameCalendarDay(DateTime left, DateTime right) =>
+    left.year == right.year &&
+    left.month == right.month &&
+    left.day == right.day;
+
+String _candidateContent(ExtractedMemoryCandidate candidate) {
+  final object = candidate.objectText.trim();
+  final punctuated = RegExp(r'[.!?।]$').hasMatch(object) ? object : '$object.';
+  final time = candidate.eventStartAt == null
+      ? ''
+      : ' Event time: ${DateTime.fromMillisecondsSinceEpoch(candidate.eventStartAt!).toIso8601String()}.';
+  return _truncateMemoryText('$punctuated$time', 700);
+}
+
+String _safeMemoryToken(String value) {
+  final token = value
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+      .replaceAll(RegExp(r'_+'), '_')
+      .replaceAll(RegExp(r'^_|_$'), '');
+  return token.isEmpty ? 'fact' : _truncateMemoryText(token, 48);
+}
+
+String _truncateMemoryText(String value, int maxChars) {
+  final clean = value.trim();
+  return clean.length <= maxChars ? clean : clean.substring(0, maxChars);
+}
+
+String _stableMemoryHash(String value) {
+  var hash = 0xcbf29ce484222325;
+  for (final byte in utf8.encode(value)) {
+    hash ^= byte;
+    hash = (hash * 0x100000001b3) & 0x7fffffffffffffff;
+  }
+  return hash.toRadixString(16).padLeft(16, '0');
 }

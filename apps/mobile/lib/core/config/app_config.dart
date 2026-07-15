@@ -15,6 +15,10 @@ class AppConfig {
     this.memoryRerankModel = defaultMemoryRerankModel,
     this.enableMemoryEmbeddings = true,
     this.enableMemoryReranker = false,
+    this.enableMemoryExtraction = const bool.fromEnvironment(
+      'ENABLE_MEMORY_EXTRACTION',
+      defaultValue: false,
+    ),
   });
 
   final String apiBaseUrl;
@@ -23,4 +27,5 @@ class AppConfig {
   final String memoryRerankModel;
   final bool enableMemoryEmbeddings;
   final bool enableMemoryReranker;
+  final bool enableMemoryExtraction;
 }

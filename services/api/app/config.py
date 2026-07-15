@@ -29,5 +29,10 @@ class Settings(BaseSettings):
     enable_memory_planner: bool = False
     memory_planner_model: str = "Qwen/Qwen3-0.6B"
     planner_timeout_seconds: float = 0.1
+    enable_memory_extraction: bool = False
+    memory_extraction_base_url: str = ""
+    memory_extraction_api_key: str = ""
+    memory_extraction_model: str = ""
+    memory_extraction_timeout_seconds: float = 20.0
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="API_")
