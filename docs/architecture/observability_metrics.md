@@ -86,4 +86,39 @@ text, vectors, or an anonymous device ID next to user content. A model
 download/cache path may be logged only as an artifact identifier, revision, or
 size/status measurement.
 
+### Sprint 8 telemetry contract
+
+Sprint 8 uses `telemetry_envelope_v1` for terminal turn records. It contains
+only session/turn IDs, monotonic timestamps, redacted counters/statuses, rate
+card version/fingerprint, integer micro-INR line items, cost-source labels, and
+the terminal outcome. It must never contain transcript, memory, audio bytes,
+vectors, device IDs, provider payloads, or free-form errors.
+
+The realtime agent publishes the envelope to the mobile diagnostics channel and
+may send it to the API's service-authenticated ingest endpoint. Local
+development uses SQLite; production can configure a first-party Postgres DSN.
+Raw terminal telemetry is retained for 30 days by default. Client playback is
+reported only when a native playback observer can provide it; it is not used to
+subtract server and client clocks. Dashboards show playback-report coverage
+separately from server endpoint-to-first-published-audio latency.
+
+The Android implementation currently observes an AudioManager playback
+configuration change within a reliable TTS marker window. Its source is labeled
+`android_audio_playback_configuration_proxy`, because the public Android API
+does not expose a renderer-specific first-frame callback. It is coverage
+evidence, not physical DAC latency. iOS reports no timestamp until a native
+WebRTC renderer hook is supplied; missing reports remain missing.
+
+### Memory judge operation contract
+
+`memory_judge_v1` is a bounded local-window judgement. Its terminal outcomes
+are `accepted`, `superseded`, `rejected`, `unavailable`, `timeout`, and
+`invalid`; local validation may downgrade any proposal to rejected. Operation
+records contain only timestamps, bounded-window count, attempt count, outcome,
+accepted count, and cost source. They never contain the window, candidate,
+notice, transcript, memory value, provider response, or free-form error. An
+unpriced external judge is `unknown`, not zero cost, and makes that operation
+record cost-incomplete. A delayed judge record appends instead of replacing the
+immutable terminal voice-turn record.
+
 ---

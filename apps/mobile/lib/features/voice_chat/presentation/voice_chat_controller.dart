@@ -6,6 +6,7 @@ import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/audio/audio_session_service.dart';
+import '../../../core/audio/playback_telemetry_bridge.dart';
 import '../../../core/identity/anonymous_device_id.dart';
 import '../../../core/permissions/microphone_permission_service.dart';
 import '../../../core/privacy/consent_store.dart';
@@ -36,21 +37,67 @@ final voiceChatControllerProvider =
 class VoiceChatController extends Notifier<VoiceChatState> {
   StreamSubscription<LiveKitConnectionStatus>? _connectionSubscription;
   StreamSubscription<LiveKitDataEvent>? _eventSubscription;
+  StreamSubscription<PlaybackObservation>? _playbackSubscription;
+  StreamSubscription<MemoryJudgeOutcome>? _memoryJudgeSubscription;
   String? _activeDeviceId;
   final _sequencer = LiveKitEventSequencer();
+  final _seenMemoryNoticeIds = <String>{};
   Future<void> _criticalEventQueue = Future<void>.value();
 
   @override
   VoiceChatState build() {
     final liveKitService = ref.read(liveKitConnectionServiceProvider);
     unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
+    _memoryJudgeSubscription ??= ref
+        .read(longTermMemoryCoordinatorProvider)
+        .outcomes
+        .listen((outcome) => unawaited(_sendMemoryJudgeNotice(outcome)));
     unawaited(ref.read(appDatabaseProvider).consolidateLocalMemory());
+    _playbackSubscription ??= PlaybackTelemetryBridge.instance.observations
+        .listen((observation) {
+          unawaited(_reportPlaybackObservation(observation));
+        });
     ref.onDispose(() {
       _connectionSubscription?.cancel();
       _eventSubscription?.cancel();
+      _playbackSubscription?.cancel();
+      _memoryJudgeSubscription?.cancel();
       liveKitService.disconnect();
     });
     return const VoiceChatState.initial();
+  }
+
+  Future<void> _sendMemoryJudgeNotice(MemoryJudgeOutcome outcome) async {
+    if (state.activeSessionId != outcome.sessionId) {
+      return;
+    }
+    final notice = switch (outcome.outcome) {
+      MemoryJudgeOutcomeKind.accepted => 'I saved that memory.',
+      MemoryJudgeOutcomeKind.rejected =>
+        'I could not safely update that memory.',
+      _ => 'I could not safely update that memory right now.',
+    };
+    await ref
+        .read(liveKitConnectionServiceProvider)
+        .sendReliable(
+          _sequencer.next(
+            type: 'memory_judge_notice',
+            schemaVersion: 2,
+            sessionId: outcome.sessionId,
+            turnId: outcome.turnId,
+            payload: {
+              'notice': notice,
+              'notice_id':
+                  '${outcome.sessionId}:${outcome.turnId}:${outcome.outcome.name}:${outcome.acceptedCount}',
+              'outcome': outcome.outcome.name,
+              'accepted_count': outcome.acceptedCount,
+              'window_turn_count': outcome.windowTurnCount,
+              'attempt_count': outcome.attemptCount,
+              'request_started_at_ms': outcome.requestStartedAtMs,
+              'completed_at_ms': outcome.completedAtMs,
+            },
+          ),
+        );
   }
 
   Future<StartSessionResult> startSession() async {
@@ -181,11 +228,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
     await ref.read(appDatabaseProvider).consolidateLocalMemory();
     _activeDeviceId = null;
-    state = state.copyWith(
-      phase: VoiceSessionPhase.ended,
-      isBusy: false,
-      clearSession: true,
-    );
+    state = state.copyWith(phase: VoiceSessionPhase.ended, isBusy: false);
   }
 
   Future<void> addMockExchange() async {
@@ -312,6 +355,35 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         isBusy: false,
         clearPartialTranscript: true,
       );
+    } else if (event.type == 'turn_metrics') {
+      final turnId = event.turnId;
+      if (turnId != null) {
+        await ref.read(appDatabaseProvider).appendTelemetryEnvelope({
+          ...event.payload,
+          'session_id': event.sessionId,
+          'turn_id': turnId,
+        });
+      }
+    } else if (event.type == 'memory_judge_notice') {
+      final notice = (event.payload['notice'] as String?)?.trim();
+      final noticeId = event.payload['notice_id'] as String?;
+      if (notice != null &&
+          notice.isNotEmpty &&
+          (noticeId == null || _seenMemoryNoticeIds.add(noticeId))) {
+        // Reliable, deduplicated UI-only notice. It is deliberately not
+        // persisted as a fabricated assistant turn and never enters telemetry.
+        state = state.copyWith(errorMessage: notice);
+      }
+    } else if (event.type == 'tts_playback_marker') {
+      // The native bridge owns actual render detection. This marker only creates
+      // turn correlation and deliberately does not inspect media frames in Dart.
+      _logVoiceMemoryDiagnostic('tts_playback_marker_received', {
+        'turn_id': event.turnId,
+        'audio_format': event.payload['audio_format'],
+      });
+      if (event.turnId != null) {
+        await PlaybackTelemetryBridge.instance.arm(event.turnId!);
+      }
     } else if (event.type == 'memory_context_request_v2') {
       await _replyToMemoryContextV2(event);
     } else if (event.type == 'memory_lookup_request') {
@@ -346,6 +418,27 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     }
   }
 
+  Future<void> _reportPlaybackObservation(
+    PlaybackObservation observation,
+  ) async {
+    final sessionId = state.activeSessionId;
+    if (sessionId == null) return;
+    await ref
+        .read(liveKitConnectionServiceProvider)
+        .sendReliable(
+          _sequencer.next(
+            type: 'client_playback_started',
+            sessionId: sessionId,
+            turnId: observation.turnId,
+            payload: {
+              'playback_timestamp_ms': observation.timestampMs,
+              'correlation_status': 'observed',
+              'source': observation.source,
+            },
+          ),
+        );
+  }
+
   Future<void> _replyToMemoryLookupRequest(LiveKitDataEvent event) async {
     final query = (event.payload['query_text'] as String?)?.trim();
     if (query == null || query.isEmpty) {
@@ -363,9 +456,6 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         (event.payload['memory_reranker_strategy'] as String?) ??
         'deterministic';
     final route = event.payload['route'] as String?;
-    final pendingReceipts = await ref
-        .read(appDatabaseProvider)
-        .readPendingMemoryReceipts(limit: 1);
     final memories = await ref
         .read(memoryLookupServiceProvider)
         .lookup(
@@ -381,7 +471,6 @@ class VoiceChatController extends Notifier<VoiceChatState> {
       'request_sequence': event.sequence,
       'elapsed_ms': elapsedMs,
       'memory_packets': memories.length,
-      'pending_receipts': pendingReceipts.length,
       'memory_kinds': [for (final memory in memories) memory.kind],
       'memory_retrieval_strategy': retrievalStrategy,
       'memory_reranker_strategy': rerankerStrategy,
@@ -412,18 +501,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
                     'evidence_summary': memory.evidenceSummary,
                   },
               ],
-              'pending_receipts': [
-                for (final memory in pendingReceipts)
-                  {
-                    'memory_id': memory.id,
-                    'kind': memory.kind,
-                    'label': memory.label,
-                    'content': memory.content,
-                    'confidence_score': memory.confidenceScore,
-                    'importance_score': memory.importanceScore,
-                    'evidence_summary': memory.evidenceSummary,
-                  },
-              ],
+              'pending_receipts': const [],
             },
           ),
         );
@@ -464,6 +542,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
                     'deterministic',
                 route: resolution.queryScope,
               );
+    if (resolution.directive == 'setting_ack') {
+      await database.markTurnDeterministicallyHandled(turnId);
+    }
     final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAt;
     _logVoiceMemoryDiagnostic('memory_context_response_v2_mobile', {
       'turn_id': turnId,

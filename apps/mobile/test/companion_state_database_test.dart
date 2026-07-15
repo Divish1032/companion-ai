@@ -78,7 +78,7 @@ void main() {
     );
 
     test(
-      'unknown-confidence profile replacement requires confirmation',
+      'unknown-confidence profile replacement is deferred without a prompt',
       () async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(database.close);
@@ -105,118 +105,115 @@ void main() {
           sttConfidence: null,
         );
 
-        expect(replacement.directive, 'confirmation');
+        expect(replacement.directive, 'companion');
         expect(answer.directive, 'fact_answer');
         expect((answer.stateFacts.single['value'] as Map)['text'], 'अमित');
       },
     );
 
-    test(
-      'a repeated uncertain relationship becomes current and rejected candidates do not',
-      () async {
-        final database = AppDatabase.forTesting(NativeDatabase.memory());
-        addTearDown(database.close);
-
-        final first = await _resolve(
-          database,
-          turnId: 't1',
-          text: 'मेरे भाई का नाम अमित है',
-          transcriptStatus: 'final',
-          sttConfidence: 0.5,
-        );
-        final second = await _resolve(
-          database,
-          turnId: 't2',
-          text: 'मेरे भाई का नाम अमित है',
-          transcriptStatus: 'final',
-          sttConfidence: 0.5,
-        );
-        final originalName = await _resolve(
-          database,
-          turnId: 't3',
-          text: 'मेरा नाम राहुल है',
-          transcriptStatus: 'final',
-          sttConfidence: null,
-        );
-        final pendingCorrection = await _resolve(
-          database,
-          turnId: 't4',
-          text: 'असल में मेरा नाम अमित है',
-          transcriptStatus: 'final',
-          sttConfidence: null,
-        );
-        await _resolve(
-          database,
-          turnId: 't5',
-          text: 'नहीं याद रखना',
-          transcriptStatus: 'final',
-          sttConfidence: 0.9,
-        );
-        final name = await _resolve(
-          database,
-          turnId: 't6',
-          text: 'मेरा नाम क्या है?',
-          transcriptStatus: 'final',
-          sttConfidence: 0.9,
-        );
-
-        expect(first.directive, 'confirmation');
-        expect(second.directive, 'setting_ack');
-        expect((second.stateFacts.single['value'] as Map)['text'], 'अमित');
-        expect(originalName.directive, 'setting_ack');
-        expect(pendingCorrection.directive, 'confirmation');
-        expect(name.directive, 'fact_answer');
-        expect((name.stateFacts.single['value'] as Map)['text'], 'राहुल');
-      },
-    );
-
-    test('only the immediately preceding candidate can be confirmed', () async {
+    test('uncertain claims never create a confirmation exchange', () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
 
-      final pending = await _resolve(
+      final first = await _resolve(
         database,
         turnId: 't1',
-        text: 'मेरा नाम राहुल',
+        text: 'मेरे भाई का नाम अमित है',
         transcriptStatus: 'final',
         sttConfidence: 0.5,
       );
-      final unrelated = await _resolve(
+      final second = await _resolve(
         database,
         turnId: 't2',
-        text: 'आज मेरा मन उदास है',
+        text: 'मेरे भाई का नाम अमित है',
         transcriptStatus: 'final',
-        sttConfidence: 0.9,
+        sttConfidence: 0.5,
       );
-      final lateYes = await _resolve(
+      final originalName = await _resolve(
         database,
         turnId: 't3',
-        text: 'हाँ',
+        text: 'मेरा नाम राहुल है',
+        transcriptStatus: 'final',
+        sttConfidence: null,
+      );
+      final pendingCorrection = await _resolve(
+        database,
+        turnId: 't4',
+        text: 'असल में मेरा नाम अमित है',
+        transcriptStatus: 'final',
+        sttConfidence: null,
+      );
+      await _resolve(
+        database,
+        turnId: 't5',
+        text: 'नहीं याद रखना',
         transcriptStatus: 'final',
         sttConfidence: 0.9,
       );
-      final answer = await _resolve(
+      final name = await _resolve(
         database,
-        turnId: 't4',
+        turnId: 't6',
         text: 'मेरा नाम क्या है?',
         transcriptStatus: 'final',
         sttConfidence: 0.9,
       );
-      final claim =
-          (await database
-                  .customSelect(
-                    'SELECT claim_state, confirmation_state FROM memory_claims',
-                  )
-                  .get())
-              .single;
 
-      expect(pending.directive, 'confirmation');
-      expect(unrelated.directive, 'companion');
-      expect(lateYes.directive, 'companion');
-      expect(answer.directive, 'fact_unknown');
-      expect(claim.data['claim_state'], 'expired');
-      expect(claim.data['confirmation_state'], 'expired');
+      expect(first.directive, 'companion');
+      expect(second.directive, 'companion');
+      expect(second.stateFacts, isEmpty);
+      expect(originalName.directive, 'setting_ack');
+      expect(pendingCorrection.directive, 'companion');
+      expect(name.directive, 'fact_answer');
+      expect((name.stateFacts.single['value'] as Map)['text'], 'राहुल');
     });
+
+    test(
+      'bare acknowledgements never commit an uncertain exact claim',
+      () async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(database.close);
+
+        final pending = await _resolve(
+          database,
+          turnId: 't1',
+          text: 'मेरा नाम राहुल',
+          transcriptStatus: 'final',
+          sttConfidence: 0.5,
+        );
+        final unrelated = await _resolve(
+          database,
+          turnId: 't2',
+          text: 'आज मेरा मन उदास है',
+          transcriptStatus: 'final',
+          sttConfidence: 0.9,
+        );
+        final lateYes = await _resolve(
+          database,
+          turnId: 't3',
+          text: 'हाँ',
+          transcriptStatus: 'final',
+          sttConfidence: 0.9,
+        );
+        final answer = await _resolve(
+          database,
+          turnId: 't4',
+          text: 'मेरा नाम क्या है?',
+          transcriptStatus: 'final',
+          sttConfidence: 0.9,
+        );
+        final claims = await database
+            .customSelect(
+              'SELECT claim_state, confirmation_state FROM memory_claims',
+            )
+            .get();
+
+        expect(pending.directive, 'companion');
+        expect(unrelated.directive, 'companion');
+        expect(lateYes.directive, 'companion');
+        expect(answer.directive, 'fact_unknown');
+        expect(claims, isEmpty);
+      },
+    );
 
     test('clear history erases claims and current-state projections', () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());

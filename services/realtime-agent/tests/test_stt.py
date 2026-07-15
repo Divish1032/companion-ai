@@ -1,7 +1,8 @@
 import asyncio
+from types import SimpleNamespace
 
 from app.audio_pipeline import pcm_sine_frame
-from app.providers.stt import VoskSTTProvider
+from app.providers.stt import SarvamSTTProvider, VoskSTTProvider
 
 
 class _RecognizerWithPartialOnly:
@@ -104,6 +105,69 @@ def test_vosk_preserves_segment_before_a_pause_in_the_final_turn() -> None:
     assert events[-1].is_final is True
     assert events[-1].text == "मेरे भाई का नाम रोहन है वह मुझे अक्सर हंसाता है"
     assert events[-1].confidence == 0.88
+
+
+def test_sarvam_streams_saaras_v3_and_keeps_vosk_as_a_separate_adapter() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent = []
+            self.responses = asyncio.Queue()
+
+        async def transcribe(self, audio, encoding, sample_rate) -> None:  # noqa: ANN001
+            self.sent.append((audio, encoding, sample_rate))
+            await self.responses.put(
+                SimpleNamespace(
+                    type="data",
+                    data=SimpleNamespace(
+                        transcript="नमस्ते", metrics=SimpleNamespace(audio_duration=0.03)
+                    ),
+                )
+            )
+
+        async def flush(self) -> None:
+            return None
+
+        async def recv(self):  # noqa: ANN201
+            return await self.responses.get()
+
+    class FakeConnection:
+        def __init__(self, socket) -> None:  # noqa: ANN001
+            self.socket = socket
+
+        async def __aenter__(self):  # noqa: ANN201
+            return self.socket
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+    class FakeStreamingClient:
+        def __init__(self, socket) -> None:  # noqa: ANN001
+            self.socket = socket
+            self.connect_kwargs = {}
+
+        def connect(self, **kwargs):  # noqa: ANN003, ANN201
+            self.connect_kwargs = kwargs
+            return FakeConnection(self.socket)
+
+    socket = FakeSocket()
+    streaming_client = FakeStreamingClient(socket)
+    client = SimpleNamespace(speech_to_text_streaming=streaming_client)
+    provider = SarvamSTTProvider(api_key="sk_test", client=client, chunk_ms=30)
+
+    events = asyncio.run(_collect(provider))
+
+    assert streaming_client.connect_kwargs == {
+        "language_code": "hi-IN",
+        "model": "saaras:v3",
+        "mode": "codemix",
+        "sample_rate": "16000",
+        "input_audio_codec": "wav",
+    }
+    assert socket.sent and socket.sent[0][1:] == ("audio/wav", 16000)
+    assert [event.text for event in events] == ["नमस्ते"]
+    assert events[-1].is_final is True
+    assert events[-1].provider == "sarvam"
+    assert events[-1].model == "saaras:v3"
 
 
 async def _collect(provider, *, frames=None):  # noqa: ANN001

@@ -11,6 +11,7 @@ import 'memory_candidate_model.dart';
 import 'memory_embedding_service.dart';
 
 const memoryExtractionVersion = 'v1';
+const memoryJudgeContractVersion = 'memory_judge_v1';
 
 final memoryCandidateClientProvider = Provider<MemoryCandidateClient>((ref) {
   return HttpMemoryCandidateClient(
@@ -61,11 +62,12 @@ class HttpMemoryCandidateClient implements MemoryCandidateClient {
     try {
       final response = await client
           .post(
-            Uri.parse('$baseUrl/v1/memory-candidates'),
+            Uri.parse('$baseUrl/v1/memory-judge'),
             headers: const {'content-type': 'application/json'},
             body: jsonEncode({
               'job_id': jobId,
               'extraction_version': memoryExtractionVersion,
+              'judge_contract_version': memoryJudgeContractVersion,
               'language': language,
               'turns': [
                 for (final turn in turns)
@@ -87,6 +89,15 @@ class HttpMemoryCandidateClient implements MemoryCandidateClient {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
       if (decoded['job_id'] != jobId ||
           decoded['extraction_version'] != memoryExtractionVersion ||
+          (decoded['judge_contract_version'] != null &&
+              decoded['judge_contract_version'] !=
+                  memoryJudgeContractVersion) ||
+          !{'accepted', 'rejected'}.contains(decoded['outcome']) ||
+          !{
+            'provider_reported',
+            'estimated',
+            'unknown',
+          }.contains(decoded['cost_source']) ||
           decoded['candidates'] is! List) {
         throw const FormatException('Invalid memory candidate envelope.');
       }
@@ -118,6 +129,8 @@ class LongTermMemoryCoordinator {
   final MemoryCandidateClient client;
   final bool enabled;
   final Future<void> Function(String turnId)? syncTurnMemories;
+  final _outcomes = StreamController<MemoryJudgeOutcome>.broadcast();
+  Stream<MemoryJudgeOutcome> get outcomes => _outcomes.stream;
   final int maxJobsPerDrain;
   final Duration continuationDelay;
   Timer? _idleTimer;
@@ -150,6 +163,7 @@ class LongTermMemoryCoordinator {
     for (var processed = 0; processed < maxJobsPerDrain; processed += 1) {
       final job = await database.claimNextMemoryExtractionJob();
       if (job == null) return;
+      final requestStartedAtMs = DateTime.now().millisecondsSinceEpoch;
       try {
         final turns = await database.readExtractionWindow(job);
         if (turns.isEmpty) {
@@ -165,9 +179,23 @@ class LongTermMemoryCoordinator {
           language: turns.last.language,
           turns: turns,
         );
-        await database.validateAndApplyMemoryCandidates(
+        final admitted = await database.validateAndApplyMemoryCandidates(
           job: job,
           candidates: candidates,
+        );
+        _outcomes.add(
+          MemoryJudgeOutcome(
+            sessionId: job.sessionId,
+            turnId: job.endTurnId,
+            outcome: admitted.isNotEmpty
+                ? MemoryJudgeOutcomeKind.accepted
+                : MemoryJudgeOutcomeKind.rejected,
+            acceptedCount: admitted.length,
+            windowTurnCount: turns.length,
+            attemptCount: job.attempts,
+            requestStartedAtMs: requestStartedAtMs,
+            completedAtMs: DateTime.now().millisecondsSinceEpoch,
+          ),
         );
         if (syncTurnMemories != null) {
           final sourceTurnIds = {
@@ -197,6 +225,20 @@ class LongTermMemoryCoordinator {
           'memory_extraction_retry {job_id: ${job.id}, error_type: ${error.runtimeType}}',
           name: 'companion.memory',
         );
+        _outcomes.add(
+          MemoryJudgeOutcome(
+            sessionId: job.sessionId,
+            turnId: job.endTurnId,
+            outcome: error is TimeoutException
+                ? MemoryJudgeOutcomeKind.timeout
+                : MemoryJudgeOutcomeKind.unavailable,
+            acceptedCount: 0,
+            windowTurnCount: 0,
+            attemptCount: job.attempts,
+            requestStartedAtMs: requestStartedAtMs,
+            completedAtMs: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
       }
     }
     if (!_disposed) {
@@ -210,7 +252,37 @@ class LongTermMemoryCoordinator {
   void dispose() {
     _disposed = true;
     _idleTimer?.cancel();
+    _outcomes.close();
   }
+}
+
+enum MemoryJudgeOutcomeKind {
+  accepted,
+  rejected,
+  unavailable,
+  timeout,
+  invalid,
+}
+
+class MemoryJudgeOutcome {
+  const MemoryJudgeOutcome({
+    required this.sessionId,
+    required this.turnId,
+    required this.outcome,
+    required this.acceptedCount,
+    required this.windowTurnCount,
+    required this.attemptCount,
+    required this.requestStartedAtMs,
+    required this.completedAtMs,
+  });
+  final String sessionId;
+  final String turnId;
+  final MemoryJudgeOutcomeKind outcome;
+  final int acceptedCount;
+  final int windowTurnCount;
+  final int attemptCount;
+  final int requestStartedAtMs;
+  final int completedAtMs;
 }
 
 class MemoryCandidateException implements Exception {

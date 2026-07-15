@@ -106,9 +106,10 @@ Do not hard-code Sarvam throughout business logic. Keep Sarvam in adapters.
 Provider behavior:
 
 - MVP provider choice is per leg, not global.
-- Sprint -1 provisional direction:
-  - Hindi STT may default to backend-local Vosk if targeted conversational validation remains acceptable.
-  - Sarvam remains a valid STT adapter and a likely default for languages not covered well by local STT.
+- Current local MVP direction:
+  - Hindi STT defaults to the Sarvam Saaras v3 streaming adapter in `codemix` mode.
+  - Vosk remains a valid standalone local adapter, selectable per language or as an explicit deployment override.
+  - Additional STT providers must be added as adapters and selected per language; do not couple endpointing or turn logic to a provider.
   - LLM and TTS may still default to Sarvam initially.
 - Interfaces must support multiple providers even if fallback providers are not enabled on day one.
 - Identify fallback candidates before beta: Google Cloud Speech-to-Text for Hindi STT and Azure Cognitive Services for Hindi TTS.

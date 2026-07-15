@@ -6,7 +6,6 @@ import json
 from fastapi.testclient import TestClient
 import httpx
 import pytest
-from pydantic import ValidationError
 
 from app.main import app, get_memory_candidate_extractor, settings
 from app.memory_extraction import (
@@ -47,10 +46,11 @@ def test_memory_candidates_are_strict_and_source_bounded(monkeypatch) -> None:  
     app.dependency_overrides[get_memory_candidate_extractor] = lambda: FakeExtractor()
     try:
         response = TestClient(app).post(
-            "/v1/memory-candidates",
+            "/v1/memory-judge",
             json={
                 "job_id": "job-1",
                 "extraction_version": "v1",
+                "judge_contract_version": "memory_judge_v1",
                 "language": "hi-IN",
                 "turns": [
                     {
@@ -69,6 +69,9 @@ def test_memory_candidates_are_strict_and_source_bounded(monkeypatch) -> None:  
     assert response.status_code == 200
     body = response.json()
     assert body["job_id"] == "job-1"
+    assert body["judge_contract_version"] == "memory_judge_v1"
+    assert body["outcome"] == "accepted"
+    assert body["cost_source"] == "unknown"
     assert body["candidates"][0]["candidate_kind"] == "open_thread"
     assert body["candidates"][0]["source_turn_ids"] == ["turn-1"]
 
@@ -212,28 +215,29 @@ def test_openai_compatible_extractor_fails_closed_on_non_json_output() -> None:
         asyncio.run(extractor.extract(_request()))
 
 
-def test_extraction_request_rejects_duplicate_turn_id_across_roles() -> None:
-    with pytest.raises(ValidationError):
-        MemoryExtractionRequest.model_validate(
-            {
-                "job_id": "duplicate-turn",
-                "extraction_version": "v1",
-                "turns": [
-                    {
-                        "turn_id": "same-id",
-                        "role": "user",
-                        "text": "Mera interview hua.",
-                        "created_at_ms": 1,
-                    },
-                    {
-                        "turn_id": "same-id",
-                        "role": "assistant",
-                        "text": "Interview ke baare mein batao.",
-                        "created_at_ms": 2,
-                    },
-                ],
-            }
-        )
+def test_extraction_request_accepts_user_assistant_pair_for_one_turn() -> None:
+    request = MemoryExtractionRequest.model_validate(
+        {
+            "job_id": "paired-turn",
+            "extraction_version": "v1",
+            "turns": [
+                {
+                    "turn_id": "same-id",
+                    "role": "user",
+                    "text": "Mera interview hua.",
+                    "created_at_ms": 1,
+                },
+                {
+                    "turn_id": "same-id",
+                    "role": "assistant",
+                    "text": "Interview ke baare mein batao.",
+                    "created_at_ms": 2,
+                },
+            ],
+        }
+    )
+
+    assert len(request.turns) == 2
 
 
 def test_server_filter_rejects_sensitive_and_role_inconsistent_candidates() -> None:

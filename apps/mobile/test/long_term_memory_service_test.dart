@@ -198,6 +198,9 @@ void main() {
           jsonEncode({
             'job_id': 'job',
             'extraction_version': memoryExtractionVersion,
+            'judge_contract_version': memoryJudgeContractVersion,
+            'outcome': 'accepted',
+            'cost_source': 'unknown',
             'candidates': [
               {
                 'candidate_kind': 'episode',
@@ -237,6 +240,9 @@ void main() {
           jsonEncode({
             'job_id': 'job',
             'extraction_version': memoryExtractionVersion,
+            'judge_contract_version': memoryJudgeContractVersion,
+            'outcome': 'rejected',
+            'cost_source': 'unknown',
             'candidates': [42],
           }),
           200,
@@ -462,7 +468,7 @@ void main() {
   );
 
   test(
-    'personal LLM candidate stays unusable until explicit confirmation',
+    'grounded personal LLM candidate is implicitly admitted without a prompt',
     () async {
       await _completedTurn(
         database,
@@ -493,31 +499,22 @@ void main() {
         ],
       );
       final record = await database.select(database.memoryRecords).getSingle();
-      expect(record.receiptState, 'unconfirmed');
-      expect(
-        await database.readMemoryContext(latestUserText: 'Asha', limit: 3),
-        isEmpty,
-      );
-      expect(await database.readSessionStartMemoryContext(limit: 3), isEmpty);
-
-      await database.confirmMemory(record.id);
-
-      final confirmed = await (database.select(
-        database.memoryRecords,
-      )..where((row) => row.id.equals(record.id))).getSingle();
-      expect(confirmed.receiptState, 'confirmed');
-      final audit = await database
-          .select(database.memoryCandidates)
-          .getSingle();
-      expect(audit.decisionState, 'confirmed');
+      expect(record.receiptState, 'implicit');
       expect(
         await database.readMemoryContext(latestUserText: 'Asha', limit: 3),
         isNotEmpty,
       );
+      // Relationship memories are recalled only for a relevant turn, not
+      // injected into generic session-start context.
+      expect(await database.readSessionStartMemoryContext(limit: 3), isEmpty);
+      final audit = await database
+          .select(database.memoryCandidates)
+          .getSingle();
+      expect(audit.decisionState, 'admitted');
     },
   );
 
-  test('voice rejection hard-deletes an unconfirmed LLM memory', () async {
+  test('voice rejection forgets the most recent implicit LLM memory', () async {
     await _completedTurn(
       database,
       sessionId: 's1',
@@ -838,7 +835,7 @@ void main() {
   });
 
   test(
-    'unconfirmed personal memory cannot leak through graph expansion',
+    'implicitly admitted personal memory does not expand into unrelated recall',
     () async {
       await _completedTurn(
         database,
@@ -871,7 +868,7 @@ void main() {
       final audit = await database
           .select(database.memoryCandidates)
           .getSingle();
-      expect(audit.decisionState, 'pending_confirmation');
+      expect(audit.decisionState, 'admitted');
 
       final retrieved = await database.readMemoryContext(
         latestUserText: 'aaj office mein manager ki wajah se bad day tha',

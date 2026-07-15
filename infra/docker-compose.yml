@@ -12,9 +12,28 @@ services:
       timeout: 3s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["telemetry"]
+    environment:
+      POSTGRES_DB: companion_telemetry
+      POSTGRES_USER: companion_telemetry
+      POSTGRES_PASSWORD: ${POSTGRES_TELEMETRY_PASSWORD:-local-dev-only}
+    volumes:
+      - telemetry-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion_telemetry -d companion_telemetry"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   livekit:
     image: livekit/livekit-server:v1.9
     command: ["--dev", "--bind", "0.0.0.0"]
+    environment:
+      # Required for a physical device on the same LAN: Docker otherwise
+      # advertises its bridge address or a public STUN address to WebRTC peers.
+      NODE_IP: ${LIVEKIT_NODE_IP:-}
     ports:
       - "7880:7880"
       - "7881:7881"
@@ -49,6 +68,8 @@ services:
       API_MEMORY_EXTRACTION_API_KEY: ${API_MEMORY_EXTRACTION_API_KEY:-}
       API_MEMORY_EXTRACTION_MODEL: ${API_MEMORY_EXTRACTION_MODEL:-}
       API_MEMORY_EXTRACTION_TIMEOUT_SECONDS: ${API_MEMORY_EXTRACTION_TIMEOUT_SECONDS:-20}
+      API_TELEMETRY_STORE_PATH: ${API_TELEMETRY_STORE_PATH:-/data/companion_telemetry.sqlite}
+      API_TELEMETRY_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN:-}
       HF_HOME: /models/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
     ports:
@@ -74,6 +95,9 @@ services:
       AGENT_LIVEKIT_API_KEY: ${AGENT_LIVEKIT_API_KEY:-devkey}
       AGENT_LIVEKIT_API_SECRET: ${AGENT_LIVEKIT_API_SECRET:-secret}
       AGENT_VOSK_MODEL_PATH: /models/vosk-model-small-hi-0.22
+      AGENT_ENABLE_METRICS_INGEST: ${AGENT_ENABLE_METRICS_INGEST:-false}
+      AGENT_METRICS_INGEST_URL: http://api:8000/v1/telemetry/ingest
+      AGENT_METRICS_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN:-}
     ports:
       - "8001:8001"
     volumes:
@@ -88,3 +112,4 @@ volumes:
   redis-data:
   api-data:
   memory-model-cache:
+  telemetry-postgres-data:

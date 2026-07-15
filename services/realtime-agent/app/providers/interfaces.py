@@ -33,6 +33,10 @@ class LLMToken:
     latency_ms: int = 0
     billed_units: float = 0
     cost_units: float = 0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    usage_reported: bool = False
 
 
 @dataclass(frozen=True)

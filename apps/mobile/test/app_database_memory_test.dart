@@ -830,7 +830,7 @@ void main() {
   );
 
   test(
-    'explicit voice receipt confirmation persists confirmed state',
+    'automatic admission persists a grounded memory without confirmation',
     () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
@@ -845,11 +845,7 @@ void main() {
         ),
       );
 
-      final pending = await database.readPendingMemoryReceipts(limit: 4);
-      expect(
-        pending.map((memory) => memory.id),
-        contains('memory_semantic_work_stress_manager'),
-      );
+      expect(await database.readPendingMemoryReceipts(limit: 4), isEmpty);
 
       await database.upsertUserMessageAndExtractMemory(
         _message(
@@ -869,11 +865,11 @@ void main() {
         (item) => item.id == 'memory_semantic_work_stress_manager',
       );
 
-      expect(memory.receiptState, 'confirmed');
-      expect(memory.recurrenceCount, 2);
+      expect(memory.receiptState, 'implicit');
+      expect(memory.recurrenceCount, 1);
       expect(
         jsonDecode(memory.sourceTurnIdsJson),
-        contains('turn_receipt_yes'),
+        isNot(contains('turn_receipt_yes')),
       );
 
       final chatRows = await database.select(database.chatMessages).get();
@@ -977,7 +973,7 @@ void main() {
   );
 
   test(
-    'vague acknowledgement does not confirm pending memory receipt',
+    'vague acknowledgement does not alter an implicitly admitted memory',
     () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
@@ -1001,12 +997,12 @@ void main() {
         ),
       );
 
-      final pending = await database.readPendingMemoryReceipts(limit: 4);
-      final memory = pending.firstWhere(
-        (item) => item.id == 'memory_semantic_work_stress_manager',
-      );
+      final memory = (await database.select(database.memoryRecords).get())
+          .firstWhere(
+            (item) => item.id == 'memory_semantic_work_stress_manager',
+          );
 
-      expect(memory.receiptState, 'unconfirmed');
+      expect(memory.receiptState, 'implicit');
       expect(
         jsonDecode(memory.sourceTurnIdsJson),
         isNot(contains('turn_receipt_ack')),
@@ -1014,7 +1010,7 @@ void main() {
     },
   );
 
-  test('receipt prompts are throttled after being marked prompted', () async {
+  test('automatic admission produces no receipt prompt', () async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(database.close);
 
@@ -1029,19 +1025,11 @@ void main() {
     );
 
     final pending = await database.readPendingMemoryReceipts(limit: 4);
-    expect(pending, hasLength(1));
-
-    await database.markMemoryReceiptPrompted(
-      memoryId: pending.single.id,
-      promptedAt: DateTime.now().millisecondsSinceEpoch,
-    );
-
-    final throttled = await database.readPendingMemoryReceipts(limit: 4);
-    expect(throttled, isEmpty);
+    expect(pending, isEmpty);
   });
 
   test(
-    'pending receipt remains promptable but is excluded from retrieval',
+    'implicitly admitted memory is retrievable and never promptable',
     () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
@@ -1062,14 +1050,11 @@ void main() {
       );
       expect(
         retrieved.map((memory) => memory.id),
-        isNot(contains('memory_semantic_work_stress_manager')),
+        contains('memory_semantic_work_stress_manager'),
       );
 
       final pending = await database.readPendingMemoryReceipts(limit: 4);
-      expect(
-        pending.map((memory) => memory.id),
-        contains('memory_semantic_work_stress_manager'),
-      );
+      expect(pending.map((memory) => memory.id), isEmpty);
     },
   );
 

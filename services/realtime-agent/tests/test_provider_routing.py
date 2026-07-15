@@ -5,6 +5,8 @@ from app.providers.llm import PersonaLLMProvider, SarvamChatLLMProvider
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
 from app.providers.tts import SarvamBulbulTTSProvider, chunk_tts_text
 from app.audio_pipeline import pcm_sine_frame
+from app.config import Settings
+from app.lifecycle import selected_stt_provider_name
 
 
 def test_provider_routing_supports_language_override() -> None:
@@ -18,7 +20,7 @@ def test_provider_routing_supports_language_override() -> None:
                 },
                 "languages": {
                     "hi-IN": {
-                        "stt": "vosk",
+                        "stt": "sarvam",
                     },
                 },
             },
@@ -28,10 +30,15 @@ def test_provider_routing_supports_language_override() -> None:
     hindi_route = routing.for_language("hi-IN")
     fallback_route = routing.for_language("te-IN")
 
-    assert hindi_route.stt == "vosk"
+    assert hindi_route.stt == "sarvam"
     assert hindi_route.llm == "sarvam"
     assert hindi_route.tts == "sarvam"
     assert fallback_route.stt == "sarvam"
+
+
+def test_hindi_uses_vosk_by_default_and_sarvam_remains_an_explicit_override() -> None:
+    assert selected_stt_provider_name(Settings(stt_provider="", language="hi-IN")) == "vosk"
+    assert selected_stt_provider_name(Settings(stt_provider="sarvam", language="hi-IN")) == "sarvam"
 
 
 def test_memory_strategies_are_language_scoped_and_default_safe() -> None:
@@ -192,19 +199,29 @@ def test_sarvam_llm_uses_voice_safe_request_shape(monkeypatch) -> None:  # noqa:
         def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
             return False
 
-        def read(self) -> bytes:
-            return json.dumps(
+        def __iter__(self):  # noqa: ANN001
+            events = [
                 {
                     "choices": [
                         {
-                            "message": {
+                            "delta": {
                                 "content": "Namaste, main sun raha hoon.",
-                                "role": "assistant",
                             }
                         }
                     ]
-                }
-            ).encode()
+                },
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 7,
+                        "prompt_tokens_details": {"cached_tokens": 2},
+                    },
+                },
+            ]
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
 
     def fake_urlopen(request, timeout):  # noqa: ANN001
         captured["url"] = request.full_url
@@ -215,25 +232,32 @@ def test_sarvam_llm_uses_voice_safe_request_shape(monkeypatch) -> None:  # noqa:
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    async def scenario() -> str:
+    async def scenario() -> list:
         provider = SarvamChatLLMProvider(api_key="sk_test", timeout_seconds=3)
-        chunks = [
-            token.text
+        return [
+            token
             async for token in provider.stream(
                 [LLMMessage(role="user", content="Namaste")],
                 "hi-IN",
                 max_output_chars=120,
             )
         ]
-        return "".join(chunks)
 
-    assert asyncio.run(scenario()) == "Namaste, main sun raha hoon."
+    tokens = asyncio.run(scenario())
+    assert "".join(token.text for token in tokens) == "Namaste, main sun raha hoon."
+    assert tokens[-1].usage_reported is True
+    assert (tokens[-1].input_tokens, tokens[-1].cached_input_tokens, tokens[-1].output_tokens) == (
+        11,
+        2,
+        7,
+    )
     assert captured["url"] == "https://api.sarvam.ai/v1/chat/completions"
     assert captured["timeout"] == 3
     assert captured["headers"]["Api-subscription-key"] == "sk_test"
     assert captured["headers"]["Authorization"] == "Bearer sk_test"
     assert captured["payload"]["model"] == "sarvam-30b"
     assert captured["payload"]["reasoning_effort"] is None
+    assert captured["payload"]["stream"] is True
 
 
 def test_tts_chunking_preserves_hindi_hinglish_word_boundaries() -> None:

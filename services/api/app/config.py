@@ -37,5 +37,8 @@ class Settings(BaseSettings):
     memory_extraction_api_key: str = ""
     memory_extraction_model: str = ""
     memory_extraction_timeout_seconds: float = 20.0
+    telemetry_store_path: str = "/tmp/companion_telemetry.sqlite"
+    telemetry_ingest_token: str = ""
+    telemetry_raw_retention_days: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="API_")

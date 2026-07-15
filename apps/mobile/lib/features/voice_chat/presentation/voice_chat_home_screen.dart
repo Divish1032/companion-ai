@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,6 +8,7 @@ import '../../chat_history/data/app_database.dart';
 import '../../chat_history/presentation/memory_controls_screen.dart';
 import '../domain/voice_session_state.dart';
 import 'voice_chat_controller.dart';
+import 'telemetry_diagnostics_screen.dart';
 
 class VoiceChatHomeScreen extends ConsumerWidget {
   const VoiceChatHomeScreen({super.key});
@@ -22,6 +24,19 @@ class VoiceChatHomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Companion AI'),
         actions: [
+          if (kDebugMode && state.activeSessionId != null)
+            IconButton(
+              tooltip: 'Diagnostics',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => TelemetryDiagnosticsScreen(
+                    database: ref.read(appDatabaseProvider),
+                    sessionId: state.activeSessionId!,
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.query_stats_outlined),
+            ),
           IconButton(
             tooltip: 'What I remember',
             onPressed: () => Navigator.of(context).push(

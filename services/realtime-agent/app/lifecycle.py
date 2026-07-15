@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
+
 from livekit import api, rtc
 
 from app.audio_pipeline import (
@@ -37,6 +39,12 @@ from app.providers import (
 from app.providers.interfaces import LLMMessage, LLMToken, TTSAudioFrame, TranscriptEvent
 from app.providers.mock import MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
+from app.telemetry import (
+    TurnMetricsCollector,
+    llm_cost_micro_inr,
+    stt_cost_micro_inr,
+    tts_cost_micro_inr,
+)
 
 
 class AgentAssignmentError(Exception):
@@ -313,6 +321,7 @@ class RealtimeAgentSession:
             max_recent_messages=self.persona.history_messages,
         )
         self.sequencer = EventSequencer(assignment.session_id)
+        self.telemetry = TurnMetricsCollector(assignment.session_id)
         self.turn_ids = TurnIdFactory(assignment.session_id)
         self._stt_streams: dict[str, _STTTurnStream] = {}
         self._latest_partial_transcript: dict[str, str] = {}
@@ -363,6 +372,8 @@ class RealtimeAgentSession:
             return False
         self._current_turn.cancel()
         self._assistant_speaking = False
+        if self._active_response_turn_id is not None:
+            self.telemetry.turn(self._active_response_turn_id).mark("cancel_requested")
         return True
 
     async def close_stt_streams(self) -> None:
@@ -464,7 +475,7 @@ class RealtimeAgentSession:
         await self.transport.publish_reliable(
             self.sequencer.encode(
                 event_type="error",
-                payload={"message": message, "source": "realtime_agent"},
+                payload={"error_code": _error_code(message), "source": "realtime_agent"},
             )
         )
 
@@ -478,6 +489,15 @@ class RealtimeAgentSession:
             await self._handle_endpoint_event(event)
 
     async def _handle_endpoint_event(self, event: EndpointEvent) -> None:
+        metric = self.telemetry.turn(event.turn_id)
+        metric.statuses["vad_provider"] = self.settings.vad_provider
+        if event.type == "speech_start":
+            metric.mark("server_vad_speech_start")
+        elif event.type == "speech_end":
+            metric.mark("server_vad_speech_end")
+        elif event.type == "endpoint_commit":
+            metric.mark("server_endpoint_commit")
+        metric.counts["forwarded_audio_ms"] = event.forwarded_audio_ms
         if event.type == "speech_start":
             if (
                 self._current_turn is not None
@@ -612,6 +632,17 @@ class RealtimeAgentSession:
 
     async def _handle_final_transcript(self, turn_id: str, event: TranscriptEvent) -> None:
         metrics = _stt_metrics_payload(event)
+        metric = self.telemetry.turn(turn_id)
+        metric.mark("stt_final")
+        metric.counts["stt_audio_ms"] = round(event.audio_seconds * 1000)
+        metric.statuses["stt_provider"] = event.provider
+        metric.statuses["stt_model"] = event.model
+        stt_cost, stt_source = stt_cost_micro_inr(
+            provider=event.provider,
+            audio_millis=metric.counts["stt_audio_ms"],
+            card=self.telemetry.card,
+        )
+        metric.add_cost("stt", stt_cost, stt_source)
         status = "final"
         repeat_reason: str | None = None
         if not event.text:
@@ -662,6 +693,7 @@ class RealtimeAgentSession:
         )
         if repeat_reason is not None:
             await self._emit_transcript_repeat(turn_id, reason=repeat_reason, metrics=metrics)
+            await self._emit_turn_metrics(turn_id, "retry_requested")
             return
 
         self.cancel_current_turn()
@@ -680,6 +712,7 @@ class RealtimeAgentSession:
         if self._current_turn is None:
             self._active_response_turn_id = turn_id
         await self._emit_state("thinking", turn_id=turn_id)
+        self.telemetry.turn(turn_id).mark("response_started")
         decision = self.safety_classifier.classify_input(user_text)
         if decision.response_override is not None:
             self._response_committed_turns.add(turn_id)
@@ -698,6 +731,7 @@ class RealtimeAgentSession:
                 assistant_status="safety_override",
             )
             await self._emit_state("listening", turn_id=turn_id, safety_reason=decision.reason)
+            await self._emit_turn_metrics(turn_id, "safety_override")
             return
 
         memory_context = (
@@ -738,10 +772,11 @@ class RealtimeAgentSession:
                     "session_id": self.assignment.session_id,
                     "turn_id": turn_id,
                     "provider": last_token.provider,
-                    "message": str(error),
+                    "error_code": _error_code(error),
                 },
                 flush=True,
             )
+            self.telemetry.turn(turn_id).statuses["llm_status"] = "error"
 
         output_decision = self.safety_classifier.classify_output(text)
         if output_decision.response_override is not None:
@@ -780,6 +815,8 @@ class RealtimeAgentSession:
             v2_semantic_resolved=v2_semantic_resolved,
             turn_admission=turn_admission,
         )
+        metric = self.telemetry.turn(turn_id)
+        metric.mark("llm_request_start")
         chunks: list[str] = []
         last_token: LLMToken | None = None
         async for token in self.llm_provider.stream(
@@ -787,6 +824,8 @@ class RealtimeAgentSession:
             self.settings.language,
             max_output_chars=self.persona.max_output_chars,
         ):
+            if "llm_first_token" not in metric.timestamps_ms:
+                metric.mark("llm_first_token")
             chunks.append(token.text)
             last_token = token
             partial = _sanitize_llm_output("".join(chunks).strip())
@@ -809,6 +848,25 @@ class RealtimeAgentSession:
             )
             text = "Mujhe is baat ka abhi pakka jawab nahi pata."
         clipped_text, clipped = _clip_response_text(text, max_chars=self.persona.max_output_chars)
+        metric.mark("llm_complete")
+        if last_token is not None:
+            input_tokens = last_token.input_tokens or _estimated_token_count(
+                " ".join(message.content for message in messages)
+            )
+            output_tokens = last_token.output_tokens or _estimated_token_count(text)
+            cost, source = llm_cost_micro_inr(
+                provider=last_token.provider,
+                model=last_token.model,
+                input_tokens=input_tokens,
+                cached_input_tokens=last_token.cached_input_tokens,
+                output_tokens=output_tokens,
+                card=self.telemetry.card,
+                usage_reported=last_token.usage_reported,
+            )
+            metric.counts["llm_input_tokens"] = input_tokens
+            metric.counts["llm_output_tokens"] = output_tokens
+            metric.add_cost("llm", cost, source)
+            metric.statuses["llm_usage"] = "reported" if last_token.usage_reported else "estimated"
         return clipped_text, clipped, last_token
 
     async def _request_memory_context_v2(
@@ -844,6 +902,9 @@ class RealtimeAgentSession:
         try:
             return await asyncio.wait_for(future, self.settings.memory_lookup_timeout_seconds)
         except TimeoutError:
+            metric = self.telemetry.turn(turn_id)
+            metric.statuses["memory_fallback"] = "timeout"
+            metric.counts["memory_timeout_count"] = metric.counts.get("memory_timeout_count", 0) + 1
             print(
                 "memory_context_v2_timeout",
                 {
@@ -900,6 +961,17 @@ class RealtimeAgentSession:
             turn_admission=turn_admission,
         )
         lookup_latency_ms = self._memory_lookup_latency_ms.pop(turn_id, None)
+        metric = self.telemetry.turn(turn_id)
+        metric.mark("memory_lookup_complete")
+        metric.statuses["memory_route"] = memory_route.route
+        metric.statuses["memory_retrieval_strategy"] = self.memory_strategy.retrieval
+        metric.statuses["memory_reranker_strategy"] = self.memory_strategy.reranker
+        metric.statuses["memory_planner_strategy"] = self.memory_strategy.planner
+        metric.statuses["memory_needed"] = "yes" if lookup_attempted else "no"
+        metric.counts["memory_candidates_returned"] = len(turn_memory_packets)
+        metric.counts["memory_candidates_injected"] = diagnostics["memory_blocks_selected"]
+        if lookup_latency_ms is not None:
+            metric.durations_ms["memory_lookup"] = lookup_latency_ms
         print(
             "memory_lookup_metrics",
             {
@@ -970,6 +1042,9 @@ class RealtimeAgentSession:
         try:
             return await asyncio.wait_for(future, self.settings.memory_lookup_timeout_seconds)
         except TimeoutError:
+            metric = self.telemetry.turn(turn_id)
+            metric.statuses["memory_fallback"] = "timeout"
+            metric.counts["memory_timeout_count"] = metric.counts.get("memory_timeout_count", 0) + 1
             print(
                 "memory_lookup_timeout",
                 {
@@ -998,6 +1073,59 @@ class RealtimeAgentSession:
             self._client_supports_memory_v2 = (
                 isinstance(versions, list) and 2 in versions
             ) or event.get("schema_version") == 2
+            return True
+
+        if event.get("type") == "client_playback_started":
+            turn_id = event.get("turn_id")
+            client_timestamp = event.get("playback_timestamp_ms")
+            if (
+                isinstance(turn_id, str)
+                and isinstance(client_timestamp, int)
+                and client_timestamp >= 0
+            ):
+                metric = self.telemetry.turn(turn_id)
+                metric.timestamps_ms["client_first_playback_timestamp_ms"] = client_timestamp
+                metric.mark("server_received_client_playback")
+                metric.statuses["playback_correlation"] = "reported"
+            return True
+
+        if event.get("type") == "memory_judge_notice":
+            turn_id = event.get("turn_id")
+            notice = event.get("notice")
+            if not isinstance(turn_id, str) or not isinstance(notice, str) or not notice.strip():
+                return True
+            # Extraction completes after the voice turn. Relay this on the
+            # reliable channel only: creating another assistant/TTS response
+            # here can overlap or corrupt a response already in progress.
+            await self.transport.publish_reliable(
+                self.sequencer.encode(
+                    event_type="memory_judge_notice",
+                    turn_id=turn_id,
+                    payload={
+                        "notice": notice.strip(),
+                        "notice_id": event.get("notice_id"),
+                        "outcome": event.get("outcome"),
+                        "accepted_count": int(event.get("accepted_count", 0)),
+                        "window_turn_count": int(event.get("window_turn_count", 0)),
+                        "attempt_count": int(event.get("attempt_count", 0)),
+                        "request_started_at_ms": int(event.get("request_started_at_ms", 0)),
+                        "completed_at_ms": int(event.get("completed_at_ms", 0)),
+                    },
+                )
+            )
+            metric = self.telemetry.turn(turn_id)
+            metric.statuses["memory_judge_outcome"] = str(event.get("outcome", "invalid"))
+            metric.counts["memory_judge_accepted_count"] = int(event.get("accepted_count", 0))
+            metric.counts["memory_judge_notice_count"] = metric.counts.get("memory_judge_notice_count", 0) + 1
+            metric.counts["memory_judge_window_turn_count"] = int(event.get("window_turn_count", 0))
+            metric.counts["memory_judge_attempt_count"] = int(event.get("attempt_count", 0))
+            metric.timestamps_ms["memory_judge_request_started"] = int(event.get("request_started_at_ms", 0))
+            metric.timestamps_ms["memory_judge_completed"] = int(event.get("completed_at_ms", 0))
+            # The phone-side judge endpoint currently has no reviewed provider
+            # invoice/usage contract. Preserve that uncertainty rather than
+            # silently treating a dependency as zero cost.
+            metric.add_cost("memory_judge", 0, "unknown")
+            await self._emit_turn_metrics(turn_id, "memory_judge")
             return True
 
         if event.get("type") == "memory_context_response_v2":
@@ -1079,6 +1207,9 @@ class RealtimeAgentSession:
             "memory_packets": event.get("memory_packets"),
             "semantic_resolved": event.get("semantic_resolved"),
         }
+        elapsed_ms = event.get("elapsed_ms")
+        if isinstance(elapsed_ms, int) and elapsed_ms >= 0:
+            self._memory_lookup_latency_ms[turn_id] = elapsed_ms
         future.set_result(result)
         print(
             "memory_context_v2_response",
@@ -1149,6 +1280,8 @@ class RealtimeAgentSession:
     async def _speak_text(self, turn_id: str, text: str) -> None:
         await self._emit_state("speaking", turn_id=turn_id)
         started = _monotonic_ms()
+        metric = self.telemetry.turn(turn_id)
+        metric.mark("tts_request_start")
         first_audio_ms: int | None = None
         totals = {
             "chars": 0,
@@ -1162,22 +1295,44 @@ class RealtimeAgentSession:
             async for tts_frame in self.tts_provider.synthesize(text, self.settings.language):
                 if first_audio_ms is None:
                     first_audio_ms = _monotonic_ms() - started
+                    metric.mark("tts_first_audio")
+                    await self.transport.publish_reliable(
+                        self.sequencer.encode(
+                            event_type="tts_playback_marker",
+                            turn_id=turn_id,
+                            payload={"audio_format": _audio_format_payload(tts_frame.frame)},
+                        )
+                    )
                 _add_tts_totals(totals, tts_frame)
+                if tts_frame.chars:
+                    amount, source = tts_cost_micro_inr(
+                        model=tts_frame.model or model,
+                        billed_chars=tts_frame.chars,
+                        card=self.telemetry.card,
+                    )
+                    metric.add_cost("tts", amount, source)
                 provider = tts_frame.provider or provider
                 model = tts_frame.model or model
                 await self.transport.publish_audio_frame(tts_frame.frame)
+                if "tts_first_published" not in metric.timestamps_ms:
+                    metric.mark("tts_first_published")
         except asyncio.CancelledError:
             await self.transport.stop_audio(fade_out_ms=60)
+            metric.mark("cancel_complete")
+            metric.statuses["tts_status"] = "cancelled_cost_uncertain"
+            await self._emit_turn_metrics(turn_id, "cancelled")
             raise
         except Exception as error:
             await self._emit_tts_error(turn_id, str(error))
+            metric.statuses["tts_status"] = "error"
+            await self._emit_turn_metrics(turn_id, "tts_error")
             print(
                 "tts_error",
                 {
                     "session_id": self.assignment.session_id,
                     "turn_id": turn_id,
                     "provider": provider,
-                    "message": str(error),
+                    "error_code": _error_code(error),
                 },
                 flush=True,
             )
@@ -1192,6 +1347,12 @@ class RealtimeAgentSession:
             **totals,
         }
         await self._emit_tts_metrics(turn_id, metrics)
+        metric.mark("tts_complete")
+        metric.counts["tts_chars"] = int(totals["chars"])
+        metric.counts["tts_audio_ms"] = int(totals["audio_ms"])
+        metric.statuses["tts_provider"] = provider
+        metric.statuses["tts_model"] = model
+        await self._emit_turn_metrics(turn_id, "completed")
         print(
             "tts_final",
             {"session_id": self.assignment.session_id, "turn_id": turn_id, **metrics},
@@ -1203,12 +1364,33 @@ class RealtimeAgentSession:
             self.sequencer.encode(event_type="tts_metrics", turn_id=turn_id, payload=metrics)
         )
 
+    async def _emit_turn_metrics(self, turn_id: str, outcome: str) -> None:
+        envelope = self.telemetry.terminal(turn_id, outcome)
+        await self.transport.publish_reliable(
+            self.sequencer.encode(event_type="turn_metrics", turn_id=turn_id, payload=envelope)
+        )
+        print("turn_metrics_final", envelope, flush=True)
+        if self.settings.enable_metrics_ingest and self.settings.metrics_ingest_token:
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as client:
+                    await client.post(
+                        self.settings.metrics_ingest_url,
+                        headers={"x-telemetry-ingest-token": self.settings.metrics_ingest_token},
+                        json={"envelope": envelope},
+                    )
+            except httpx.HTTPError:
+                # Metrics must never affect the voice turn. The local data event remains exportable.
+                print("telemetry_ingest_failed", {"turn_id": turn_id}, flush=True)
+
     async def _emit_tts_error(self, turn_id: str, message: str) -> None:
         await self.transport.publish_reliable(
             self.sequencer.encode(
                 event_type="tts_error",
                 turn_id=turn_id,
-                payload={"message": message, "provider": selected_tts_provider_name(self.settings)},
+                payload={
+                    "error_code": _error_code(message),
+                    "provider": selected_tts_provider_name(self.settings),
+                },
             )
         )
 
@@ -1242,14 +1424,23 @@ class RealtimeAgentSession:
             self.sequencer.encode(
                 event_type="stt_error",
                 turn_id=turn_id,
-                payload={"message": message, "provider": selected_stt_provider_name(self.settings)},
+                payload={
+                    "error_code": _error_code(message),
+                    "provider": selected_stt_provider_name(self.settings),
+                },
             )
         )
         print(
             "stt_error",
-            {"session_id": self.assignment.session_id, "turn_id": turn_id, "message": message},
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                "error_code": _error_code(message),
+            },
             flush=True,
         )
+        self.telemetry.turn(turn_id).statuses["stt_status"] = "error"
+        await self._emit_turn_metrics(turn_id, "stt_error")
         await self._emit_state("listening", turn_id=turn_id)
 
 
@@ -1332,7 +1523,14 @@ def create_stt_provider(settings: Settings) -> STTProvider:
                 model_name=settings.stt_model,
             )
         if provider_name == "sarvam":
-            return SarvamSTTProvider()
+            return SarvamSTTProvider(
+                api_key=settings.sarvam_api_key,
+                model=settings.sarvam_stt_model,
+                mode=settings.sarvam_stt_mode,
+                chunk_ms=settings.sarvam_stt_chunk_ms,
+                response_timeout_seconds=settings.sarvam_stt_response_timeout_seconds,
+                price_per_hour=settings.sarvam_stt_price_per_hour,
+            )
         raise AgentAssignmentError(f"Unsupported STT provider: {provider_name}")
     except Exception as error:
         return _UnavailableSTTProvider(provider_name=provider_name, error=error)
@@ -1457,6 +1655,29 @@ def _add_tts_totals(totals: dict[str, float], frame: TTSAudioFrame) -> None:
     totals["cost_units"] += frame.cost_units
 
 
+def _audio_format_payload(frame: CanonicalAudioFrame) -> dict[str, object]:
+    """Format-only diagnostic; audio samples must never reach telemetry."""
+    return {
+        "codec": "pcm_s16le",
+        "sample_rate_hz": frame.sample_rate,
+        "channels": frame.num_channels,
+        "frame_duration_ms": frame.duration_ms,
+    }
+
+
+def _estimated_token_count(text: str) -> int:
+    """Conservative, versioned fallback when a provider omits usage metadata."""
+    return max((len(text.strip()) + 3) // 4, 0)
+
+
+def _error_code(error: object) -> str:
+    """Safe operational classification; provider exception text can contain content."""
+    name = type(error).__name__ if not isinstance(error, str) else "provider_error"
+    return "".join(
+        character for character in name.lower() if character.isalnum() or character == "_"
+    )[:64]
+
+
 def _clip_response_text(text: str, *, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
@@ -1531,13 +1752,11 @@ def _render_memory_directive(context: dict[str, object]) -> str | None:
     fact = facts[0] if isinstance(facts, list) and facts and isinstance(facts[0], dict) else None
     if directive == "fact_unknown":
         return "मुझे यह बात अभी याद नहीं है।"
+    # Interactive memory receipts are intentionally disabled. Ambiguous source
+    # material is judged by the bounded extraction path or dropped, never
+    # surfaced as a confirmation question during a companion conversation.
     if directive == "confirmation":
-        candidate = context.get("pending_candidate")
-        if isinstance(candidate, dict):
-            value = candidate.get("value")
-            if isinstance(value, dict) and isinstance(value.get("text"), str):
-                return _confirmation_text(str(candidate.get("state_key", "")), value["text"])
-        return "क्या आप चाहते हैं कि मैं यह बात याद रखूँ?"
+        return None
     if fact is None:
         return None
     value = fact.get("value")

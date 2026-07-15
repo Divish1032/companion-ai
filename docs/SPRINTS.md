@@ -292,8 +292,8 @@ Acceptance:
 Status:
 
 - Complete and green as of 2026-07-08.
-- Backend-local Vosk is the first Hindi STT adapter for Sprint 5.
-- Sarvam STT remains scaffolded only as a future/fallback API-backed adapter path behind the same provider interface/config.
+- Sarvam Saaras v3 is the default Hindi STT adapter, using `codemix` mode and the official async streaming SDK path.
+- Backend-local Vosk remains a standalone selectable adapter through `AGENT_STT_PROVIDER=vosk` or a language-specific provider route; it is not removed or coupled to Sarvam.
 - Phone validation passed on Android over Wi-Fi with local Docker API, LiveKit, and realtime-agent.
 - Validated Hindi phrase through phone mic: "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai".
 - Observed STT metrics: provider `vosk`, model `vosk-model-small-hi-0.22`, audio seconds `4.29`, provider cost units `0`.

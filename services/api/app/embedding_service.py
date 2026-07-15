@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -188,6 +189,7 @@ class ModelServingService:
         """Load enabled models before serving model-dependent requests."""
         if not self.embedding_enabled or self._embedding_state == "ready":
             return
+        started = time.perf_counter()
         try:
             await asyncio.to_thread(self._load_embedding_model, self.embedding_backend)
         except Exception as error:  # pragma: no cover - model/runtime dependent
@@ -201,6 +203,7 @@ class ModelServingService:
                     "state": self._embedding_state,
                     "configured_backend": self.embedding_backend,
                     "error_type": self._embedding_error_type,
+                    "cold_load_ms": round((time.perf_counter() - started) * 1000),
                 },
                 flush=True,
             )
@@ -216,6 +219,8 @@ class ModelServingService:
                 "state": self._embedding_state,
                 "dimension": self.embedding_dimension,
                 "active_backend": self._active_embedding_backend,
+                "cold_load_ms": round((time.perf_counter() - started) * 1000),
+                "model_cache_bytes": _artifact_size_bytes(self.embedding_model_path),
             },
             flush=True,
         )
@@ -225,7 +230,21 @@ class ModelServingService:
             raise ModelServingUnavailable("embedding serving is disabled")
         if self._embedding_state != "ready":
             raise ModelServingUnavailable(f"embedding serving is {self._embedding_state}")
-        return await asyncio.to_thread(self._embed_sync, texts, input_type)
+        started = time.perf_counter()
+        result = await asyncio.to_thread(self._embed_sync, texts, input_type)
+        print(
+            "memory_model_inference",
+            {
+                "operation": "embedding",
+                "input_count": len(texts),
+                "warm_inference_ms": round((time.perf_counter() - started) * 1000),
+                "model": self.embedding_model_name,
+                "dimension": self.embedding_dimension,
+                "backend": self._active_embedding_backend,
+            },
+            flush=True,
+        )
+        return result
 
     async def rerank(self, query: str, candidates: list[str]) -> list[float]:
         if not self.reranker_enabled:
@@ -293,6 +312,13 @@ def _validate_embedding_artifact_revision(
         or metadata.get("revision") != expected_revision
     ):
         raise ModelServingUnavailable("embedding artifact revision does not match configuration")
+
+
+def _artifact_size_bytes(path: str) -> int:
+    try:
+        return sum(item.stat().st_size for item in Path(path).rglob("*") if item.is_file())
+    except OSError:
+        return 0
 
 
 def parse_retrieval_plan(raw: str) -> RetrievalPlan:

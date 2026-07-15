@@ -71,7 +71,7 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 For physical Android phone testing over Wi-Fi, start Docker with a LAN LiveKit URL and run Flutter with the Mac LAN API URL:
 
 ```bash
-API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 LIVEKIT_NODE_IP=<Mac LAN IP> docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 cd apps/mobile
 flutter run --dart-define=API_BASE_URL=http://<Mac LAN IP>:8000
 ```
@@ -90,9 +90,9 @@ The filler-audio path is represented by reliable `filler_audio` start/stop event
 
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT routes to `vosk`, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Sarvam STT/LLM remain behind provider interfaces for configured API-backed use.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT defaults to Sarvam Saaras v3 in `codemix` mode, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Vosk remains a standalone local STT adapter selectable with `AGENT_STT_PROVIDER=vosk` or a language-specific route.
 
-For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/` and set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If the model path is absent, the agent still starts and emits an `stt_error` event on speech instead of fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
+For Sarvam Hindi STT, set `AGENT_SARVAM_API_KEY`; the adapter streams 16 kHz WAV chunks over the Sarvam SDK WebSocket using `AGENT_SARVAM_STT_MODEL=saaras:v3` and `AGENT_SARVAM_STT_MODE=codemix`. For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/`, set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process, and select it with `AGENT_STT_PROVIDER=vosk`. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If a selected provider is unavailable, the agent emits an `stt_error` event rather than fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
 
 Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi transcript for "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai" with Vosk metrics logged by realtime-agent.
 

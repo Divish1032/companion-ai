@@ -31,6 +31,7 @@ from app.providers.interfaces import (
     TranscriptEvent,
 )
 from app.providers.mock import MockSTTProvider
+from app.providers.llm import PersonaLLMProvider
 
 
 def test_query_echo_guard_only_matches_question_restatement() -> None:
@@ -39,7 +40,7 @@ def test_query_echo_guard_only_matches_question_restatement() -> None:
     assert not _looks_like_question_echo("दुनिया कैसे बनी", "यह एक बड़ा वैज्ञानिक सवाल है।")
 
 
-def test_memory_confirmation_is_deterministic_and_low_risk_admission_uses_llm() -> None:
+def test_memory_confirmation_directives_are_suppressed_and_low_risk_admission_uses_llm() -> None:
     confirmation = _render_memory_directive(
         {
             "response_directive": "confirmation",
@@ -61,7 +62,7 @@ def test_memory_confirmation_is_deterministic_and_low_risk_admission_uses_llm() 
     acknowledgement = _render_memory_directive(admission_context)
     admission = _memory_admission_hint(admission_context)
 
-    assert confirmation == "आप रोज सुबह टहलते हैं। क्या मैं यह याद रखूँ? टहलने के बाद आपको कैसा लगता है?"
+    assert confirmation is None
     assert acknowledgement is None
     assert admission == {
         "kind": "relationship",
@@ -449,9 +450,12 @@ def test_previous_session_memory_reaches_llm_response_path() -> None:
                 ],
             }
         ),
-        settings=_settings(vad_provider="energy"),
+        settings=_settings(
+            vad_provider="energy", memory_lookup_timeout_seconds=0.05
+        ),
         transport=transport,
         stt_provider=StaticSTTProvider("mera naam kya yaad hai"),
+        llm_provider=PersonaLLMProvider(),
     )
 
     async def scenario() -> None:

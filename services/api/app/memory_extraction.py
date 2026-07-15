@@ -59,14 +59,17 @@ class MemoryExtractionRequest(BaseModel):
 
     job_id: str = Field(min_length=1, max_length=160)
     extraction_version: str = Field(min_length=1, max_length=32)
+    judge_contract_version: Literal["memory_judge_v1"] = "memory_judge_v1"
     language: str = Field(default="hi-IN", max_length=32)
     turns: list[ExtractionTurn] = Field(min_length=1, max_length=24)
 
     @model_validator(mode="after")
-    def validate_unique_turn_ids(self) -> MemoryExtractionRequest:
-        turn_ids = [turn.turn_id for turn in self.turns]
-        if len(turn_ids) != len(set(turn_ids)):
-            raise ValueError("turn IDs must be unique")
+    def validate_unique_turn_role_pairs(self) -> MemoryExtractionRequest:
+        # A voice turn normally has one user message and one assistant reply
+        # sharing its turn ID. Reject only duplicate messages of the same role.
+        turn_roles = [(turn.turn_id, turn.role) for turn in self.turns]
+        if len(turn_roles) != len(set(turn_roles)):
+            raise ValueError("turn ID and role pairs must be unique")
         return self
 
 
@@ -75,6 +78,9 @@ class MemoryExtractionResponse(BaseModel):
 
     job_id: str
     extraction_version: str
+    judge_contract_version: Literal["memory_judge_v1"]
+    outcome: Literal["accepted", "rejected"]
+    cost_source: Literal["provider_reported", "estimated", "unknown"]
     candidates: list[MemoryCandidate] = Field(max_length=16)
 
 

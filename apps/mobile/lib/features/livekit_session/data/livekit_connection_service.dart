@@ -31,6 +31,7 @@ class LiveKitSessionHandle {
 }
 
 class LiveKitConnectionService {
+  static const _connectTimeout = Duration(seconds: 15);
   lk.Room? _room;
   lk.EventsListener<lk.RoomEvent>? _listener;
   final _connectionController =
@@ -97,7 +98,9 @@ class LiveKitConnectionService {
       });
 
     try {
-      await room.connect(token.liveKitUrl, token.token);
+      await room
+          .connect(token.liveKitUrl, token.token)
+          .timeout(_connectTimeout);
       await room.localParticipant?.setMicrophoneEnabled(true);
       _connectionController.add(LiveKitConnectionStatus.connected);
     } catch (_) {

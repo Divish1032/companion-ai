@@ -119,3 +119,13 @@ Current recommendation:
 - Do not assume Bulbul v3 is a safe default for MVP economics.
 - Treat Bulbul v3 as quality-first and cost-sensitive.
 - Require measured average TTS characters per turn before pricing decisions.
+
+## Sprint 8 rate-card implementation
+
+Cost calculations use integer micro-INR and an effective-dated rate-card
+fingerprint. Vosk and the local persona provider have no external provider
+charge, not zero infrastructure cost. Unknown external providers (including a
+configured memory extractor without a reviewed rate) make a session cost
+incomplete instead of contributing zero. The current Bulbul v3 natural-voice
+scenario compares active voice-minute cost against INR 1.80 and emits an overage
+at INR 2.70/minute; this remains a planning guardrail rather than an invoice.

@@ -21,6 +21,53 @@ final appDatabaseProvider = Provider<AppDatabase>((ref) {
   return database;
 });
 
+const _telemetryForbiddenKeys = {
+  'text',
+  'content',
+  'message',
+  'query',
+  'prompt',
+  'transcript',
+  'memory',
+  'vector',
+  'audio',
+  'device_id',
+  'authorization',
+  'api_key',
+};
+
+void _validateTelemetryEnvelope(Map<String, Object?> envelope) {
+  if (envelope['schema'] != 'telemetry_envelope_v1' ||
+      envelope['session_id'] is! String ||
+      envelope['turn_id'] is! String) {
+    throw const FormatException('Invalid telemetry envelope.');
+  }
+  void visit(Object? value, [String? key]) {
+    if (key != null && _telemetryForbiddenKeys.contains(key.toLowerCase())) {
+      throw FormatException('Telemetry cannot contain $key.');
+    }
+    if (value is Map) {
+      for (final entry in value.entries) {
+        if (entry.key is! String) {
+          throw const FormatException('Telemetry key must be text.');
+        }
+        visit(entry.value, entry.key as String);
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        visit(item);
+      }
+    } else if (value != null &&
+        value is! String &&
+        value is! num &&
+        value is! bool) {
+      throw const FormatException('Invalid telemetry value.');
+    }
+  }
+
+  visit(envelope);
+}
+
 class ChatSessions extends Table {
   TextColumn get id => text()();
   IntColumn get startedAt => integer()();
@@ -246,13 +293,14 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) async {
       await m.createAll();
       await _ensureMemoryFtsSchema();
+      await _ensureTelemetrySchema();
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -287,10 +335,14 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(memoryExtractionJobs);
         await m.createTable(memoryCandidates);
       }
+      if (from < 6) {
+        await _ensureTelemetrySchema();
+      }
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');
       await _ensureMemoryFtsSchema();
+      await _ensureTelemetrySchema();
     },
   );
 
@@ -330,6 +382,65 @@ class AppDatabase extends _$AppDatabase {
       SELECT id, label, content, canonical_text FROM memory_records
       WHERE id NOT IN (SELECT memory_id FROM memory_records_fts)
     ''');
+  }
+
+  Future<void> _ensureTelemetrySchema() async {
+    await customStatement('''
+      CREATE TABLE IF NOT EXISTS telemetry_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      )
+    ''');
+    await customStatement('''
+      CREATE INDEX IF NOT EXISTS telemetry_events_session_idx
+      ON telemetry_events(session_id, created_at)
+    ''');
+  }
+
+  Future<void> markTurnDeterministicallyHandled(String turnId) async {
+    await customStatement(
+      'CREATE TABLE IF NOT EXISTS memory_judge_skips (turn_id TEXT PRIMARY KEY)',
+    );
+    await customStatement(
+      'INSERT OR IGNORE INTO memory_judge_skips(turn_id) VALUES (?)',
+      [turnId],
+    );
+  }
+
+  Future<void> appendTelemetryEnvelope(Map<String, Object?> envelope) async {
+    _validateTelemetryEnvelope(envelope);
+    final sessionId = envelope['session_id']! as String;
+    final turnId = envelope['turn_id']! as String;
+    final recordedAt = DateTime.now().millisecondsSinceEpoch;
+    await customStatement(
+      'INSERT INTO telemetry_events(id, session_id, turn_id, created_at, payload_json) '
+      'VALUES (?, ?, ?, ?, ?)',
+      [
+        'telemetry_${sessionId}_${turnId}_$recordedAt',
+        sessionId,
+        turnId,
+        recordedAt,
+        jsonEncode(envelope),
+      ],
+    );
+  }
+
+  Future<List<Map<String, Object?>>> readTelemetryForSession(
+    String sessionId,
+  ) async {
+    final rows = await customSelect(
+      'SELECT payload_json FROM telemetry_events WHERE session_id = ? ORDER BY created_at ASC',
+      variables: [Variable<String>(sessionId)],
+    ).get();
+    return [
+      for (final row in rows)
+        Map<String, Object?>.from(
+          jsonDecode(row.read<String>('payload_json')) as Map,
+        ),
+    ];
   }
 
   Stream<List<ChatMessage>> watchMessages() {
@@ -708,6 +819,14 @@ class AppDatabase extends _$AppDatabase {
     required String turnId,
     required String extractionVersion,
   }) async {
+    await customStatement(
+      'CREATE TABLE IF NOT EXISTS memory_judge_skips (turn_id TEXT PRIMARY KEY)',
+    );
+    final skip = await customSelect(
+      'SELECT turn_id FROM memory_judge_skips WHERE turn_id = ?',
+      variables: [Variable.withString(turnId)],
+    ).getSingleOrNull();
+    if (skip != null) return;
     final messages =
         await (select(chatMessages)..where(
               (row) =>
@@ -907,10 +1026,11 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
-  Future<void> validateAndApplyMemoryCandidates({
+  Future<List<ExtractedMemoryCandidate>> validateAndApplyMemoryCandidates({
     required MemoryExtractionJob job,
     required List<ExtractedMemoryCandidate> candidates,
   }) async {
+    final admitted = <ExtractedMemoryCandidate>[];
     await transaction(() async {
       final evidence = await readExtractionWindow(job);
       final byTurn = <String, List<ChatMessage>>{};
@@ -993,13 +1113,18 @@ class AppDatabase extends _$AppDatabase {
           'decision_reason': decision.reason,
         });
         if (decision.admit) {
-          await _applyValidatedCandidate(
-            candidate: candidate,
-            job: job,
-            memoryId: targetId,
-            pendingConfirmation: decision.state == 'pending_confirmation',
-            now: now,
-          );
+          admitted.add(candidate);
+          if (candidate.kind == 'profile') {
+            await _applyLlmJudgedProfileClaim(candidate: candidate, now: now);
+          } else {
+            await _applyValidatedCandidate(
+              candidate: candidate,
+              job: job,
+              memoryId: targetId,
+              pendingConfirmation: false,
+              now: now,
+            );
+          }
         }
       }
       await (update(
@@ -1013,6 +1138,73 @@ class AppDatabase extends _$AppDatabase {
         ),
       );
     });
+    return admitted;
+  }
+
+  Future<void> _applyLlmJudgedProfileClaim({
+    required ExtractedMemoryCandidate candidate,
+    required int now,
+  }) async {
+    const stateKey = 'user.profile.preferred_name';
+    final previous = await customSelect(
+      'SELECT id FROM memory_claims WHERE state_key = ? AND claim_state = ? '
+      'ORDER BY updated_at DESC LIMIT 1',
+      variables: [
+        Variable.withString(stateKey),
+        Variable.withString('current'),
+      ],
+    ).getSingleOrNull();
+    final claimId = 'llm_claim_${_candidateFingerprint(candidate)}';
+    if (previous?.data['id'] == claimId) return;
+    if (previous?.data['id'] is String) {
+      await customStatement(
+        'UPDATE memory_claims SET claim_state = ?, updated_at = ? WHERE id = ?',
+        ['superseded', now, previous!.data['id']],
+      );
+    }
+    await customStatement(
+      '''INSERT OR REPLACE INTO memory_claims (
+        id, state_key, subject, predicate, value_json, cardinality, category,
+        assertion_kind, claim_state, source_turn_ids_json, transcript_status,
+        transcript_quality, stt_confidence, provider_metadata_json,
+        extraction_version, confirmation_state, supersedes_claim_id,
+        created_at, updated_at, confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+      [
+        claimId,
+        stateKey,
+        'user',
+        'preferred_name',
+        jsonEncode({'text': candidate.objectText}),
+        'single',
+        'profile',
+        'llm_judged',
+        'current',
+        jsonEncode(candidate.sourceTurnIds),
+        'validated_completed_turn',
+        'llm_judged',
+        null,
+        '{}',
+        'llm_judge_v1',
+        'implicit',
+        previous?.data['id'],
+        now,
+        now,
+        now,
+      ],
+    );
+    await customStatement(
+      'INSERT OR REPLACE INTO companion_state '
+      '(state_key, active_claim_id, value_json, category, updated_at) '
+      'VALUES (?, ?, ?, ?, ?)',
+      [
+        stateKey,
+        claimId,
+        jsonEncode({'text': candidate.objectText}),
+        'profile',
+        now,
+      ],
+    );
   }
 
   Future<void> _applyValidatedCandidate({
@@ -1647,7 +1839,9 @@ class AppDatabase extends _$AppDatabase {
         recurrenceCount: Value((existing?.recurrenceCount ?? 0) + 1),
         sensitivity: const Value('normal'),
         temporalStatus: const Value('current'),
-        receiptState: const Value('unconfirmed'),
+        // This deterministic, locally-grounded signal is usable immediately.
+        // The voice flow never asks the user to confirm a memory.
+        receiptState: const Value('implicit'),
         supersededBy: const Value(null),
         evidenceSummary: const Value(
           'Recurring work/office stress signal from local turns.',
@@ -1767,7 +1961,10 @@ class AppDatabase extends _$AppDatabase {
 
   Future<bool> _applyMemoryReceiptReply(ChatMessage message) async {
     final decision = _classifyMemoryReceiptReply(message.messageText);
-    if (decision == _MemoryReceiptDecision.none) {
+    // Positive acknowledgements must not be treated as permission to persist
+    // an earlier ambiguous statement. An explicit negative remains a local
+    // privacy control for the immediately preceding auto-admitted memory.
+    if (decision != _MemoryReceiptDecision.reject) {
       return false;
     }
     final pending =
@@ -1776,7 +1973,7 @@ class AppDatabase extends _$AppDatabase {
                 (row) =>
                     row.supersededBy.isNull() &
                     row.sensitivity.equals('normal') &
-                    row.receiptState.equals('unconfirmed') &
+                    row.receiptState.isIn(['implicit', 'unconfirmed']) &
                     row.temporalStatus.isNotIn(['expired', 'stale']),
               )
               ..orderBy([
@@ -1794,42 +1991,6 @@ class AppDatabase extends _$AppDatabase {
       ..._decodeStringList(pending.sourceTurnIdsJson),
       message.turnId,
     }.toList();
-    if (decision == _MemoryReceiptDecision.confirm) {
-      await (update(
-        memoryRecords,
-      )..where((row) => row.id.equals(pending.id))).write(
-        MemoryRecordsCompanion(
-          sourceTurnIdsJson: Value(jsonEncode(sourceTurnIds)),
-          updatedAt: Value(now),
-          confidenceScore: Value(
-            (pending.confidenceScore + 0.1).clamp(0.0, 0.98),
-          ),
-          importanceScore: Value(
-            (pending.importanceScore + 0.06).clamp(0.0, 0.95),
-          ),
-          recurrenceCount: Value(pending.recurrenceCount + 1),
-          receiptState: const Value('confirmed'),
-          evidenceSummary: Value(
-            pending.evidenceSummary.isEmpty
-                ? 'Confirmed by explicit local voice receipt.'
-                : '${pending.evidenceSummary} Confirmed by explicit local voice receipt.',
-          ),
-        ),
-      );
-      await (update(
-        memoryCandidates,
-      )..where((row) => row.targetMemoryId.equals(pending.id))).write(
-        const MemoryCandidatesCompanion(
-          decisionState: Value('confirmed'),
-          decisionReason: Value('explicit_voice_confirmation'),
-        ),
-      );
-      _logMemoryDiagnostic('memory_receipt_result', {
-        'memory_id': pending.id,
-        'result': 'confirmed',
-      });
-      return true;
-    }
     if (pending.id.startsWith('memory_llm_')) {
       await (delete(memoryContradictions)..where(
             (row) =>
@@ -3354,7 +3515,7 @@ class _CandidateDecision {
 
   final String state;
   final String reason;
-  bool get admit => state == 'admitted' || state == 'pending_confirmation';
+  bool get admit => state == 'admitted';
 }
 
 _CandidateDecision _validateMemoryCandidate(
@@ -3491,10 +3652,24 @@ _CandidateDecision _validateMemoryCandidate(
       'candidate_not_lexically_grounded',
     );
   }
-  // Preferred identity is exclusively owned by the deterministic Companion
-  // State ledger. The LLM cannot create or overwrite it.
   if (candidate.kind == 'profile') {
-    return const _CandidateDecision('rejected', 'exact_state_owned');
+    // Exact profile changes are allowed only as a bounded LLM judgement over
+    // explicit, locally grounded user evidence. The application records a
+    // committed supersession; it never creates a confirmation-pending state.
+    return candidate.explicitness == 'explicit' &&
+            candidate.confidence >= 0.85 &&
+            candidate.futureUtility >= 0.4 &&
+            candidate.subject.toLowerCase() == 'user' &&
+            {
+              'preferred_name',
+              'name',
+              'preferred_name_is',
+            }.contains(candidate.predicate.toLowerCase())
+        ? const _CandidateDecision('admitted', 'llm_judged_exact_profile')
+        : const _CandidateDecision(
+            'rejected',
+            'insufficient_exact_profile_evidence',
+          );
   }
   if (candidate.suggestedAction == 'EXPIRE') {
     if (!hasExactTarget) {
@@ -3518,8 +3693,8 @@ _CandidateDecision _validateMemoryCandidate(
     if (candidate.confidence >= threshold && candidate.futureUtility >= 0.4) {
       if ({'preference', 'boundary', 'relationship'}.contains(candidate.kind)) {
         return const _CandidateDecision(
-          'pending_confirmation',
-          'exact_or_personal_fact_needs_receipt',
+          'admitted',
+          'llm_judged_explicit_personal_fact',
         );
       }
       return const _CandidateDecision(
@@ -3533,8 +3708,8 @@ _CandidateDecision _validateMemoryCandidate(
       candidate.confidence >= 0.72 &&
       candidate.futureUtility >= 0.55) {
     return const _CandidateDecision(
-      'pending_confirmation',
-      'recurring_cross_window_hypothesis',
+      'admitted',
+      'llm_judged_recurring_cross_window_hypothesis',
     );
   }
   return const _CandidateDecision(

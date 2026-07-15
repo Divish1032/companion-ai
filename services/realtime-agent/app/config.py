@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     enable_memory_planner: bool = False
     memory_planner_model: str = "Qwen/Qwen3-0.6B"
     memory_planner_timeout_seconds: float = 0.1
-    memory_lookup_timeout_seconds: float = 0.2
+    # Phone-owned vector lookup includes a reliable data-channel round trip and
+    # a warm local embedding.  200 ms caused systematic false fallbacks on real
+    # devices; retain a bounded one-second budget instead.
+    memory_lookup_timeout_seconds: float = 1.0
+    enable_metrics_ingest: bool = False
+    metrics_ingest_url: str = "http://api:8000/v1/telemetry/ingest"
+    metrics_ingest_token: str = ""
     enable_livekit_rtc: bool = True
     enable_fake_audio: bool = True
     fake_audio_ms: int = 550
@@ -34,6 +40,11 @@ class Settings(BaseSettings):
     stt_model: str = "vosk-model-small-hi-0.22"
     vosk_model_path: str = ""
     stt_min_confidence: float = 0.35
+    sarvam_stt_model: str = "saaras:v3"
+    sarvam_stt_mode: str = "codemix"
+    sarvam_stt_chunk_ms: int = 120
+    sarvam_stt_response_timeout_seconds: float = 5.0
+    sarvam_stt_price_per_hour: float = 30.0
     llm_provider: str = ""
     llm_model: str = "sarvam-30b"
     tts_provider: str = ""

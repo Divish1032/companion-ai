@@ -3,7 +3,9 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from livekit import api
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,7 @@ from app.memory_extraction import (
     filter_source_safe_candidates,
 )
 from app.session_store import RateLimitExceeded, SessionStore
+from app.telemetry_store import TelemetryStore, TelemetryValidationError
 
 settings = Settings()
 store = SessionStore(settings.durable_store_path)
@@ -46,6 +49,7 @@ memory_candidate_extractor: MemoryCandidateExtractor = OpenAICompatibleMemoryCan
     model=settings.memory_extraction_model,
     timeout_seconds=settings.memory_extraction_timeout_seconds,
 )
+telemetry_store = TelemetryStore(settings.telemetry_store_path)
 
 
 @asynccontextmanager
@@ -59,6 +63,23 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Companion AI API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(
+    _request: Request, error: RequestValidationError
+) -> JSONResponse:
+    """Return and log field paths only; rejected bodies may contain user text."""
+
+    fields = [
+        ".".join(str(part) for part in issue.get("loc", ()))
+        for issue in error.errors()
+    ][:16]
+    print("api_request_validation_error", {"fields": fields}, flush=True)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {"code": "invalid_request", "fields": fields}},
+    )
 
 
 class RecentTranscriptItem(BaseModel):
@@ -192,6 +213,10 @@ def get_memory_candidate_extractor() -> MemoryCandidateExtractor:
     return memory_candidate_extractor
 
 
+def get_telemetry_store() -> TelemetryStore:
+    return telemetry_store
+
+
 @app.get("/health")
 async def health() -> dict[str, object]:
     return {"status": "ok", "service": settings.service_name}
@@ -211,6 +236,45 @@ async def config() -> dict[str, str]:
         "environment": settings.environment,
         "livekit_url": settings.livekit_url,
     }
+
+
+class TelemetryIngestRequest(BaseModel):
+    envelope: dict[str, object]
+
+
+@app.post("/v1/telemetry/ingest")
+async def ingest_telemetry(
+    request: TelemetryIngestRequest,
+    store: Annotated[TelemetryStore, Depends(get_telemetry_store)],
+    x_telemetry_ingest_token: Annotated[str | None, Header()] = None,
+) -> dict[str, bool]:
+    if settings.telemetry_ingest_token and x_telemetry_ingest_token != settings.telemetry_ingest_token:
+        raise HTTPException(status_code=401, detail={"code": "telemetry_ingest_unauthorized"})
+    try:
+        store.ingest(request.envelope)
+    except TelemetryValidationError as error:
+        raise HTTPException(status_code=422, detail={"code": "invalid_redacted_telemetry"}) from error
+    return {"accepted": True}
+
+
+@app.get("/v1/telemetry/sessions/{session_id}")
+async def telemetry_session_summary(
+    session_id: str,
+    store: Annotated[TelemetryStore, Depends(get_telemetry_store)],
+) -> dict[str, object]:
+    return store.session_summary(session_id)
+
+
+@app.post("/v1/telemetry/purge")
+async def purge_telemetry(
+    store: Annotated[TelemetryStore, Depends(get_telemetry_store)],
+    x_telemetry_ingest_token: Annotated[str | None, Header()] = None,
+) -> dict[str, int]:
+    if settings.telemetry_ingest_token and x_telemetry_ingest_token != settings.telemetry_ingest_token:
+        raise HTTPException(status_code=401, detail={"code": "telemetry_ingest_unauthorized"})
+    import time
+    cutoff = int(time.time() * 1000) - settings.telemetry_raw_retention_days * 86_400_000
+    return {"purged": store.purge_before(cutoff)}
 
 
 @app.post("/v1/embeddings", response_model=EmbeddingsResponse)
@@ -290,8 +354,9 @@ async def memory_plan(
     )
 
 
-@app.post("/v1/memory-candidates", response_model=MemoryExtractionResponse)
-async def memory_candidates(
+@app.post("/v1/memory-judge", response_model=MemoryExtractionResponse)
+@app.post("/v1/memory-candidates", response_model=MemoryExtractionResponse, deprecated=True)
+async def memory_judge(
     request: MemoryExtractionRequest,
     extractor: Annotated[MemoryCandidateExtractor, Depends(get_memory_candidate_extractor)],
 ) -> MemoryExtractionResponse:
@@ -307,6 +372,9 @@ async def memory_candidates(
     return MemoryExtractionResponse(
         job_id=request.job_id,
         extraction_version=request.extraction_version,
+        judge_contract_version=request.judge_contract_version,
+        outcome="accepted" if safe_candidates else "rejected",
+        cost_source="unknown",
         candidates=safe_candidates,
     )
 

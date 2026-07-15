@@ -190,7 +190,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
   });
 
-  testWidgets('memory lookup response includes pending receipt candidates', (
+  testWidgets('memory lookup response never includes confirmation candidates', (
     tester,
   ) async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -234,15 +234,12 @@ void main() {
     );
     final pendingReceipts =
         response.payload['pending_receipts'] as List<Object?>;
-    final firstReceipt = pendingReceipts.single as Map<String, Object?>;
-
-    expect(firstReceipt['memory_id'], 'memory_semantic_work_stress_manager');
-    expect(firstReceipt['label'], 'recurring_work_stressor');
+    expect(pendingReceipts, isEmpty);
     final memory = (await database.select(database.memoryRecords).get())
         .singleWhere(
           (record) => record.id == 'memory_semantic_work_stress_manager',
         );
-    expect(memory.receiptPromptedAt, null);
+    expect(memory.receiptState, 'implicit');
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 1));

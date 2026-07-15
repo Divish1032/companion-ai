@@ -53,12 +53,27 @@ extension CompanionMemoryStore on AppDatabase {
         updated_at INTEGER NOT NULL
       )
     ''');
+    await customStatement(
+      'CREATE TABLE IF NOT EXISTS memory_judge_skips (turn_id TEXT PRIMARY KEY)',
+    );
     await _ensureColumn('memory_claims', 'stt_confidence', 'REAL');
     await _ensureColumn(
       'memory_claims',
       'provider_metadata_json',
       "TEXT NOT NULL DEFAULT '{}'",
     );
+    // Retire the legacy receipt queue. High-confidence LLM candidates are
+    // already evidence-checked locally; no later user confirmation is needed.
+    await customStatement('''
+      UPDATE memory_records
+      SET receipt_state = 'implicit', receipt_prompted_at = NULL
+      WHERE receipt_state = 'unconfirmed' AND sensitivity = 'normal'
+    ''');
+    await customStatement('''
+      UPDATE memory_candidates
+      SET decision_state = 'admitted', decision_reason = 'llm_judged_auto_admit'
+      WHERE decision_state = 'pending_confirmation'
+    ''');
   }
 
   Future<void> _ensureColumn(
@@ -79,6 +94,7 @@ extension CompanionMemoryStore on AppDatabase {
       await customStatement('DELETE FROM memory_claims');
       await customStatement('DELETE FROM memory_candidates');
       await customStatement('DELETE FROM memory_extraction_jobs');
+      await customStatement('DELETE FROM memory_judge_skips');
       await customStatement('DELETE FROM memory_open_threads');
       await customStatement('DELETE FROM memory_episodes');
     });
@@ -99,6 +115,10 @@ extension CompanionMemoryStore on AppDatabase {
       await customStatement('DELETE FROM memory_records');
       await customStatement('DELETE FROM chat_messages');
       await customStatement('DELETE FROM chat_sessions');
+      // Metrics are content-free but remain session-correlated local data; a
+      // user-initiated history clear removes them too.
+      await customStatement('DELETE FROM telemetry_events');
+      await customStatement('DELETE FROM memory_judge_skips');
     });
     markTablesUpdated([
       chatMessages,
@@ -128,7 +148,14 @@ extension CompanionMemoryStore on AppDatabase {
     final analysis = analyzeMemoryTurn(text, language: language);
     final previousTurnId = await _previousFinalUserTurnId(turnId);
     if (analysis.action == MemoryActionKind.confirmCandidate) {
-      return _confirmCandidate(turnId, previousTurnId);
+      // A bare acknowledgement must never commit an earlier uncertain claim.
+      // Ambiguous content is evaluated by the bounded LLM candidate job after
+      // the completed exchange, and is otherwise dropped.
+      await _expirePendingCandidates();
+      return MemoryTurnResolution(
+        directive: 'companion',
+        policyCard: await _policyCard(),
+      );
     }
     if (analysis.action == MemoryActionKind.rejectCandidate) {
       await _rejectCandidate(previousTurnId);
@@ -189,23 +216,30 @@ extension CompanionMemoryStore on AppDatabase {
       }
 
       // A new explicit assertion means the user has moved on from any older
-      // confirmation prompt. Never let a later bare "हाँ" confirm it.
+      // candidate. Never let a later bare "हाँ" commit it.
       await _expirePendingCandidates();
 
       final id =
           'claim_${now}_${turnId.hashCode}_${candidate.stateKey.hashCode}';
       // A first, explicit low-risk name can be convenient even when Vosk does
-      // not expose a final confidence. Replacing an existing identity is more
-      // harmful: require a voice confirmation unless transcript quality is
-      // high, even if the extractor saw an assertion grammar match.
+      // not expose a final confidence. For an uncertain correction or boundary
+      // we do not ask a user-facing receipt question or overwrite exact state;
+      // the completed exchange is instead eligible for bounded LLM semantic
+      // extraction and otherwise fails closed.
       final replacingExactProfile =
           candidate.stateKey == 'user.profile.preferred_name' &&
           current != null &&
           quality != TranscriptQuality.high;
-      final pending =
+      final deferToLlmJudge =
           replacingExactProfile ||
           claimAdmission(candidate: candidate, quality: quality) ==
               ClaimAdmission.confirm;
+      if (deferToLlmJudge) {
+        return MemoryTurnResolution(
+          directive: 'companion',
+          policyCard: await _policyCard(),
+        );
+      }
       await customStatement(
         '''INSERT INTO memory_claims (
           id, state_key, subject, predicate, value_json, cardinality, category,
@@ -223,31 +257,20 @@ extension CompanionMemoryStore on AppDatabase {
           candidate.cardinality.name,
           candidate.category,
           candidate.assertionKind,
-          pending ? 'candidate' : 'current',
+          'current',
           jsonEncode([turnId]),
           transcriptStatus,
           quality.name,
           sttConfidence,
           jsonEncode({'provider': ?sttProvider, 'model': ?sttModel}),
           'deterministic_hi_v1',
-          pending ? 'pending' : 'confirmed',
+          'confirmed',
           current?['id'],
           now,
           now,
-          pending ? null : now,
+          now,
         ],
       );
-      if (pending) {
-        return MemoryTurnResolution(
-          directive: 'confirmation',
-          pendingCandidate: {
-            'claim_id': id,
-            'state_key': candidate.stateKey,
-            'value': candidate.value,
-            'category': candidate.category,
-          },
-        );
-      }
       await _activate({'id': id}, candidate, current, now);
       return MemoryTurnResolution(
         directive: 'setting_ack',
@@ -390,51 +413,6 @@ extension CompanionMemoryStore on AppDatabase {
         now,
       ],
     );
-  }
-
-  Future<MemoryTurnResolution> _confirmCandidate(
-    String turnId,
-    String? previousTurnId,
-  ) async {
-    return transaction(() async {
-      final claim = await _pendingCandidateForSourceTurn(previousTurnId);
-      if (claim == null) {
-        await _expirePendingCandidates();
-        return const MemoryTurnResolution(directive: 'companion');
-      }
-      final value = _decodeValue(claim['value_json']);
-      final candidate = CompanionClaimCandidate(
-        stateKey: claim['state_key']! as String,
-        subject: claim['subject']! as String,
-        predicate: claim['predicate']! as String,
-        value: value,
-        cardinality: claim['cardinality'] == 'multi'
-            ? ClaimCardinality.multi
-            : ClaimCardinality.single,
-        category: claim['category']! as String,
-        assertionKind: 'confirmation',
-      );
-      final now = DateTime.now().millisecondsSinceEpoch;
-      await _activate(
-        claim,
-        candidate,
-        await _currentClaim(candidate.stateKey),
-        now,
-      );
-      await customStatement(
-        'UPDATE memory_claims SET source_turn_ids_json = ?, updated_at = ? WHERE id = ?',
-        [
-          jsonEncode([..._stringList(claim['source_turn_ids_json']), turnId]),
-          now,
-          claim['id'],
-        ],
-      );
-      await _expirePendingCandidates();
-      return MemoryTurnResolution(
-        directive: 'setting_ack',
-        stateFacts: await _facts(candidate.stateKey),
-      );
-    });
   }
 
   Future<void> _rejectCandidate(String? previousTurnId) async {
