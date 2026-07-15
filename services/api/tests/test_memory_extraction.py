@@ -6,6 +6,7 @@ import json
 from fastapi.testclient import TestClient
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.main import app, get_memory_candidate_extractor, settings
 from app.memory_extraction import (
@@ -13,6 +14,7 @@ from app.memory_extraction import (
     MemoryExtractionRequest,
     MemoryExtractionUnavailable,
     OpenAICompatibleMemoryCandidateExtractor,
+    filter_source_safe_candidates,
 )
 
 
@@ -205,6 +207,75 @@ def test_openai_compatible_extractor_fails_closed_on_non_json_output() -> None:
         asyncio.run(extractor.extract(_request()))
 
 
+def test_extraction_request_rejects_duplicate_turn_id_across_roles() -> None:
+    with pytest.raises(ValidationError):
+        MemoryExtractionRequest.model_validate(
+            {
+                "job_id": "duplicate-turn",
+                "extraction_version": "v1",
+                "turns": [
+                    {
+                        "turn_id": "same-id",
+                        "role": "user",
+                        "text": "Mera interview hua.",
+                        "created_at_ms": 1,
+                    },
+                    {
+                        "turn_id": "same-id",
+                        "role": "assistant",
+                        "text": "Interview ke baare mein batao.",
+                        "created_at_ms": 2,
+                    },
+                ],
+            }
+        )
+
+
+def test_server_filter_rejects_sensitive_and_role_inconsistent_candidates() -> None:
+    request = MemoryExtractionRequest.model_validate(
+        {
+            "job_id": "filter-1",
+            "extraction_version": "v1",
+            "turns": [
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "text": "Scripted test OTP 000000 hai.",
+                    "created_at_ms": 1,
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "text": "I will ask about your walk next week.",
+                    "created_at_ms": 2,
+                },
+            ],
+        }
+    )
+    invalid_commitment = _candidate(
+        kind="assistant_commitment",
+        source_turn_ids=["u1"],
+        evidence_role="mixed",
+    )
+    sensitive_episode = _candidate(
+        kind="episode",
+        source_turn_ids=["u1"],
+        evidence_role="user",
+    )
+    valid_commitment = _candidate(
+        kind="assistant_commitment",
+        source_turn_ids=["a1"],
+        evidence_role="assistant",
+    )
+
+    safe = filter_source_safe_candidates(
+        request,
+        [invalid_commitment, sensitive_episode, valid_commitment],
+    )
+
+    assert safe == [valid_commitment]
+
+
 def _request() -> MemoryExtractionRequest:
     return MemoryExtractionRequest.model_validate(
         {
@@ -218,5 +289,33 @@ def _request() -> MemoryExtractionRequest:
                     "created_at_ms": 1,
                 }
             ],
+        }
+    )
+
+
+def _candidate(
+    *,
+    kind: str,
+    source_turn_ids: list[str],
+    evidence_role: str,
+) -> MemoryCandidate:
+    return MemoryCandidate.model_validate(
+        {
+            "candidate_kind": kind,
+            "subject": "assistant",
+            "predicate": "will_follow_up",
+            "object_text": "Ask about the walk next week",
+            "event_start_at_ms": None,
+            "event_end_at_ms": None,
+            "temporal_status": "future",
+            "explicitness": "assistant_only",
+            "confidence": 0.9,
+            "future_utility": 0.8,
+            "sensitivity": "normal",
+            "source_turn_ids": source_turn_ids,
+            "evidence_role": evidence_role,
+            "suggested_action": "ADD",
+            "follow_up_allowed": True,
+            "proactive_allowed": False,
         }
     )

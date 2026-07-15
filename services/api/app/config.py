@@ -19,9 +19,10 @@ class Settings(BaseSettings):
     token_mint_limit_per_session: int = 20
     enable_memory_embeddings: bool = False
     memory_embedding_model: str = "google/embeddinggemma-300m"
+    memory_embedding_revision: str = "57c266a740f537b4dc058e1b0cda161fd15afa75"
     memory_embedding_dimension: int = 768
     memory_embedding_backend: str = "onnx"
-    memory_embedding_model_path: str = "/models/huggingface/embeddinggemma-onnx-fp32"
+    memory_embedding_model_path: str = "/models/huggingface/embeddinggemma-onnx-fp32-r57c266a7"
     embedding_timeout_seconds: float = 1.0
     enable_memory_reranker: bool = False
     memory_reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"

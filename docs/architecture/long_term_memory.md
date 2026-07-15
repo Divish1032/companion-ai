@@ -7,8 +7,10 @@ Current status: Phases 1-6 are implemented for the current MVP scope. Hindi/Hing
 uses an explicitly selected EmbeddingGemma-plus-deterministic memory policy.
 Phase 5 was revalidated on the rebuilt Android debug APK after the current
 language-policy and voice-transcript fixes.
-Phase 6 automated suites and the Android debug build pass; real extractor
-quality and iOS/device validation remain deployment evidence boundaries.
+Phase 6 automated suites and Android debug/release builds pass. The configured
+real extractor passed local routine, assistant-commitment, sensitive-content,
+and unavailable-provider checks; physical voice-device and iOS compilation
+remain deployment evidence boundaries.
 
 Verified status:
 
@@ -886,13 +888,17 @@ write authority.
    additional properties are forbidden, and provider-side response storage is
    explicitly disabled. The service retains no dialogue, candidate, vector, or
    user profile and logs no request text.
-5. The phone validates source-turn provenance, evidence role, transcript
+5. Before returning proposals, the stateless API rejects unknown source IDs,
+   role-inconsistent evidence, non-normal sensitivity labels, and locally
+   recognized sensitive evidence. This is defense in depth because a real
+   provider can misclassify sensitive content.
+6. The phone validates source-turn provenance, evidence role, transcript
    quality, lexical grounding in the cited source, deterministic local
    sensitivity markers, explicitness, temporal-expression agreement for
    proposed event timestamps, confidence, future utility, recurrence, and
    requested action. Provenance must belong to the exact bounded job window,
    not merely an older turn in the same session. Only the phone commits a memory.
-6. Failed jobs retry with bounded exponential backoff. The voice response does
+7. Failed jobs retry with bounded exponential backoff. The voice response does
    not wait for extraction, client calls have a hard timeout, non-retryable 4xx
    responses become terminal immediately, stale worker leases are reclaimed,
    and large backlogs schedule another bounded drain. Extractor failure omits
@@ -1010,12 +1016,13 @@ trusted/private gateway with access controls and rate limits.
   and planning remain deterministic and Qwen flags remain disabled.
 - A rejected deterministic work-stressor memory is now protected from automatic
   re-admission; this is covered by the Flutter database regression test.
-- Phases 1-6 are implemented for the current MVP scope. Real-provider
-  Hindi/Hinglish extraction quality, iOS compilation/device behavior, and
-  release-device encrypted migration still require the corresponding external
-  model credentials and Apple toolchain/hardware. Ubuntu capacity/latency
-  validation and GPU-dependent Qwen reranking/planning remain separate Sprint
-  9+ operational work.
+- Phases 1-6 are implemented for the current MVP scope. The configured real
+  provider passed the local API contract and safety-filter matrix. Broader
+  Hindi/Hinglish voice quality, iOS compilation/device behavior, and
+  release-device encrypted migration still require physical-device evidence
+  and a full Apple toolchain. Ubuntu host capacity/network validation and
+  GPU-dependent Qwen reranking/planning remain separate Sprint 9+ operational
+  work.
 
 ## Handoff Into Sprints 8-10
 

@@ -5,6 +5,7 @@ import json
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 
@@ -16,7 +17,9 @@ class ModelServingUnavailable(RuntimeError):
 
 
 class EmbeddingModel(Protocol):
-    def encode(self, texts: Sequence[str], *, input_type: EmbeddingInputType) -> list[list[float]]: ...
+    def encode(
+        self, texts: Sequence[str], *, input_type: EmbeddingInputType
+    ) -> list[list[float]]: ...
 
 
 class RerankerModel(Protocol):
@@ -60,16 +63,25 @@ class SentenceTransformersEmbeddingModel:
                         "file_name": "onnx/model.onnx",
                         "export": False,
                     },
+                    # Transformers 4.57.x can misclassify a local non-Mistral
+                    # artifact. EmbeddingGemma is gemma3_text, so the Mistral
+                    # regex mutation is inapplicable and must stay disabled.
+                    processor_kwargs={"fix_mistral_regex": False},
                 )
             else:
-                self._model = SentenceTransformer(model_name)
+                self._model = SentenceTransformer(
+                    model_name,
+                    processor_kwargs={"fix_mistral_regex": False},
+                )
         except Exception as error:  # pragma: no cover - model download/runtime dependent
             raise ModelServingUnavailable("embedding model could not be loaded") from error
         self._dimension = dimension
 
     def encode(self, texts: Sequence[str], *, input_type: EmbeddingInputType) -> list[list[float]]:
         try:
-            encode = self._model.encode_query if input_type == "query" else self._model.encode_document
+            encode = (
+                self._model.encode_query if input_type == "query" else self._model.encode_document
+            )
             vectors = encode(list(texts), truncate_dim=self._dimension, normalize_embeddings=True)
             return [[float(value) for value in vector] for vector in vectors]
         except Exception as error:  # pragma: no cover - model runtime dependent
@@ -138,9 +150,11 @@ class ModelServingService:
         reranker_model_name: str,
         planner_enabled: bool,
         planner_model_name: str,
+        embedding_model_revision: str = "",
     ) -> None:
         self.embedding_enabled = embedding_enabled
         self.embedding_model_name = embedding_model_name
+        self.embedding_model_revision = embedding_model_revision
         self.embedding_dimension = embedding_dimension
         self.embedding_backend = embedding_backend
         self.embedding_model_path = embedding_model_path
@@ -163,6 +177,7 @@ class ModelServingService:
             "enabled": self.embedding_enabled,
             "state": self._embedding_state,
             "model": self.embedding_model_name,
+            "revision": self.embedding_model_revision,
             "dimension": self.embedding_dimension,
             "configured_backend": self.embedding_backend,
             "active_backend": self._active_embedding_backend,
@@ -182,6 +197,7 @@ class ModelServingService:
                 "memory_model_readiness",
                 {
                     "model": self.embedding_model_name,
+                    "revision": self.embedding_model_revision,
                     "state": self._embedding_state,
                     "configured_backend": self.embedding_backend,
                     "error_type": self._embedding_error_type,
@@ -196,6 +212,7 @@ class ModelServingService:
             "memory_model_readiness",
             {
                 "model": self.embedding_model_name,
+                "revision": self.embedding_model_revision,
                 "state": self._embedding_state,
                 "dimension": self.embedding_dimension,
                 "active_backend": self._active_embedding_backend,
@@ -207,9 +224,7 @@ class ModelServingService:
         if not self.embedding_enabled:
             raise ModelServingUnavailable("embedding serving is disabled")
         if self._embedding_state != "ready":
-            raise ModelServingUnavailable(
-                f"embedding serving is {self._embedding_state}"
-            )
+            raise ModelServingUnavailable(f"embedding serving is {self._embedding_state}")
         return await asyncio.to_thread(self._embed_sync, texts, input_type)
 
     async def rerank(self, query: str, candidates: list[str]) -> list[float]:
@@ -223,9 +238,7 @@ class ModelServingService:
         raw = await asyncio.to_thread(self._plan_sync, _planner_prompt(text))
         return parse_retrieval_plan(raw)
 
-    def _embed_sync(
-        self, texts: list[str], input_type: EmbeddingInputType
-    ) -> list[list[float]]:
+    def _embed_sync(self, texts: list[str], input_type: EmbeddingInputType) -> list[list[float]]:
         self._load_embedding_model(self._active_embedding_backend or self.embedding_backend)
         with self._embedding_lock:
             if self._embedding_model is None:  # pragma: no cover - defensive guard
@@ -235,6 +248,12 @@ class ModelServingService:
     def _load_embedding_model(self, backend: str) -> None:
         with self._embedding_lock:
             if self._embedding_model is None:
+                if backend == "onnx":
+                    _validate_embedding_artifact_revision(
+                        model_path=self.embedding_model_path,
+                        expected_model=self.embedding_model_name,
+                        expected_revision=self.embedding_model_revision,
+                    )
                 self._embedding_model = SentenceTransformersEmbeddingModel(
                     self.embedding_model_name,
                     dimension=self.embedding_dimension,
@@ -255,6 +274,27 @@ class ModelServingService:
             return self._planner_model.plan(prompt)
 
 
+def _validate_embedding_artifact_revision(
+    *,
+    model_path: str,
+    expected_model: str,
+    expected_revision: str,
+) -> None:
+    metadata_path = Path(model_path) / "companion_model_revision.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ModelServingUnavailable(
+            "embedding artifact revision metadata is unavailable"
+        ) from error
+    if (
+        not expected_revision
+        or metadata.get("model") != expected_model
+        or metadata.get("revision") != expected_revision
+    ):
+        raise ModelServingUnavailable("embedding artifact revision does not match configuration")
+
+
 def parse_retrieval_plan(raw: str) -> RetrievalPlan:
     """Accept exactly one bounded JSON object; no prose or permissive repair."""
     try:
@@ -262,7 +302,12 @@ def parse_retrieval_plan(raw: str) -> RetrievalPlan:
     except json.JSONDecodeError as error:
         raise ModelServingUnavailable("planner returned invalid JSON") from error
     if not isinstance(decoded, dict) or set(decoded) != {
-        "need_memory", "route", "memory_types", "entities", "time_hint", "top_k"
+        "need_memory",
+        "route",
+        "memory_types",
+        "entities",
+        "time_hint",
+        "top_k",
     }:
         raise ModelServingUnavailable("planner returned an invalid schema")
     need_memory = decoded["need_memory"]

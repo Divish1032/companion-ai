@@ -6,7 +6,7 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 Active phase: Sprint 7.5 local long-term-memory implementation complete; Sprints 8-10 validation and deployment hardening pending.
 
-Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, and stateless API embedding/rerank contracts. Real model-weight, Ubuntu capacity, public-network, and final memory-quality validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
+Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, stateless API model contracts, and bounded asynchronous LLM candidate extraction. The pinned EmbeddingGemma ONNX artifact and configured real extractor are locally validated. Physical-device Phase 6 evidence, Ubuntu capacity, and public-network validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
 
 ## Repo Layout
 

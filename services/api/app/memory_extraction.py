@@ -63,10 +63,10 @@ class MemoryExtractionRequest(BaseModel):
     turns: list[ExtractionTurn] = Field(min_length=1, max_length=24)
 
     @model_validator(mode="after")
-    def validate_unique_turn_roles(self) -> MemoryExtractionRequest:
-        keys = [(turn.turn_id, turn.role) for turn in self.turns]
-        if len(keys) != len(set(keys)):
-            raise ValueError("turn_id and role pairs must be unique")
+    def validate_unique_turn_ids(self) -> MemoryExtractionRequest:
+        turn_ids = [turn.turn_id for turn in self.turns]
+        if len(turn_ids) != len(set(turn_ids)):
+            raise ValueError("turn IDs must be unique")
         return self
 
 
@@ -84,6 +84,86 @@ class MemoryExtractionUnavailable(RuntimeError):
 
 class MemoryCandidateExtractor(Protocol):
     async def extract(self, request: MemoryExtractionRequest) -> list[MemoryCandidate]: ...
+
+
+_SENSITIVE_EVIDENCE_MARKERS = (
+    "suicide",
+    "mar jaana",
+    "mar jana",
+    "jaan dena",
+    "khud ko maar",
+    "khud ko nuksan",
+    "doctor",
+    "medical",
+    "diagnosis",
+    "cancer",
+    "diabetes",
+    "therapy",
+    "medicine",
+    "medication",
+    "dawai",
+    "legal",
+    "lawyer",
+    "court case",
+    "police case",
+    "loan",
+    "investment",
+    "salary",
+    "bank account",
+    "account number",
+    "credit card",
+    "debit card",
+    "upi pin",
+    "aadhaar",
+    "aadhar",
+    "pan number",
+    "password",
+    "otp",
+    "sexual",
+    "religion",
+    "caste",
+    "political party",
+    "address is",
+    "phone number",
+    "email is",
+)
+
+
+def filter_source_safe_candidates(
+    request: MemoryExtractionRequest,
+    candidates: list[MemoryCandidate],
+) -> list[MemoryCandidate]:
+    """Apply stateless defense-in-depth before candidates reach the phone."""
+
+    turns_by_id = {turn.turn_id: turn for turn in request.turns}
+    safe: list[MemoryCandidate] = []
+    for candidate in candidates:
+        if candidate.sensitivity != "normal":
+            continue
+        cited = [turns_by_id.get(turn_id) for turn_id in candidate.source_turn_ids]
+        if any(turn is None for turn in cited):
+            continue
+        roles = {turn.role for turn in cited if turn is not None}
+        if candidate.candidate_kind == "assistant_commitment":
+            if "assistant" not in roles or candidate.evidence_role not in {
+                "assistant",
+                "mixed",
+            }:
+                continue
+        elif "user" not in roles or candidate.evidence_role == "assistant":
+            continue
+        evidence = " ".join(
+            [
+                candidate.subject,
+                candidate.predicate,
+                candidate.object_text,
+                *(turn.text for turn in cited if turn is not None),
+            ]
+        ).casefold()
+        if any(marker in evidence for marker in _SENSITIVE_EVIDENCE_MARKERS):
+            continue
+        safe.append(candidate)
+    return safe
 
 
 @dataclass(frozen=True)

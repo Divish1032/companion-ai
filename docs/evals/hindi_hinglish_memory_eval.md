@@ -75,6 +75,13 @@ conversation.
 5. Start a new session and repeat the grounded office recall.
 6. Explicitly say "nahi yaad mat rakhna" for a pending memory; verify it is not
    recalled afterwards.
+7. For the asynchronous extractor, state one bounded non-sensitive event that
+   is not an exact profile fact, wait at least five seconds while the app stays
+   open, and verify that the voice response was not delayed by extraction.
+8. Open "What I remember" and verify the event has grounded source evidence.
+   Start another session and ask about the event using different wording.
+9. Close and relaunch the app before the queued-work check. Verify any persisted
+   job resumes without duplicating the admitted memory.
 
 ## Historical measured phone run: 2026-07-11
 
@@ -95,13 +102,10 @@ showed the following results:
 
 The phone run used only non-sensitive content. No transcript text is included in
 this evidence table. This run predates the current EmbeddingGemma/ONNX default
-and the latest topic/coalescing/echo fixes. Phase 5 is not closed until the
-rebuilt APK is installed and all affected scenarios are repeated, including the
-final rejection/exclusion scenario. The automated docs gate is also currently
-blocked by pre-existing non-ASCII characters in the untracked
-`docs/MEMORY_QUALITY_LAB_PLAN.md` file. The Android acceptance protocol itself
-has passed on the fixed APK; Phase 5 should not be called repository-green
-until that unrelated docs gate is repaired.
+and Phase 6 asynchronous extractor. The affected deterministic scenarios were
+subsequently repeated on the rebuilt APK and the docs gate was repaired. The
+Phase 6 real-provider event, persisted-job resume, and encrypted release-device
+checks still require the current physical-phone run.
 
 Capture `companion.memory`, `companion.voice.memory`, `memory_lookup_metrics`,
 `memory_lookup_response`, and `prompt_context`. The logs must contain route,

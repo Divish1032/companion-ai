@@ -59,9 +59,10 @@ not require model serving or GPU hardware.
 
    ```text
    API_MEMORY_EMBEDDING_MODEL=google/embeddinggemma-300m
+   API_MEMORY_EMBEDDING_REVISION=57c266a740f537b4dc058e1b0cda161fd15afa75
    API_MEMORY_EMBEDDING_DIMENSION=768
    API_MEMORY_EMBEDDING_BACKEND=onnx
-   API_MEMORY_EMBEDDING_MODEL_PATH=/models/huggingface/embeddinggemma-onnx-fp32
+   API_MEMORY_EMBEDDING_MODEL_PATH=/models/huggingface/embeddinggemma-onnx-fp32-r57c266a7
    API_MEMORY_RERANKER_MODEL=Qwen/Qwen3-Reranker-0.6B
    API_MEMORY_PLANNER_MODEL=Qwen/Qwen3-0.6B
    ```
@@ -84,8 +85,8 @@ Before accepting real sessions:
    Then start the API; startup warm-up loads that artifact before readiness.
 3. Record the exact model repository revision, licence/terms review, cache
    size, download result, and serving image digest in the deployment notes.
-   The current settings identify models by name; add explicit revision
-   pinning before treating a deployment as reproducible.
+   The configured revision is exposed by `/readiness`, and the preparation
+   script refuses an existing artifact without matching revision metadata.
 4. Start the API with EmbeddingGemma enabled and Qwen flags disabled. Run smoke
    requests against `/readiness` and `/v1/embeddings`. Verify the
    active backend, response dimensions/schema, and redacted readiness status.

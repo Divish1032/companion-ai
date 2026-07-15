@@ -21,6 +21,7 @@ from app.memory_extraction import (
     MemoryExtractionResponse,
     MemoryExtractionUnavailable,
     OpenAICompatibleMemoryCandidateExtractor,
+    filter_source_safe_candidates,
 )
 from app.session_store import RateLimitExceeded, SessionStore
 
@@ -30,6 +31,7 @@ agent_assigner = AgentAssigner(settings)
 model_serving = ModelServingService(
     embedding_enabled=settings.enable_memory_embeddings,
     embedding_model_name=settings.memory_embedding_model,
+    embedding_model_revision=settings.memory_embedding_revision,
     embedding_dimension=settings.memory_embedding_dimension,
     embedding_backend=settings.memory_embedding_backend,
     embedding_model_path=settings.memory_embedding_model_path,
@@ -301,12 +303,7 @@ async def memory_candidates(
         raise HTTPException(
             status_code=503, detail={"code": "memory_extraction_unavailable"}
         ) from error
-    source_turn_ids = {turn.turn_id for turn in request.turns}
-    safe_candidates = [
-        candidate
-        for candidate in candidates
-        if set(candidate.source_turn_ids).issubset(source_turn_ids)
-    ]
+    safe_candidates = filter_source_safe_candidates(request, candidates)
     return MemoryExtractionResponse(
         job_id=request.job_id,
         extraction_version=request.extraction_version,
