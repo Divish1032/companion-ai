@@ -30,6 +30,13 @@ void main() {
     addTearDown(database.close);
 
     await _seedData(database, seedSessions);
+    // Retrieval must never use unconfirmed memories. The benchmark models the
+    // post-confirmation product state so receipt isolation and retrieval
+    // quality are both measured honestly.
+    final pending = await database.readPendingMemoryReceipts(limit: 100);
+    for (final memory in pending) {
+      await database.confirmMemory(memory.id);
+    }
 
     final queryResults = <Map<String, dynamic>>[];
     for (final q in queries) {
@@ -148,9 +155,7 @@ Map<String, dynamic> _evaluateQuery({
     precision = returnedLabels.isEmpty ? 1.0 : 0.0;
   } else {
     final truePositives = returnedSet.intersection(relevantSet).length;
-    precision = returnedLabels.isEmpty
-        ? 1.0
-        : truePositives / returnedLabels.length;
+    precision = returnedSet.isEmpty ? 1.0 : truePositives / returnedSet.length;
     recall = truePositives / relevantLabels.length;
   }
 

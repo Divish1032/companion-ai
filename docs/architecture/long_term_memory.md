@@ -303,7 +303,7 @@ mobile policy (`MemoryLanguagePolicyRegistry`), separate from fuzzy semantic
 retrieval. A policy owns its language's question markers, observed STT question
 variants, invalid entity values, extraction grammar, confirmation/rejection
 markers, and safe preference phrases. For example, the Hindi policy treats the
-observed Vosk rendering `नाम के है` as a recall question and rejects `के` as a
+observed Vosk rendering `naam ke hai` as a recall question and rejects `ke` as a
 person value.
 
 The realtime agent includes the resolved session language in every
@@ -783,8 +783,8 @@ semantic/episodic retrieval only and cannot override current companion state.
   than deletes the prior local evidence.
 - The pure-Dart Hindi extractor handles supported exact claims for preferred
   name, response language, short replies, listen-first preference, sibling
-  names, and morning walks. It normalizes `हिन्दी`/`हिंदी`, accepts
-  `मेरा`/`मेरी`/`मेरे`, and excludes sensitive content before admission.
+  names, and morning walks. It normalizes common Hindi spellings, accepts
+  `mera`/`meri`/`mere`, and excludes sensitive content before admission.
 - Missing final ASR confidence is `unknown`, not zero. A strict, explicit,
   low-risk deterministic state assertion is committed silently even when final
   confidence is unknown; this is necessary for the active Vosk path to feel
@@ -931,9 +931,14 @@ The phone runs deterministic exact resolution and combines FTS5 lexical hits,
 EmbeddingGemma/ObjectBox vector hits, graph expansion, temporal status, and
 open-thread expansion. Results are filtered for quality/sensitivity/receipt
 state before ranking, deduplicated, diversified, and bounded by the existing
-six-packet protocol. Vague cues such as “woh interview kaisa raha?” route to
+six-packet protocol. Vague cues such as "woh interview kaisa raha?" route to
 episodes/open threads; unrelated ambiguous turns retain the zero-memory
 `broad_safe` behavior.
+
+Explicit name, language, preference, boundary, and work-stress recall intents
+filter FTS, vector, and graph candidates to their typed memory labels. General
+FTS candidates must also pass meaningful lexical relevance, preventing common
+tokens such as `hai` from injecting unrelated memories into vague mood turns.
 
 Unconfirmed or rejected records are excluded independently at SQLite lexical,
 graph/open-thread expansion, vector creation, and realtime prompt-selection
@@ -953,7 +958,7 @@ the authoritative user message.
 
 ### User control and encryption
 
-The voice-only app now exposes a read-only “What I remember” screen. A user can
+The voice-only app now exposes a read-only "What I remember" screen. A user can
 confirm an uncertain memory or forget an individual memory; Clear History
 deletes transcripts, exact claims, semantic records, episodes, open threads,
 jobs/candidate audits, graph rows, and derived ObjectBox vectors.

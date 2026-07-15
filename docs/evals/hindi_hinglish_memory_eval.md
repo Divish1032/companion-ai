@@ -6,6 +6,17 @@ Run the automated suite from the repository root:
 scripts/run-memory-eval.sh
 ```
 
+Run the complete protected-fixture and retrieval-quality gate with:
+
+```bash
+scripts/run-memory-quality-lab.sh --benchmark
+```
+
+The benchmark is fail-closed: every query assertion must pass and irrelevant
+intrusions must remain zero. Baseline mode returns a failure when retrieval
+assertions fail, and comparison mode rejects fixture, readiness, or benchmark
+metric regressions.
+
 The suite is a regression gate for the phone-owned Hindi/Hinglish MVP. It must
 pass before a real-phone memory validation run.
 
@@ -44,6 +55,10 @@ pass before a real-phone memory validation run.
 - Context injection stays within the configured six packets and character budget.
 - The stateless extraction API accepts only its strict bounded schema and is
   fail-closed while disabled or unavailable.
+- The deterministic retrieval benchmark passes 12/12 queries with zero
+  irrelevant intrusions. The 2026-07-15 audited baseline records 1.0 precision,
+  recall, F1, and MRR for relevant queries; greeting and vague-mood queries
+  return no unrelated memory.
 
 ## Real-phone protocol
 

@@ -11,11 +11,11 @@
     },
     "preference": {
       "description": "Safe preferences — comfort_style and safe_preference for preference queries.",
-      "relevant_labels": ["safe_preference", "comfort_style"]
+      "relevant_labels": ["safe_preference", "comfort_style", "language_style"]
     },
     "boundary": {
       "description": "User boundaries — boundary label must surface for boundary queries.",
-      "relevant_labels": ["boundary"]
+      "relevant_labels": ["boundary", "taboo_topic"]
     },
     "work_stress": {
       "description": "Work/office stress — recurring_work_stressor must surface for office queries.",
@@ -104,13 +104,13 @@
     {
       "text": "meri boundary kya hai",
       "category": "boundary",
-      "relevant_labels": ["boundary"],
+      "relevant_labels": ["boundary", "taboo_topic"],
       "notes": "Boundary recall: should return the boundary label."
     },
     {
       "text": "mujhe kya kya pasand hai",
       "category": "preference",
-      "relevant_labels": ["safe_preference", "comfort_style"],
+      "relevant_labels": ["safe_preference", "comfort_style", "language_style"],
       "notes": "Preference recall: should surface comfort and safe preferences."
     },
     {

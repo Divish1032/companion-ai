@@ -53,7 +53,7 @@ void main() {
       limit: 6,
     );
     final languageMemories = await database.readMemoryContext(
-      latestUserText: 'मुझे किस language में reply पसंद है?',
+      latestUserText: 'मुझे किस भाषा में जवाब पसंद है?',
       limit: 6,
     );
 
@@ -98,6 +98,32 @@ void main() {
       memories.where((memory) => memory.label == 'preferred_name'),
       isEmpty,
     );
+  });
+
+  test('vague mood turns do not match unrelated semantic stopwords', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    for (final entry in [
+      ('comfort', 'turn_comfort', 'advice se pehle bas sunna pasand hai'),
+      ('goal', 'turn_goal', 'mera goal fitness improve karna hai'),
+      ('traffic', 'turn_traffic', 'traffic se stress hota hai'),
+    ]) {
+      await database.upsertUserMessageAndExtractMemory(
+        _message(
+          id: entry.$1,
+          turnId: entry.$2,
+          text: entry.$3,
+          confidence: 0.96,
+        ),
+      );
+    }
+
+    final memories = await database.readMemoryContext(
+      latestUserText: 'aaj mood off hai',
+      limit: 6,
+    );
+
+    expect(memories, isEmpty);
   });
 
   test(

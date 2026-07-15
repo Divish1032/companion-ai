@@ -468,14 +468,16 @@ class AppDatabase extends _$AppDatabase {
           _RankedMemory(row, _memoryRank(row, latestUserText, intent)),
       for (final row in rows)
         if (ftsScores.containsKey(row.id) &&
-            _memoryAllowedForRetrieval(row, latestUserText))
+            _memoryRelevant(row, latestUserText, intent))
           _RankedMemory(
             row,
             _memoryRank(row, latestUserText, intent) + ftsScores[row.id]!,
           ),
       for (final row in rows)
         if (vectorScores.containsKey(row.id) &&
-            _memoryAllowedForRetrieval(row, latestUserText))
+            _memoryAllowedForRetrieval(row, latestUserText) &&
+            (intent == _MemoryQueryIntent.general ||
+                _intentAllowsMemory(row, intent)))
           _RankedMemory(
             row,
             _memoryRank(row, latestUserText, intent) +
@@ -1540,6 +1542,8 @@ class AppDatabase extends _$AppDatabase {
     return [
       for (final row in rows)
         if (_memoryAllowedForRetrieval(row, latestUserText) &&
+            (intent == _MemoryQueryIntent.general ||
+                _intentAllowsMemory(row, intent)) &&
             relatedTerms.any(
               (term) =>
                   row.canonicalText.contains(term) ||
@@ -1995,6 +1999,8 @@ enum _MemoryQueryIntent {
   identityRecall,
   languageRecall,
   preferenceRecall,
+  boundaryRecall,
+  workStressRecall,
   general,
 }
 
@@ -2640,8 +2646,11 @@ _MemoryQueryIntent _classifyMemoryQuery(String text) {
   }
   if ((normalized.contains('style') ||
           normalized.contains('language') ||
+          normalized.contains('reply') ||
           normalized.contains('इंग्लिश') ||
-          normalized.contains('हिंदी')) &&
+          normalized.contains('हिंदी') ||
+          normalized.contains('भाषा') ||
+          normalized.contains('जवाब')) &&
       (_isQuestionLikeMemoryTurn(normalized) ||
           normalized.contains('prefer'))) {
     return _MemoryQueryIntent.languageRecall;
@@ -2650,6 +2659,29 @@ _MemoryQueryIntent _classifyMemoryQuery(String text) {
       (_isQuestionLikeMemoryTurn(normalized) ||
           normalized.contains('prefer'))) {
     return _MemoryQueryIntent.preferenceRecall;
+  }
+  if (_containsAny(normalized, const ['boundary', 'seema', 'hadd', 'सीमा']) &&
+      _isQuestionLikeMemoryTurn(normalized)) {
+    return _MemoryQueryIntent.boundaryRecall;
+  }
+  if (_looksWorkStressRelated(normalized) ||
+      (_containsAny(normalized, const [
+            'office',
+            'work',
+            'kaam',
+            'ऑफिस',
+            'काम',
+          ]) &&
+          _containsAny(normalized, const [
+            'heavy',
+            'bad day',
+            'pareshan',
+            'stress',
+            'pressure',
+            'परेशान',
+            'तनाव',
+          ]))) {
+    return _MemoryQueryIntent.workStressRecall;
   }
   return _MemoryQueryIntent.general;
 }
@@ -2750,17 +2782,18 @@ bool _memoryRelevant(
   if (!_memoryAllowedForRetrieval(row, latestUserText)) {
     return false;
   }
+  if (intent != _MemoryQueryIntent.general &&
+      !_intentAllowsMemory(row, intent)) {
+    return false;
+  }
+  if (intent != _MemoryQueryIntent.general) {
+    return true;
+  }
   if ({'stable_fact', 'core_profile', 'procedural'}.contains(row.kind)) {
     // Stable personalisation must be explicitly requested. Generic emotional or
     // contextual turns should not be made more personal merely because a profile
     // record exists.
-    return switch (intent) {
-      _MemoryQueryIntent.identityRecall => row.label == 'preferred_name',
-      _MemoryQueryIntent.languageRecall => row.label == 'language_style',
-      _MemoryQueryIntent.preferenceRecall =>
-        row.label == 'safe_preference' || row.label == 'language_style',
-      _MemoryQueryIntent.general => false,
-    };
+    return false;
   }
   final latest = _canonicalMemoryText(latestUserText);
   final content = '${row.canonicalText} ${row.content}'.toLowerCase();
@@ -2769,6 +2802,25 @@ bool _memoryRelevant(
       .where((word) => word.length >= 4)
       .toSet();
   return latestWords.any(content.contains);
+}
+
+bool _intentAllowsMemory(MemoryRecord row, _MemoryQueryIntent intent) {
+  return switch (intent) {
+    _MemoryQueryIntent.identityRecall => row.label == 'preferred_name',
+    _MemoryQueryIntent.languageRecall => row.label == 'language_style',
+    _MemoryQueryIntent.preferenceRecall => {
+      'safe_preference',
+      'language_style',
+      'comfort_style',
+    }.contains(row.label),
+    _MemoryQueryIntent.boundaryRecall => {
+      'boundary',
+      'taboo_topic',
+    }.contains(row.label),
+    _MemoryQueryIntent.workStressRecall =>
+      row.label == 'recurring_work_stressor',
+    _MemoryQueryIntent.general => true,
+  };
 }
 
 bool _memoryAllowedForRetrieval(MemoryRecord row, String latestUserText) {
@@ -2802,6 +2854,9 @@ double _memoryRank(
     (_MemoryQueryIntent.languageRecall, 'language_style', 'procedural') => 0.9,
     (_MemoryQueryIntent.preferenceRecall, 'safe_preference', 'semantic') =>
       0.75,
+    (_MemoryQueryIntent.boundaryRecall, 'boundary', _) => 0.9,
+    (_MemoryQueryIntent.boundaryRecall, 'taboo_topic', _) => 0.85,
+    (_MemoryQueryIntent.workStressRecall, 'recurring_work_stressor', _) => 0.9,
     (_, _, 'stable_fact') => 0.35,
     (_, _, 'core_profile') => 0.5,
     (_, _, 'procedural') => 0.42,
@@ -2837,6 +2892,8 @@ List<MemoryRecord> _selectBoundedMemories(
     _MemoryQueryIntent.identityRecall => 1,
     _MemoryQueryIntent.languageRecall => 1,
     _MemoryQueryIntent.preferenceRecall => 1,
+    _MemoryQueryIntent.boundaryRecall => 1,
+    _MemoryQueryIntent.workStressRecall => 1,
     _MemoryQueryIntent.general => 2,
   };
   for (final item in ranked) {
