@@ -6,6 +6,8 @@ self-hosted Python agent for turn handling. This repository is the developer
 source of truth for the mobile app, backend services, local tooling, and
 single-node deployment assets.
 
+For an operational command reference, see [commands.md](commands.md).
+
 It intentionally does not include authentication, text chat, video/avatar
 features, raw-audio storage, or cloud transcript/memory storage.
 
