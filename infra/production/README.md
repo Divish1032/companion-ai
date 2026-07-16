@@ -40,10 +40,12 @@ artifact has been prepared and checked through `/readiness`.
 
 The command creates `production.env` outside the checkout: `/opt/companion/runtime`
 on Ubuntu and `~/.local/share/companion-ai` on macOS. It generates the LiveKit
-secret and telemetry token automatically. Add `AGENT_SARVAM_API_KEY` only when
-Sarvam fallback is intended. Add `HF_TOKEN` only after accepting the model
-terms and before an explicit artifact-preparation flow; the production Compose
-file keeps optional memory-model flags disabled by default.
+secret and telemetry token automatically. Memory extraction is configured with
+Sarvam's OpenAI-compatible endpoint and is enabled by default, but needs the
+separate `API_MEMORY_EXTRACTION_API_KEY` before the API can call the provider.
+`AGENT_SARVAM_API_KEY` is only for the realtime-agent fallback. Add `HF_TOKEN`
+only after accepting the model terms and before an explicit artifact-preparation
+flow; EmbeddingGemma, reranking, and planner flags remain disabled by default.
 
 Do not use the source-tree `.env.example` as a deployed secret file and never
 commit `production.env`.

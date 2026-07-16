@@ -82,6 +82,22 @@ pass the deployment gate before selecting an instance size.
 
 ## Optional model configuration
 
+Memory extraction is independent of the optional embedding/reranker/planner
+models. The deployment creates these extraction settings in `production.env`:
+
+```dotenv
+API_ENABLE_MEMORY_EXTRACTION=true
+API_MEMORY_EXTRACTION_BASE_URL=https://api.sarvam.ai/v1
+API_MEMORY_EXTRACTION_API_KEY=
+API_MEMORY_EXTRACTION_MODEL=sarvam-30b
+API_MEMORY_EXTRACTION_TIMEOUT_SECONDS=20
+```
+
+Set `API_MEMORY_EXTRACTION_API_KEY` on the host and restart `api`. For actual
+phone-side extraction jobs, build/run Flutter with
+`--dart-define=ENABLE_MEMORY_EXTRACTION=true`; without this mobile flag, the
+phone deliberately does not enqueue extraction work.
+
 1. The deploy command mounts a persistent host directory as
    `HF_HOME=/models/huggingface` for the
    API container. The current Compose development file uses a named

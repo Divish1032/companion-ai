@@ -61,6 +61,13 @@ After the first deployment, add only these optional values there:
 # Enables the already-configured Sarvam fallback; restart the agent afterwards.
 AGENT_SARVAM_API_KEY=
 
+# Separate Sarvam key for the API's bounded memory-extraction judge.
+API_ENABLE_MEMORY_EXTRACTION=true
+API_MEMORY_EXTRACTION_BASE_URL=https://api.sarvam.ai/v1
+API_MEMORY_EXTRACTION_API_KEY=
+API_MEMORY_EXTRACTION_MODEL=sarvam-30b
+API_MEMORY_EXTRACTION_TIMEOUT_SECONDS=20
+
 # Required only for an explicit EmbeddingGemma artifact preparation flow.
 # Supplying it alone does not enable the optional model features.
 HF_TOKEN=
@@ -73,6 +80,9 @@ cd ~/companion-ai
 docker compose --env-file ~/.local/share/companion-ai/production.env \
   -f infra/production/docker-compose.yml up -d realtime-agent api
 ```
+
+Build/run Flutter with `--dart-define=ENABLE_MEMORY_EXTRACTION=true` to make
+the phone enqueue its bounded background extraction jobs.
 
 Check the public entry point after deployment:
 
