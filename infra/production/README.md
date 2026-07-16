@@ -34,3 +34,7 @@ docker compose --env-file /opt/companion/runtime/production.env -f infra/product
 The provisioning command creates the runtime layout and a 4 GiB swap file,
 uploads the Vosk model, installs firewall rules, and installs the renewal timer.
 It does **not** mint a TLS certificate before DNS has been configured.
+
+LiveKit is intentionally on the Compose network and publishes only its
+signaling, TCP fallback, TURN, relay, and WebRTC UDP ports. The gateway reaches
+it by the `livekit` service name; do not substitute a host Docker bridge IP.

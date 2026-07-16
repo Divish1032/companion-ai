@@ -26,8 +26,12 @@ services:
   livekit:
     image: livekit/livekit-server:v1.9
     command: ["--config", "/etc/livekit.yaml"]
-    network_mode: host
     restart: unless-stopped
+    ports:
+      - "7881:7881"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "50000-50100:50000-50100/udp"
     volumes:
       - ${RUNTIME_ROOT}/config/livekit.yaml:/etc/livekit.yaml:ro
       - ${RUNTIME_ROOT}/certs:/certs:ro
@@ -144,8 +148,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./nginx/templates:/etc/nginx/templates:ro
       - ${RUNTIME_ROOT}/certs:/etc/letsencrypt:ro

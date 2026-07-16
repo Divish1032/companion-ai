@@ -12,7 +12,7 @@ rtc:
   node_ip: ${LIVEKIT_NODE_IP}
 
 redis:
-  address: 127.0.0.1:6379
+  address: redis:6379
 
 keys:
   ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
