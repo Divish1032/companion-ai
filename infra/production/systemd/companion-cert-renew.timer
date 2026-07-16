@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Companion AI TLS renewal twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:17:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

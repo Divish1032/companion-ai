@@ -1,0 +1,25 @@
+# Rendered on the host by scripts/render-config.sh. Do not place secrets here.
+port: 7880
+log_level: info
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+
+redis:
+  address: 127.0.0.1:6379
+
+keys:
+  ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+
+# LiveKit's embedded TURN server is used intentionally. It supplies short-lived,
+# authenticated credentials through the signaling protocol to the Flutter SDK.
+turn:
+  enabled: true
+  domain: ${DEPLOY_DOMAIN}
+  udp_port: 3478
+  tls_port: 5349
+  cert_file: /certs/live/${DEPLOY_DOMAIN}/fullchain.pem
+  key_file: /certs/live/${DEPLOY_DOMAIN}/privkey.pem

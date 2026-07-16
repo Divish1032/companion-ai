@@ -1,0 +1,165 @@
+name: companion-ai
+
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    restart: unless-stopped
+    ports:
+      # LiveKit uses host networking; no other public client may reach Redis.
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ${RUNTIME_ROOT}/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+
+  livekit:
+    image: livekit/livekit-server:v1.9
+    command: ["--config", "/etc/livekit.yaml"]
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ${RUNTIME_ROOT}/config/livekit.yaml:/etc/livekit.yaml:ro
+      - ${RUNTIME_ROOT}/certs:/certs:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0@sha256:d2c63627e80e32df7fab7f1e969c2b6b26272439d837ef195f40d4a82eca195e
+    restart: unless-stopped
+    environment:
+      DOWNLOAD_MODEL: "false"
+      ENABLE_WEB_PLAYER: "false"
+      CORS_ENABLED: "false"
+      ENABLE_DEBUG_ENDPOINTS: "false"
+      ALLOW_DEV_UNLOAD: "false"
+      ALLOW_LOCAL_VOICE_SAVING: "false"
+      API_LOG_LEVEL: WARNING
+    ports:
+      # Host-only diagnostics; never an Internet-facing TTS endpoint.
+      - "127.0.0.1:8880:8880"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8880/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      API_ENVIRONMENT: production
+      API_REDIS_URL: redis://redis:6379/0
+      API_LIVEKIT_URL: wss://${DEPLOY_DOMAIN}
+      API_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      API_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      API_AGENT_ASSIGNMENT_URL: http://realtime-agent:8001/v1/agent/assign
+      API_DURABLE_STORE_PATH: /data/companion_api_sessions.sqlite
+      API_TELEMETRY_STORE_PATH: /data/companion_telemetry.sqlite
+      API_TELEMETRY_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN}
+      # The gated artifact is prepared as a separate verified operation.
+      API_ENABLE_MEMORY_EMBEDDINGS: "false"
+      API_ENABLE_MEMORY_RERANKER: "false"
+      API_ENABLE_MEMORY_PLANNER: "false"
+      API_ENABLE_MEMORY_EXTRACTION: "false"
+      API_MEMORY_EMBEDDING_MODEL_PATH: /models/huggingface/embeddinggemma-onnx-fp32-r57c266a7
+      HF_HOME: /models/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${RUNTIME_ROOT}/data/api:/data
+      - ${RUNTIME_ROOT}/models/huggingface:/models/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+      realtime-agent:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  realtime-agent:
+    build:
+      context: ../..
+      dockerfile: services/realtime-agent/Dockerfile
+    restart: unless-stopped
+    environment:
+      AGENT_ENVIRONMENT: production
+      AGENT_REDIS_URL: redis://redis:6379/1
+      # The agent uses the trusted public endpoint, as a device would.
+      AGENT_LIVEKIT_URL: wss://${DEPLOY_DOMAIN}
+      AGENT_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      AGENT_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      AGENT_ENABLE_LIVEKIT_RTC: "true"
+      AGENT_ENABLE_FAKE_AUDIO: "false"
+      AGENT_VOSK_MODEL_PATH: /models/vosk-model-small-hi-0.22
+      AGENT_MEMORY_API_BASE_URL: http://api:8000
+      AGENT_ENABLE_MEMORY_PLANNER: "false"
+      AGENT_ENABLE_METRICS_INGEST: "true"
+      AGENT_METRICS_INGEST_URL: http://api:8000/v1/telemetry/ingest
+      AGENT_METRICS_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN}
+      AGENT_KOKORO_BASE_URL: http://kokoro-tts:8880/v1
+      AGENT_SARVAM_API_KEY: ${AGENT_SARVAM_API_KEY:-}
+    volumes:
+      - ${RUNTIME_ROOT}/models/vosk-model-small-hi-0.22:/models/vosk-model-small-hi-0.22:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+      kokoro-tts:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    environment:
+      DEPLOY_DOMAIN: ${DEPLOY_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ${RUNTIME_ROOT}/certs:/etc/letsencrypt:ro
+      - ${RUNTIME_ROOT}/acme-webroot:/var/www/certbot:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    logging: *default-logging
+
+  certbot:
+    image: certbot/certbot:v3.1.0
+    profiles: ["maintenance"]
+    volumes:
+      - ${RUNTIME_ROOT}/certs:/etc/letsencrypt
+      - ${RUNTIME_ROOT}/acme-webroot:/var/www/certbot

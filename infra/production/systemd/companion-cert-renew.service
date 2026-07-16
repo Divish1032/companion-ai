@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew Companion AI TLS certificate
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/companion/app
+ExecStart=/opt/companion/app/infra/production/scripts/renew-cert.sh /opt/companion/app/infra/production/docker-compose.yml /opt/companion/runtime/production.env
