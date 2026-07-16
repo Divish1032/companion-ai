@@ -1,118 +1,195 @@
 # Companion AI
 
-Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
+Companion AI is a voice-only Hindi/Hinglish companion for Android and iOS. It
+uses Flutter for the phone app, LiveKit/WebRTC for realtime audio, and a
+self-hosted Python agent for turn handling. This repository is the developer
+source of truth for the mobile app, backend services, local tooling, and
+single-node deployment assets.
 
-## Status
+It intentionally does not include authentication, text chat, video/avatar
+features, raw-audio storage, or cloud transcript/memory storage.
 
-Active phase: Sprint 7.5 local long-term-memory implementation complete; Sprints 8-10 validation and deployment hardening pending.
+## What runs
 
-Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Hindi TTS now uses self-hosted Kokoro as the primary provider and keeps Sarvam Bulbul as an automatic fallback; neither provider integration is removed. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, stateless API model contracts, and bounded asynchronous LLM candidate extraction. The pinned EmbeddingGemma ONNX artifact and configured real extractor are locally validated. Physical-device Phase 6 evidence, Ubuntu capacity, and public-network validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
+```text
+Flutter app -> API -> LiveKit room <-> realtime agent
+                    |                 VAD, endpointing, STT, LLM, TTS
+                    +-> Redis          session/rate-limit coordination
+                    +-> Kokoro         private Hindi TTS service
+```
 
-## Repo Layout
+- `apps/mobile`: Flutter Android/iOS voice UI, consent, session state, local
+  chat history, and local memory.
+- `services/api`: FastAPI session/token service plus stateless memory-model
+  endpoints.
+- `services/realtime-agent`: room-scoped agent supervisor and provider
+  adapters. It handles VAD, endpointing, interruptions, STT, LLM, TTS, safety
+  override, and LiveKit events.
+- `infra/docker-compose.yml`: local Redis, LiveKit, Kokoro, API, and agent.
+- `infra/production`: public single-node deployment tooling for Ubuntu/macOS.
+- `config/personas/hindi_companion_v1.toml`: persona and provider routing.
 
-- `apps/mobile`: Flutter Android/iOS app shell.
-- `services/api`: FastAPI service for session/config endpoints and stateless memory model adapters.
-- `services/realtime-agent`: FastAPI agent supervisor plus STT/LLM/TTS provider interfaces, mocked providers, safety stub, and LiveKit RTC skeleton.
-- `infra/docker-compose.yml`: Redis with persistence, local LiveKit, and placeholder services for local development.
-- `config/personas/hindi_companion_v1.toml`: Hindi companion persona and provider routing.
-- `config/safety/crisis_placeholder.toml`: placeholder crisis phrase/resource config.
-- `docs`: product, sprint, architecture, privacy, and spike docs.
-- `docs/deployment/ubuntu.md`: Ubuntu, model-cache, warm-up, readiness, and rollback handoff.
+For `hi-IN`, the normal keyless local path is Vosk STT, `persona_local` LLM,
+and Kokoro TTS. Sarvam is a configured paid provider/fallback when the relevant
+key is supplied. Provider selection stays config-driven rather than being
+embedded in voice-turn logic.
 
-## Requirements
+## Memory and privacy model
 
-- Flutter SDK
-- Docker Compose
-- `uv`
-- Python 3.12 for service runtime parity
+The phone owns durable user data. Drift/SQLite stores transcripts, memory
+records, provenance, claims, candidates, episodes, open threads, and job state;
+ObjectBox stores the local vector index. Clear History deletes those local
+artifacts. Raw audio is never stored.
 
-The local `uv` checks may run on a newer compatible Python, but Docker images use Python 3.12.
+Final turns first go through deterministic local admission rules. At query time,
+the app combines deterministic SQLite/graph retrieval with local vector search,
+then sends only a small, bounded context bundle to the API for the active voice
+session. The API and realtime agent do not become a durable user-memory store.
 
-## Local Setup
+Optional memory extraction is also phone-owned: the app sends at most a bounded
+completed-turn window to `/v1/memory-judge`, receives untrusted candidate
+proposals, then validates and commits or rejects them locally. It requires both
+the phone build flag and the API's dedicated provider key. Optional embedding,
+rerank, and planner endpoints are stateless compute; if unavailable, the phone
+falls back to deterministic retrieval.
+
+## Local development (macOS or Ubuntu)
+
+Requirements:
+
+- Docker Desktop (macOS) or Docker Engine with Compose plugin (Ubuntu)
+- Flutter SDK; Android SDK for Android and Xcode for iOS development
+- `uv` and Python 3.12 for service development
+
+From the repository root:
 
 ```bash
 cp .env.example .env
-cp services/api/.env.example services/api/.env
-cp services/realtime-agent/.env.example services/realtime-agent/.env
 make setup
+make dev
 ```
 
-Do not commit real secrets or provider API keys.
+For actual local Vosk transcription, download and extract
+`vosk-model-small-hi-0.22` so this path exists:
 
-## Commands
-
-```bash
-make dev      # start Redis, LiveKit, API, and realtime-agent
-make check    # docs, scaffold, Python, and Flutter checks
-make mobile   # run the Flutter app
-make logs     # follow Docker Compose logs
-make tts-kokoro-smoke      # verify all enabled Hindi Kokoro packs synthesize PCM
-make tts-kokoro-benchmark  # report local 1- and 5-concurrency latency metrics
-make tts-kokoro-previews   # regenerate fixed, non-user voice previews/checksums
-make tts-e2e-sarvam        # paid, one-utterance Sarvam fallback validation
+```text
+models/vosk-model-small-hi-0.22/am/final.mdl
 ```
 
-Health endpoints when `make dev` is running:
+The Compose stack mounts `models/` read-only into the realtime agent. Without
+the model, select/configure an available STT provider instead; do not treat a
+missing model as a successful voice test.
 
-- API: `http://localhost:8000/health`
-- Realtime agent: `http://localhost:8001/health`
-- LiveKit: `ws://localhost:7880`
+Local endpoints:
 
-Local LiveKit runs in development mode with the documented dev credentials:
+```text
+API:             http://localhost:8000/health
+API readiness:   http://localhost:8000/readiness
+Realtime agent:  http://localhost:8001/health
+Agent readiness: http://localhost:8001/readiness
+LiveKit:         ws://localhost:7880
+```
 
-- API key: `devkey`
-- API secret: `secret`
+Local LiveKit uses `devkey` / `secret` only. Never use those credentials in a
+shared or public environment. Keep real keys in untracked environment files.
 
-These are for local development only. Replace them through environment variables before any shared deployment.
-
-For Android emulator networking, run the app with the host API URL:
+## Run the mobile app
 
 ```bash
 cd apps/mobile
+flutter run
+```
+
+Use the API URL that the target can reach:
+
+```bash
+# Android emulator
 flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
+
+# iOS simulator (or host-local desktop target)
+flutter run --dart-define=API_BASE_URL=http://localhost:8000
+
+# Physical phone on the same Wi-Fi
+flutter run --dart-define=API_BASE_URL=http://<host-lan-ip>:8000
 ```
 
-For physical Android phone testing over Wi-Fi, start Docker with a LAN LiveKit URL and run Flutter with the Mac LAN API URL:
+For a physical phone using local Docker, start LiveKit with the host LAN IPv4
+advertised to WebRTC peers:
 
 ```bash
-API_LIVEKIT_URL=ws://<Mac LAN IP>:7880 LIVEKIT_NODE_IP=<Mac LAN IP> docker compose --env-file .env -f infra/docker-compose.yml up -d --build
-cd apps/mobile
-flutter run --dart-define=API_BASE_URL=http://<Mac LAN IP>:8000
+API_LIVEKIT_URL=ws://<host-lan-ip>:7880 LIVEKIT_NODE_IP=<host-lan-ip> \
+  docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 ```
 
-If Android Studio launches without that dart define, this debug fallback also works:
+Enable phone-side memory extraction only when the API is configured with its
+provider key:
 
 ```bash
-adb reverse tcp:8000 tcp:8000
+flutter run --dart-define=API_BASE_URL=http://<reachable-api-host>:8000 \
+  --dart-define=ENABLE_MEMORY_EXTRACTION=true
 ```
 
-## Realtime Agent
+## Configuration and optional providers
 
-During local Docker runs, the API calls `API_AGENT_ASSIGNMENT_URL` before returning a successful session. The realtime-agent joins the same room as `agent_<session_id>`, emits reliable `session_state` events (`listening`, `thinking`, `speaking`, `error`), and publishes generated placeholder audio for fake pipeline testing when supported by LiveKit RTC.
+`.env` is for local Compose only and is gitignored. The root example documents
+the common switches. `AGENT_SARVAM_API_KEY` enables Sarvam in the realtime
+agent; `API_MEMORY_EXTRACTION_API_KEY` is separate and enables the API memory
+judge. Never paste either key into source code, logs, or issues.
 
-The filler-audio path is represented by reliable `filler_audio` start/stop events and a static-clip interface point. Real Hindi/Hinglish acknowledgment clips are deferred because no licensed/generated static audio assets are committed yet.
+The base local path needs no paid key. Optional memory extraction requires:
 
-## Provider Routing
+```dotenv
+API_ENABLE_MEMORY_EXTRACTION=true
+API_MEMORY_EXTRACTION_BASE_URL=https://api.sarvam.ai/v1
+API_MEMORY_EXTRACTION_API_KEY=
+API_MEMORY_EXTRACTION_MODEL=sarvam-30b
+API_MEMORY_EXTRACTION_TIMEOUT_SECONDS=20
+```
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi TTS defaults to the self-hosted, pinned Kokoro CPU service. The supported, non-cloned Hindi catalogue is four native packs (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) exposed as four user-facing voice choices. Kokoro failure before any audio, or a Latin-only response, cuts the session over to Sarvam Bulbul; a failure after audio does not replay already-spoken text and uses Sarvam on the next utterance. Hindi STT defaults to Sarvam Saaras v3 in `codemix` mode, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Vosk remains a standalone local STT adapter selectable with `AGENT_STT_PROVIDER=vosk` or a language-specific route.
-
-`kokoro-tts` is intentionally bound to loopback only for local diagnostics; the realtime agent reaches it over the Docker network. Its `/health` endpoint is liveness only. The realtime agent warms every published pack at startup and exposes its result at `http://localhost:8001/readiness`; run `make tts-kokoro-smoke` after starting or upgrading it as an independent all-voice check. The app's selector uses four fixed synthetic Opus preview clips generated from the pinned image; no user or conversation audio is retained. Sarvam fallback requires `AGENT_SARVAM_API_KEY` and retains its existing Bulbul configuration. `make tts-e2e-sarvam` deliberately incurs one short paid fallback request and never prints the key or synthesized text.
-
-For Sarvam Hindi STT, set `AGENT_SARVAM_API_KEY`; the adapter streams 16 kHz WAV chunks over the Sarvam SDK WebSocket using `AGENT_SARVAM_STT_MODEL=saaras:v3` and `AGENT_SARVAM_STT_MODE=codemix`. For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/`, set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process, and select it with `AGENT_STT_PROVIDER=vosk`. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If a selected provider is unavailable, the agent emits an `stt_error` event rather than fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
-
-Sprint 5 phone validation on Android over Wi-Fi produced a final local Hindi transcript for "namaste mera naam rahul hai aaj mera mood thoda theek nahi hai" with Vosk metrics logged by realtime-agent.
-
-Sprint 6 assistant text responses use the persona prompt, short history window, and response length limits in `config/personas/hindi_companion_v1.toml`. To use Sarvam chat completions, set `AGENT_LLM_PROVIDER=sarvam` and provide `AGENT_SARVAM_API_KEY` or root `SARVAM_API_KEY`; without a working provider the turn emits the configured graceful fallback response. The Sarvam-30B adapter was live-key smoke tested through `/v1/chat/completions`; it disables reasoning for short voice-turn responses so assistant content is returned within the small token cap.
-
-Sprint 7.5 memory remains on device in the mobile Drift database. The app extracts conservative stable facts and previous-session summaries from complete final turns, excludes low-confidence/replaced/sensitive/noisy items, and sends only bounded structured `recent_turns` plus `memory_blocks` when starting a new voice session. The API stores that bundle only with the active session assignment, and the realtime agent builds redacted, source-labelled LLM prompt context with latest user text as authoritative.
-
-Long-term-memory model serving is optional and disabled by default. The API image includes the model-serving dependencies and uses a persistent Hugging Face cache when enabled, but model weights must be downloaded, warmed, and capacity-tested on Ubuntu before real sessions. See `docs/deployment/ubuntu.md`; deterministic retrieval remains the fallback when model serving is unavailable.
-
-## Git Hooks
-
-This repo uses local hooks from `.githooks/`.
+## Debug and verify
 
 ```bash
-git config core.hooksPath .githooks
-git config commit.template .gitmessage
+make logs                 # follow all local service logs
+make check                # docs, Python, and Flutter checks
+make tts-kokoro-smoke     # validates all supported Hindi Kokoro voices
+make tts-kokoro-benchmark # records local 1- and 5-request TTS metrics
+make tts-e2e-sarvam       # one paid Sarvam fallback check
 ```
+
+Useful first checks after `make dev`:
+
+```bash
+curl --fail http://localhost:8000/health
+curl --fail http://localhost:8000/readiness
+curl --fail http://localhost:8001/readiness
+docker compose --env-file .env -f infra/docker-compose.yml ps
+```
+
+`/health` is process liveness. Use `/readiness` before diagnosing model or TTS
+availability. It reports disabled/loading/ready/failed model state without
+returning secrets or conversation content.
+
+## Public deployment
+
+The public stack includes Nginx TLS, LiveKit with embedded authenticated TURN,
+Redis, Kokoro, API, and agent. From a checked-out release, deploy with:
+
+```bash
+./infra/production/scripts/deploy.sh
+```
+
+It prompts for the public DNS name, certificate email, and public IPv4, then
+starts the stack and registers certificate renewal. DNS plus cloud firewall or
+router forwarding are external prerequisites. Read the platform runbook before
+running it:
+
+- [Ubuntu deployment](docs/deployment/ubuntu.md)
+- [macOS deployment](docs/deployment/macos.md)
+- [production environment reference](infra/production/.env.example)
+
+## Project guidance
+
+Read [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md) and the active sprint in
+[docs/SPRINTS.md](docs/SPRINTS.md) before changing product behavior. The
+architecture and privacy constraints in `docs/architecture/` are mandatory,
+especially the no-raw-audio and phone-owned-memory boundaries.
