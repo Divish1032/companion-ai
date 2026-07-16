@@ -65,6 +65,7 @@ services:
     env_file:
       - ../services/api/.env.example
     environment:
+      API_REDIS_URL: redis://redis:6379/0
       API_LIVEKIT_URL: ${API_LIVEKIT_URL:-ws://localhost:7880}
       API_LIVEKIT_API_KEY: ${API_LIVEKIT_API_KEY:-devkey}
       API_LIVEKIT_API_SECRET: ${API_LIVEKIT_API_SECRET:-secret}
@@ -112,6 +113,7 @@ services:
       - ../services/realtime-agent/.env.example
       - ../.env
     environment:
+      AGENT_REDIS_URL: redis://redis:6379/1
       AGENT_LIVEKIT_URL: ws://livekit:7880
       AGENT_LIVEKIT_API_KEY: ${AGENT_LIVEKIT_API_KEY:-devkey}
       AGENT_LIVEKIT_API_SECRET: ${AGENT_LIVEKIT_API_SECRET:-secret}
