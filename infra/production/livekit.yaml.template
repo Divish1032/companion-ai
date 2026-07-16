@@ -7,6 +7,9 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: true
+  interfaces:
+    includes:
+      - ${LIVEKIT_INTERFACE}
 
 redis:
   address: 127.0.0.1:6379

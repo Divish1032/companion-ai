@@ -15,7 +15,7 @@ set -a
 source "$environment_file"
 set +a
 
-for required in DEPLOY_DOMAIN LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+for required in DEPLOY_DOMAIN LIVEKIT_INTERFACE LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
   if [[ -z ${!required:-} ]]; then
     echo "missing required value: $required" >&2
     exit 65
@@ -23,7 +23,7 @@ for required in DEPLOY_DOMAIN LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
 done
 
 install -d -m 0750 "$runtime_root/config"
-envsubst '${DEPLOY_DOMAIN} ${LIVEKIT_API_KEY} ${LIVEKIT_API_SECRET}' \
+envsubst '${DEPLOY_DOMAIN} ${LIVEKIT_INTERFACE} ${LIVEKIT_API_KEY} ${LIVEKIT_API_SECRET}' \
   < "$repo_root/infra/production/livekit.yaml.template" \
   > "$runtime_root/config/livekit.yaml"
 chmod 0640 "$runtime_root/config/livekit.yaml"
