@@ -301,6 +301,90 @@ void main() {
     },
   );
 
+  testWidgets(
+    'duplicate memory judge notices collapse to one and stay out of telemetry',
+    (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final liveKit = _FakeLiveKitConnectionService();
+      addTearDown(database.close);
+      await tester.pumpWidget(_testApp(database, liveKit: liveKit));
+      await tester.tap(find.text('Start voice session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Agree'));
+      await tester.pumpAndSettle();
+
+      const noticePayload = {
+        'notice': 'I saved that memory.',
+        'notice_id': 'memory_job_1:accepted',
+        'outcome': 'accepted',
+        'accepted_count': 1,
+        'window_turn_count': 2,
+        'attempt_count': 1,
+        'request_started_at_ms': 1,
+        'completed_at_ms': 2,
+        'cost_source': 'unknown',
+      };
+      liveKit.emitEvent(
+        const LiveKitDataEvent(
+          type: 'memory_judge_notice',
+          sequence: 30,
+          sessionId: 'session_test',
+          timestampMs: 30,
+          turnId: 'turn_notice',
+          payload: noticePayload,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('I saved that memory.'), findsOneWidget);
+      // The notice never asks for confirmation or creates a pending state.
+      expect(find.textContaining('correct?'), findsNothing);
+
+      // Simulated reconnect replay: same notice ID is delivered again while
+      // an assistant transcript is active; the transcript stays intact and no
+      // second notice appears.
+      liveKit.emitEvent(
+        const LiveKitDataEvent(
+          type: 'assistant_transcript_final',
+          sequence: 31,
+          sessionId: 'session_test',
+          timestampMs: 31,
+          turnId: 'turn_notice',
+          payload: {
+            'text': 'Chalo aage baat karte hain.',
+            'status': 'final',
+            'language': 'hi-IN',
+          },
+        ),
+      );
+      liveKit.emitStatus(LiveKitConnectionStatus.reconnecting);
+      liveKit.emitStatus(LiveKitConnectionStatus.connected);
+      liveKit.emitEvent(
+        const LiveKitDataEvent(
+          type: 'memory_judge_notice',
+          sequence: 32,
+          sessionId: 'session_test',
+          timestampMs: 32,
+          turnId: 'turn_notice',
+          payload: noticePayload,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The reconnect cleared the one visible notice and the replayed
+      // duplicate is suppressed: the user saw the notice exactly once.
+      expect(find.text('I saved that memory.'), findsNothing);
+      expect(find.text('Chalo aage baat karte hain.'), findsOneWidget);
+      // Notice text never enters the local redacted telemetry store.
+      expect(
+        await database.customSelect('SELECT * FROM telemetry_events').get(),
+        isEmpty,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
   testWidgets('memory controls confirm, embed, and forget one memory', (
     tester,
   ) async {

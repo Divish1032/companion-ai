@@ -95,6 +95,7 @@ extension CompanionMemoryStore on AppDatabase {
       await customStatement('DELETE FROM memory_candidates');
       await customStatement('DELETE FROM memory_extraction_jobs');
       await customStatement('DELETE FROM memory_judge_skips');
+      await customStatement('DELETE FROM memory_judge_operations');
       await customStatement('DELETE FROM memory_open_threads');
       await customStatement('DELETE FROM memory_episodes');
     });
@@ -112,6 +113,10 @@ extension CompanionMemoryStore on AppDatabase {
       await customStatement('DELETE FROM memory_contradictions');
       await customStatement('DELETE FROM memory_edges');
       await customStatement('DELETE FROM memory_entities');
+      await customStatement('DELETE FROM memory_episodes');
+      await customStatement('DELETE FROM memory_open_threads');
+      await customStatement('DELETE FROM memory_candidates');
+      await customStatement('DELETE FROM memory_extraction_jobs');
       await customStatement('DELETE FROM memory_records');
       await customStatement('DELETE FROM chat_messages');
       await customStatement('DELETE FROM chat_sessions');
@@ -119,6 +124,7 @@ extension CompanionMemoryStore on AppDatabase {
       // user-initiated history clear removes them too.
       await customStatement('DELETE FROM telemetry_events');
       await customStatement('DELETE FROM memory_judge_skips');
+      await customStatement('DELETE FROM memory_judge_operations');
     });
     markTablesUpdated([
       chatMessages,

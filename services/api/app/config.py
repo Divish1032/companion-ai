@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     memory_extraction_api_key: str = ""
     memory_extraction_model: str = ""
     memory_extraction_timeout_seconds: float = 20.0
+    # Reviewed micro-INR judge token rates. Zero means "no reviewed rate":
+    # the judge cost is then labelled unknown instead of silently zero.
+    memory_judge_input_micro_inr_per_million_tokens: int = 0
+    memory_judge_output_micro_inr_per_million_tokens: int = 0
     telemetry_store_path: str = "/tmp/companion_telemetry.sqlite"
     telemetry_ingest_token: str = ""
     telemetry_raw_retention_days: int = 30

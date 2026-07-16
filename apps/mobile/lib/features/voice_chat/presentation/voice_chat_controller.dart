@@ -71,8 +71,13 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     if (state.activeSessionId != outcome.sessionId) {
       return;
     }
+    // Emitted only after the local decision-operation transaction committed.
+    // The notice ID is deterministic per job and outcome so reconnect/replay
+    // delivery collapses to at most one visible notice.
     final notice = switch (outcome.outcome) {
       MemoryJudgeOutcomeKind.accepted => 'I saved that memory.',
+      MemoryJudgeOutcomeKind.superseded =>
+        'I updated that memory with your correction.',
       MemoryJudgeOutcomeKind.rejected =>
         'I could not safely update that memory.',
       _ => 'I could not safely update that memory right now.',
@@ -87,14 +92,17 @@ class VoiceChatController extends Notifier<VoiceChatState> {
             turnId: outcome.turnId,
             payload: {
               'notice': notice,
-              'notice_id':
-                  '${outcome.sessionId}:${outcome.turnId}:${outcome.outcome.name}:${outcome.acceptedCount}',
+              'notice_id': '${outcome.jobId}:${outcome.outcome.name}',
               'outcome': outcome.outcome.name,
               'accepted_count': outcome.acceptedCount,
               'window_turn_count': outcome.windowTurnCount,
               'attempt_count': outcome.attemptCount,
               'request_started_at_ms': outcome.requestStartedAtMs,
               'completed_at_ms': outcome.completedAtMs,
+              'cost_source': outcome.costSource,
+              'input_tokens': outcome.inputTokens,
+              'output_tokens': outcome.outputTokens,
+              'estimated_micro_inr': outcome.estimatedMicroInr,
             },
           ),
         );

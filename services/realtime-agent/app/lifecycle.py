@@ -349,6 +349,7 @@ class RealtimeAgentSession:
         self._client_supports_memory_v2 = False
         self._response_committed_turns: set[str] = set()
         self._pending_coalesced_turn: tuple[str, str] | None = None
+        self._relayed_memory_notice_ids: set[str] = set()
 
     async def run(self) -> None:
         try:
@@ -1094,6 +1095,24 @@ class RealtimeAgentSession:
             notice = event.get("notice")
             if not isinstance(turn_id, str) or not isinstance(notice, str) or not notice.strip():
                 return True
+            notice_id = event.get("notice_id")
+            if isinstance(notice_id, str) and notice_id:
+                if notice_id in self._relayed_memory_notice_ids:
+                    # Reconnect/replay duplicate: the user already saw this
+                    # notice and its operation record already exists.
+                    return True
+                self._relayed_memory_notice_ids.add(notice_id)
+            allowed_outcomes = {
+                "accepted",
+                "superseded",
+                "rejected",
+                "unavailable",
+                "timeout",
+                "invalid",
+            }
+            outcome = event.get("outcome")
+            if outcome not in allowed_outcomes:
+                outcome = "invalid"
             # Extraction completes after the voice turn. Relay this on the
             # reliable channel only: creating another assistant/TTS response
             # here can overlap or corrupt a response already in progress.
@@ -1103,29 +1122,42 @@ class RealtimeAgentSession:
                     turn_id=turn_id,
                     payload={
                         "notice": notice.strip(),
-                        "notice_id": event.get("notice_id"),
-                        "outcome": event.get("outcome"),
-                        "accepted_count": int(event.get("accepted_count", 0)),
-                        "window_turn_count": int(event.get("window_turn_count", 0)),
-                        "attempt_count": int(event.get("attempt_count", 0)),
-                        "request_started_at_ms": int(event.get("request_started_at_ms", 0)),
-                        "completed_at_ms": int(event.get("completed_at_ms", 0)),
+                        "notice_id": notice_id,
+                        "outcome": outcome,
+                        "accepted_count": _bounded_int(event.get("accepted_count")),
+                        "window_turn_count": _bounded_int(event.get("window_turn_count")),
+                        "attempt_count": _bounded_int(event.get("attempt_count")),
+                        "request_started_at_ms": _bounded_int(event.get("request_started_at_ms")),
+                        "completed_at_ms": _bounded_int(event.get("completed_at_ms")),
                     },
                 )
             )
-            metric = self.telemetry.turn(turn_id)
-            metric.statuses["memory_judge_outcome"] = str(event.get("outcome", "invalid"))
-            metric.counts["memory_judge_accepted_count"] = int(event.get("accepted_count", 0))
-            metric.counts["memory_judge_notice_count"] = metric.counts.get("memory_judge_notice_count", 0) + 1
-            metric.counts["memory_judge_window_turn_count"] = int(event.get("window_turn_count", 0))
-            metric.counts["memory_judge_attempt_count"] = int(event.get("attempt_count", 0))
-            metric.timestamps_ms["memory_judge_request_started"] = int(event.get("request_started_at_ms", 0))
-            metric.timestamps_ms["memory_judge_completed"] = int(event.get("completed_at_ms", 0))
-            # The phone-side judge endpoint currently has no reviewed provider
-            # invoice/usage contract. Preserve that uncertainty rather than
-            # silently treating a dependency as zero cost.
-            metric.add_cost("memory_judge", 0, "unknown")
-            await self._emit_turn_metrics(turn_id, "memory_judge")
+            # A later memory judgement appends an immutable operation record.
+            # It never touches or re-emits the terminal voice-turn envelope,
+            # and it carries no notice text or content.
+            cost_source = event.get("cost_source")
+            if cost_source not in {"provider_reported", "estimated", "unknown"}:
+                # An unpriced/unlabelled external judge dependency stays
+                # unknown/cost-incomplete rather than silently zero.
+                cost_source = "unknown"
+            envelope = self.telemetry.memory_judge_operation(
+                turn_id,
+                outcome=str(outcome),
+                accepted_count=_bounded_int(event.get("accepted_count")),
+                window_turn_count=_bounded_int(event.get("window_turn_count")),
+                attempt_count=_bounded_int(event.get("attempt_count")),
+                request_started_at_ms=_bounded_int(event.get("request_started_at_ms")),
+                completed_at_ms=_bounded_int(event.get("completed_at_ms")),
+                cost_source=cost_source,
+                cost_micro_inr=_bounded_int(event.get("estimated_micro_inr")),
+                input_tokens=_bounded_int(event.get("input_tokens")),
+                output_tokens=_bounded_int(event.get("output_tokens")),
+            )
+            if isinstance(notice_id, str) and notice_id:
+                envelope["record_id"] = (
+                    f"{self.assignment.session_id}:{turn_id}:memory_judge:{notice_id}"
+                )
+            await self._publish_telemetry_envelope(turn_id, envelope)
             return True
 
         if event.get("type") == "memory_context_response_v2":
@@ -1366,6 +1398,11 @@ class RealtimeAgentSession:
 
     async def _emit_turn_metrics(self, turn_id: str, outcome: str) -> None:
         envelope = self.telemetry.terminal(turn_id, outcome)
+        await self._publish_telemetry_envelope(turn_id, envelope)
+
+    async def _publish_telemetry_envelope(
+        self, turn_id: str, envelope: dict[str, object]
+    ) -> None:
         await self.transport.publish_reliable(
             self.sequencer.encode(event_type="turn_metrics", turn_id=turn_id, payload=envelope)
         )
@@ -1668,6 +1705,13 @@ def _audio_format_payload(frame: CanonicalAudioFrame) -> dict[str, object]:
 def _estimated_token_count(text: str) -> int:
     """Conservative, versioned fallback when a provider omits usage metadata."""
     return max((len(text.strip()) + 3) // 4, 0)
+
+
+def _bounded_int(value: object, *, maximum: int = 10_000_000_000) -> int:
+    """Redacted counter coercion: non-negative bounded integers only."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return min(max(value, 0), maximum)
 
 
 def _error_code(error: object) -> str:

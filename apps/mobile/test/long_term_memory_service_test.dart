@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:companion_mobile/features/chat_history/data/app_database.dart';
+import 'package:companion_mobile/features/chat_history/data/companion_memory_store.dart';
 import 'package:companion_mobile/features/chat_history/data/long_term_memory_service.dart';
 import 'package:companion_mobile/features/chat_history/data/memory_candidate_model.dart';
 import 'package:drift/drift.dart';
@@ -48,20 +49,110 @@ void main() {
   });
 
   test(
+    'high-confidence deterministic update never enqueues the LLM judge',
+    () async {
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't1',
+        userText: 'मेरा नाम राहुल है',
+        sttConfidence: 0.95,
+        runDeterministicMemory: false,
+      );
+      final resolution = await database.resolveMemoryTurn(
+        turnId: 't1',
+        text: 'मेरा नाम राहुल है',
+        language: 'hi-IN',
+        transcriptStatus: 'final',
+        sttConfidence: 0.95,
+      );
+      expect(resolution.directive, 'setting_ack');
+      await database.markTurnDeterministicallyHandled('t1');
+      await database.enqueueMemoryExtractionJob(
+        sessionId: 's1',
+        turnId: 't1',
+        extractionVersion: 'v1',
+      );
+
+      expect(
+        await database.select(database.memoryExtractionJobs).get(),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'unknown-confidence correction defers to the judge with a bounded window',
+    () async {
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't1',
+        userText: 'मेरा नाम राहुल है',
+        sttConfidence: 0.95,
+        runDeterministicMemory: false,
+      );
+      await database.resolveMemoryTurn(
+        turnId: 't1',
+        text: 'मेरा नाम राहुल है',
+        language: 'hi-IN',
+        transcriptStatus: 'final',
+        sttConfidence: 0.95,
+      );
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't2',
+        userText: 'असल में मेरा नाम विनय है',
+        sttConfidence: null,
+        runDeterministicMemory: false,
+      );
+      final correction = await database.resolveMemoryTurn(
+        turnId: 't2',
+        text: 'असल में मेरा नाम विनय है',
+        language: 'hi-IN',
+        transcriptStatus: 'final',
+        sttConfidence: null,
+      );
+      expect(correction.directive, 'companion');
+      await database.enqueueMemoryExtractionJob(
+        sessionId: 's1',
+        turnId: 't2',
+        extractionVersion: 'v1',
+      );
+
+      final job = await database
+          .select(database.memoryExtractionJobs)
+          .getSingle();
+      final window = await database.readExtractionWindow(job);
+      expect(window.length, lessThanOrEqualTo(8));
+      final current = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'current'",
+          )
+          .get();
+      expect(current.single.data['value_json'], contains('राहुल'));
+    },
+  );
+
+  test(
     'background coordinator drains a completed exchange without blocking the turn',
     () async {
       await _completedTurn(database, sessionId: 's1', turnId: 't1');
       final syncedTurns = <String>[];
       final coordinator = LongTermMemoryCoordinator(
         database: database,
-        client: _FakeCandidateClient(),
+        client: _FakeJudgeClient(),
         enabled: true,
         syncTurnMemories: (turnId) async => syncedTurns.add(turnId),
       );
       addTearDown(coordinator.dispose);
+      final outcomes = <MemoryJudgeOutcome>[];
+      coordinator.outcomes.listen(outcomes.add);
 
       await coordinator.enqueueCompletedTurn(sessionId: 's1', turnId: 't1');
       await coordinator.processPending();
+      await Future<void>.delayed(Duration.zero);
 
       final job = await database
           .select(database.memoryExtractionJobs)
@@ -71,6 +162,35 @@ void main() {
       expect(memories.single.kind, 'episodic');
       expect(memories.single.sourceTurnIdsJson, '["t1"]');
       expect(syncedTurns, ['t1']);
+      expect(outcomes.single.outcome, MemoryJudgeOutcomeKind.accepted);
+      expect(outcomes.single.costSource, 'unknown');
+      expect(outcomes.single.acceptedCount, 1);
+    },
+  );
+
+  test(
+    'an empty decision batch is silent: no mutation and no user notice',
+    () async {
+      await _completedTurn(database, sessionId: 's1', turnId: 't1');
+      final coordinator = LongTermMemoryCoordinator(
+        database: database,
+        client: const _EmptyJudgeClient(),
+        enabled: true,
+      );
+      addTearDown(coordinator.dispose);
+      final outcomes = <MemoryJudgeOutcome>[];
+      coordinator.outcomes.listen(outcomes.add);
+
+      await coordinator.enqueueCompletedTurn(sessionId: 's1', turnId: 't1');
+      await coordinator.processPending();
+      await Future<void>.delayed(Duration.zero);
+
+      final job = await database
+          .select(database.memoryExtractionJobs)
+          .getSingle();
+      expect(job.status, 'succeeded');
+      expect(await database.select(database.memoryRecords).get(), isEmpty);
+      expect(outcomes, isEmpty);
     },
   );
 
@@ -80,7 +200,7 @@ void main() {
       await _completedTurn(database, sessionId: 's1', turnId: 't1');
       final coordinator = LongTermMemoryCoordinator(
         database: database,
-        client: _FakeCandidateClient(),
+        client: _FakeJudgeClient(),
         enabled: true,
         syncTurnMemories: (_) async => throw StateError('derived index failed'),
       );
@@ -97,11 +217,67 @@ void main() {
     },
   );
 
-  test('non-retryable extractor response makes the job terminal', () async {
+  test('judge failures preserve state, create no pending state, and emit '
+      'redacted outcomes', () async {
+    await _seedCurrentName(database, sessionId: 's1');
+    final cases = <MemoryJudgeClient, MemoryJudgeOutcomeKind>{
+      const _FailingJudgeClient(503): MemoryJudgeOutcomeKind.unavailable,
+      const _TimeoutJudgeClient(): MemoryJudgeOutcomeKind.timeout,
+      const _MalformedJudgeClient(): MemoryJudgeOutcomeKind.invalid,
+    };
+    var turnIndex = 10;
+    for (final entry in cases.entries) {
+      final turnId = 't$turnIndex';
+      turnIndex += 1;
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: turnId,
+        userText: 'असल में मेरा नाम विनय है',
+        sttConfidence: null,
+        runDeterministicMemory: false,
+      );
+      final coordinator = LongTermMemoryCoordinator(
+        database: database,
+        client: entry.key,
+        enabled: true,
+      );
+      addTearDown(coordinator.dispose);
+      final outcomes = <MemoryJudgeOutcome>[];
+      coordinator.outcomes.listen(outcomes.add);
+
+      await coordinator.enqueueCompletedTurn(sessionId: 's1', turnId: turnId);
+      await coordinator.processPending();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(outcomes.single.outcome, entry.value);
+      expect(outcomes.single.costSource, 'unknown');
+      expect(outcomes.single.acceptedCount, 0);
+      final job = await database
+          .select(database.memoryExtractionJobs)
+          .getSingle();
+      expect(job.status, 'retry');
+      final current = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'current'",
+          )
+          .get();
+      expect(current.single.data['value_json'], contains('राहुल'));
+      final pending = await database
+          .customSelect(
+            "SELECT * FROM memory_claims WHERE confirmation_state = 'pending'",
+          )
+          .get();
+      expect(pending, isEmpty);
+      await database.delete(database.memoryExtractionJobs).go();
+    }
+  });
+
+  test('non-retryable judge response makes the job terminal', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final coordinator = LongTermMemoryCoordinator(
       database: database,
-      client: const _FailingCandidateClient(400),
+      client: const _FailingJudgeClient(400),
       enabled: true,
     );
     addTearDown(coordinator.dispose);
@@ -178,47 +354,54 @@ void main() {
     },
   );
 
-  test('HTTP candidate client times out and rejects malformed items', () async {
+  test('HTTP judge client times out and rejects malformed envelopes', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final turns = await database.select(database.chatMessages).get();
-    final timeoutClient = HttpMemoryCandidateClient(
+    final timeoutClient = HttpMemoryJudgeClient(
       baseUrl: 'http://api.test',
       client: MockClient((_) => Completer<http.Response>().future),
       timeout: const Duration(milliseconds: 5),
     );
     await expectLater(
-      timeoutClient.extract(jobId: 'job', language: 'hi-IN', turns: turns),
+      timeoutClient.judge(jobId: 'job', language: 'hi-IN', turns: turns),
       throwsA(isA<TimeoutException>()),
     );
 
-    final validClient = HttpMemoryCandidateClient(
+    final validClient = HttpMemoryJudgeClient(
       baseUrl: 'http://api.test',
       client: MockClient(
         (_) async => http.Response(
           jsonEncode({
             'job_id': 'job',
-            'extraction_version': memoryExtractionVersion,
-            'judge_contract_version': memoryJudgeContractVersion,
-            'outcome': 'accepted',
-            'cost_source': 'unknown',
-            'candidates': [
+            'contract_version': memoryJudgeContractVersion,
+            'cost': {
+              'source': 'provider_reported',
+              'input_tokens': 812,
+              'output_tokens': 96,
+              'estimated_micro_inr': 4500,
+            },
+            'decisions': [
               {
-                'candidate_kind': 'episode',
-                'subject': 'user',
-                'predicate': 'attended_interview',
-                'object_text': 'design interview',
-                'event_start_at_ms': null,
-                'event_end_at_ms': null,
-                'temporal_status': 'past',
-                'explicitness': 'explicit',
-                'confidence': 0.9,
-                'future_utility': 0.8,
-                'sensitivity': 'normal',
-                'source_turn_ids': ['t1'],
-                'evidence_role': 'user',
-                'suggested_action': 'ADD',
-                'follow_up_allowed': false,
-                'proactive_allowed': false,
+                'decision_id': 'mjd_0123456789abcdef',
+                'action': 'accept',
+                'proposal': {
+                  'kind': 'episode',
+                  'subject': 'user',
+                  'predicate': 'attended_interview',
+                  'object_text': 'design interview',
+                  'event_start_at_ms': null,
+                  'event_end_at_ms': null,
+                  'temporal_status': 'past',
+                  'explicitness': 'explicit',
+                  'confidence': 0.9,
+                  'future_utility': 0.8,
+                  'sensitivity': 'normal',
+                  'source_turn_ids': ['t1'],
+                  'evidence_role': 'user',
+                  'suggested_action': 'ADD',
+                  'follow_up_allowed': false,
+                  'proactive_allowed': false,
+                },
               },
             ],
           }),
@@ -226,33 +409,67 @@ void main() {
         ),
       ),
     );
-    final parsed = await validClient.extract(
+    final parsed = await validClient.judge(
       jobId: 'job',
       language: 'hi-IN',
       turns: turns,
     );
-    expect(parsed.single.kind, 'episode');
+    expect(parsed.decisions.single.action, 'accept');
+    expect(parsed.decisions.single.proposal.kind, 'episode');
+    expect(parsed.cost.source, 'provider_reported');
+    expect(parsed.cost.inputTokens, 812);
 
-    final malformedClient = HttpMemoryCandidateClient(
-      baseUrl: 'http://api.test',
-      client: MockClient(
-        (_) async => http.Response(
-          jsonEncode({
-            'job_id': 'job',
-            'extraction_version': memoryExtractionVersion,
-            'judge_contract_version': memoryJudgeContractVersion,
-            'outcome': 'rejected',
-            'cost_source': 'unknown',
-            'candidates': [42],
-          }),
-          200,
-        ),
-      ),
-    );
-    await expectLater(
-      malformedClient.extract(jobId: 'job', language: 'hi-IN', turns: turns),
-      throwsA(isA<FormatException>()),
-    );
+    final malformedBodies = [
+      // Old candidate-envelope shape must be rejected outright.
+      {
+        'job_id': 'job',
+        'extraction_version': 'v1',
+        'judge_contract_version': memoryJudgeContractVersion,
+        'outcome': 'accepted',
+        'cost_source': 'unknown',
+        'candidates': const <Object?>[],
+      },
+      // Unsupported contract version.
+      {
+        'job_id': 'job',
+        'contract_version': 'memory_judge_v2',
+        'cost': {
+          'source': 'unknown',
+          'input_tokens': 0,
+          'output_tokens': 0,
+          'estimated_micro_inr': 0,
+        },
+        'decisions': const <Object?>[],
+      },
+      // Unknown action.
+      {
+        'job_id': 'job',
+        'contract_version': memoryJudgeContractVersion,
+        'cost': {
+          'source': 'unknown',
+          'input_tokens': 0,
+          'output_tokens': 0,
+          'estimated_micro_inr': 0,
+        },
+        'decisions': [
+          {
+            'decision_id': 'mjd_0123456789abcdef',
+            'action': 'delete_everything',
+            'proposal': const <String, Object?>{},
+          },
+        ],
+      },
+    ];
+    for (final body in malformedBodies) {
+      final malformedClient = HttpMemoryJudgeClient(
+        baseUrl: 'http://api.test',
+        client: MockClient((_) async => http.Response(jsonEncode(body), 200)),
+      );
+      await expectLater(
+        malformedClient.judge(jobId: 'job', language: 'hi-IN', turns: turns),
+        throwsA(isA<FormatException>()),
+      );
+    }
   });
 
   test('long sessions are split into bounded four-exchange jobs', () async {
@@ -294,7 +511,7 @@ void main() {
       );
       final coordinator = LongTermMemoryCoordinator(
         database: database,
-        client: const _EmptyCandidateClient(),
+        client: const _EmptyJudgeClient(),
         enabled: true,
         maxJobsPerDrain: 4,
         continuationDelay: const Duration(milliseconds: 1),
@@ -315,27 +532,24 @@ void main() {
       await _completedTurn(database, sessionId: 's1', turnId: 't1');
       final job = await _claimJob(database, 's1', 't1');
 
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'episode',
-            subject: 'user',
-            predicate: 'attended_interview',
-            objectText: 'Had an important design interview',
-            temporalStatus: 'past',
-            explicitness: 'explicit',
-            confidence: 0.94,
-            futureUtility: 0.82,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'episode',
+          subject: 'user',
+          predicate: 'attended_interview',
+          objectText: 'Had an important design interview',
+          temporalStatus: 'past',
+          explicitness: 'explicit',
+          confidence: 0.94,
+          futureUtility: 0.82,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       final episodes = await database.select(database.memoryEpisodes).get();
       expect(episodes, hasLength(1));
@@ -368,27 +582,24 @@ void main() {
       );
       final job = await _claimJob(database, 's1', 't1');
 
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'episode',
-            subject: 'Design interview',
-            predicate: 'had_difficult_system_design_round',
-            objectText: transcript,
-            temporalStatus: 'past',
-            explicitness: 'explicit',
-            confidence: 0.9,
-            futureUtility: 0.8,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'episode',
+          subject: 'Design interview',
+          predicate: 'had_difficult_system_design_round',
+          objectText: transcript,
+          temporalStatus: 'past',
+          explicitness: 'explicit',
+          confidence: 0.9,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       final episodes = await database.select(database.memoryEpisodes).get();
       expect(episodes, hasLength(1));
@@ -399,27 +610,24 @@ void main() {
   test('assistant-only text cannot become a user fact', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'goal',
-          subject: 'user',
-          predicate: 'wants_promotion',
-          objectText: 'Wants a promotion',
-          temporalStatus: 'current',
-          explicitness: 'assistant_only',
-          confidence: 0.9,
-          futureUtility: 0.8,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'assistant',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'goal',
+        subject: 'user',
+        predicate: 'wants_promotion',
+        objectText: 'Wants a promotion',
+        temporalStatus: 'current',
+        explicitness: 'assistant_only',
+        confidence: 0.9,
+        futureUtility: 0.8,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'assistant',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
     final audit = await database.select(database.memoryCandidates).getSingle();
@@ -427,32 +635,345 @@ void main() {
     expect(audit.decisionReason, 'assistant_cannot_prove_user_fact');
   });
 
+  test('a reject decision causes no mutation', () async {
+    await _completedTurn(database, sessionId: 's1', turnId: 't1');
+    final job = await _claimJob(database, 's1', 't1');
+    final result = await database.applyMemoryJudgeDecisions(
+      job: job,
+      decisions: [
+        MemoryJudgeDecision(
+          decisionId: 'mjd_reject_decision_1',
+          action: 'reject',
+          proposal: _episodeCandidate(sourceTurnIds: const ['t1']),
+        ),
+      ],
+      cost: MemoryJudgeCost.unknown,
+      windowTurnCount: 2,
+    );
+
+    expect(result.appliedCount, 0);
+    expect(result.rejectedCount, 1);
+    expect(await database.select(database.memoryRecords).get(), isEmpty);
+    expect(await database.select(database.memoryEpisodes).get(), isEmpty);
+    final operation = await database
+        .customSelect('SELECT * FROM memory_judge_operations')
+        .getSingle();
+    expect(operation.data['outcome'], 'rejected');
+    expect(operation.data['reason'], 'judge_rejected');
+  });
+
+  test('a mismatched action/proposal pair is rejected as invalid', () async {
+    await _completedTurn(database, sessionId: 's1', turnId: 't1');
+    final job = await _claimJob(database, 's1', 't1');
+    await database.applyMemoryJudgeDecisions(
+      job: job,
+      decisions: [
+        MemoryJudgeDecision(
+          decisionId: 'mjd_mismatched_pair_1',
+          action: 'supersede',
+          proposal: _episodeCandidate(sourceTurnIds: const ['t1']),
+        ),
+      ],
+      cost: MemoryJudgeCost.unknown,
+      windowTurnCount: 2,
+    );
+
+    expect(await database.select(database.memoryRecords).get(), isEmpty);
+    final audit = await database.select(database.memoryCandidates).getSingle();
+    expect(audit.decisionReason, 'invalid_or_unverifiable_schema');
+  });
+
+  test('a replayed decision ID is idempotent and notice-silent', () async {
+    await _completedTurn(database, sessionId: 's1', turnId: 't1');
+    final job = await _claimJob(database, 's1', 't1');
+    final decisions = [
+      MemoryJudgeDecision(
+        decisionId: 'mjd_replayed_decision_1',
+        action: 'accept',
+        proposal: _episodeCandidate(sourceTurnIds: const ['t1']),
+      ),
+    ];
+
+    final first = await database.applyMemoryJudgeDecisions(
+      job: job,
+      decisions: decisions,
+      cost: MemoryJudgeCost.unknown,
+      windowTurnCount: 2,
+    );
+    final replay = await database.applyMemoryJudgeDecisions(
+      job: job,
+      decisions: decisions,
+      cost: MemoryJudgeCost.unknown,
+      windowTurnCount: 2,
+    );
+
+    expect(first.appliedCount, 1);
+    expect(first.noticeEligible, isTrue);
+    expect(replay.appliedCount, 0);
+    expect(replay.duplicateCount, 1);
+    expect(replay.noticeEligible, isFalse);
+    expect(await database.select(database.memoryRecords).get(), hasLength(1));
+    expect(await database.select(database.memoryEpisodes).get(), hasLength(1));
+    expect(
+      await database
+          .customSelect('SELECT * FROM memory_judge_operations')
+          .get(),
+      hasLength(1),
+    );
+  });
+
+  test(
+    'a model-supplied database ID is never trusted for target resolution',
+    () async {
+      await _completedTurn(database, sessionId: 's1', turnId: 't1');
+      final turns = await database.select(database.chatMessages).get();
+      final client = HttpMemoryJudgeClient(
+        baseUrl: 'http://api.test',
+        client: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'job_id': 'job',
+              'contract_version': memoryJudgeContractVersion,
+              'cost': {
+                'source': 'unknown',
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'estimated_micro_inr': 0,
+              },
+              'decisions': [
+                {
+                  'decision_id': 'mjd_0123456789abcdef',
+                  'action': 'accept',
+                  // Injected ID-shaped fields must be ignored by the parser;
+                  // the phone only ever resolves targets from content.
+                  'target_memory_id': 'memory_llm_fake_target',
+                  'proposal': {
+                    'kind': 'episode',
+                    'subject': 'user',
+                    'predicate': 'attended_interview',
+                    'object_text': 'design interview',
+                    'claim_id': 'llm_claim_fake',
+                    'temporal_status': 'past',
+                    'explicitness': 'explicit',
+                    'confidence': 0.9,
+                    'future_utility': 0.8,
+                    'sensitivity': 'normal',
+                    'source_turn_ids': ['t1'],
+                    'evidence_role': 'user',
+                    'suggested_action': 'ADD',
+                    'follow_up_allowed': false,
+                    'proactive_allowed': false,
+                  },
+                },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+      final envelope = await client.judge(
+        jobId: 'job',
+        language: 'hi-IN',
+        turns: turns,
+      );
+      final job = await _claimJob(database, 's1', 't1');
+      await database.applyMemoryJudgeDecisions(
+        job: job,
+        decisions: envelope.decisions,
+        cost: envelope.cost,
+        windowTurnCount: turns.length,
+      );
+
+      final record = await database.select(database.memoryRecords).getSingle();
+      expect(record.id, isNot('memory_llm_fake_target'));
+      expect(record.id, startsWith('memory_llm_'));
+    },
+  );
+
+  test(
+    'unknown-confidence name correction judged accepted supersedes atomically',
+    () async {
+      await _seedCurrentName(database, sessionId: 's1');
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't2',
+        userText: 'असल में मेरा नाम विनय है',
+        sttConfidence: null,
+        runDeterministicMemory: false,
+      );
+      final job = await _claimJob(database, 's1', 't2');
+
+      final result = await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'profile',
+          subject: 'user',
+          predicate: 'preferred_name',
+          objectText: 'विनय',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.9,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t2'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
+
+      expect(result.appliedCount, 1);
+      final current = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'current' "
+            "AND state_key = 'user.profile.preferred_name'",
+          )
+          .get();
+      expect(current, hasLength(1));
+      expect(current.single.data['value_json'], contains('विनय'));
+      final superseded = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'superseded'",
+          )
+          .get();
+      expect(superseded.single.data['value_json'], contains('राहुल'));
+      final projection = await database
+          .customSelect(
+            "SELECT value_json FROM companion_state "
+            "WHERE state_key = 'user.profile.preferred_name'",
+          )
+          .getSingle();
+      expect(projection.data['value_json'], contains('विनय'));
+    },
+  );
+
+  test(
+    'profile correction with spurious model timestamps is still applied',
+    () async {
+      // Regression from a real Sarvam-30B response: the model attaches
+      // meaningless event_*_ms values to a plain profile fact. Event-time
+      // grounding applies only to event-shaped kinds, so this must commit.
+      await _seedCurrentName(database, sessionId: 's1');
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't2',
+        userText: 'नहीं मेरा नाम अमित है',
+        sttConfidence: null,
+        runDeterministicMemory: false,
+      );
+      final job = await _claimJob(database, 's1', 't2');
+
+      final result = await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'profile',
+          subject: 'user',
+          predicate: 'preferred_name',
+          objectText: 'अमित',
+          eventStartAt: 1784152394650,
+          eventEndAt: 1784152419775,
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.9,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t2'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
+
+      expect(result.appliedCount, 1);
+      final current = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'current' "
+            "AND state_key = 'user.profile.preferred_name'",
+          )
+          .get();
+      expect(current, hasLength(1));
+      expect(current.single.data['value_json'], contains('अमित'));
+    },
+  );
+
+  test(
+    'a low-confidence correction rejected locally leaves the prior name',
+    () async {
+      await _seedCurrentName(database, sessionId: 's1');
+      await _completedTurn(
+        database,
+        sessionId: 's1',
+        turnId: 't2',
+        userText: 'असल में मेरा नाम विनय है',
+        sttConfidence: 0.4,
+        runDeterministicMemory: false,
+      );
+      final job = await _claimJob(database, 's1', 't2');
+
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'profile',
+          subject: 'user',
+          predicate: 'preferred_name',
+          objectText: 'विनय',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.95,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t2'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
+
+      final audit = await database
+          .select(database.memoryCandidates)
+          .getSingle();
+      expect(audit.decisionState, 'rejected');
+      expect(audit.decisionReason, 'low_confidence_transcript');
+      final current = await database
+          .customSelect(
+            "SELECT value_json FROM memory_claims WHERE claim_state = 'current'",
+          )
+          .get();
+      expect(current.single.data['value_json'], contains('राहुल'));
+      final pending = await database
+          .customSelect(
+            "SELECT * FROM memory_claims WHERE confirmation_state = 'pending'",
+          )
+          .get();
+      expect(pending, isEmpty);
+    },
+  );
+
   test(
     'open thread is found from a vague follow-up and can be forgotten',
     () async {
       await _completedTurn(database, sessionId: 's1', turnId: 't1');
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'open_thread',
-            subject: 'user',
-            predicate: 'has_interview',
-            objectText: 'Interview on Friday',
-            temporalStatus: 'future',
-            explicitness: 'explicit',
-            confidence: 0.95,
-            futureUtility: 0.9,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: true,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'open_thread',
+          subject: 'user',
+          predicate: 'has_interview',
+          objectText: 'Interview on Friday',
+          temporalStatus: 'future',
+          explicitness: 'explicit',
+          confidence: 0.95,
+          futureUtility: 0.9,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: true,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       final memories = await database.readMemoryContext(
         latestUserText: 'Woh kaisa raha?',
@@ -477,27 +998,24 @@ void main() {
         userText: 'Asha meri close friend hai',
       );
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'relationship',
-            subject: 'user',
-            predicate: 'has_close_friend',
-            objectText: 'Asha is a close friend',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.9,
-            futureUtility: 0.75,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'relationship',
+          subject: 'user',
+          predicate: 'has_close_friend',
+          objectText: 'Asha is a close friend',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.9,
+          futureUtility: 0.75,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
       final record = await database.select(database.memoryRecords).getSingle();
       expect(record.receiptState, 'implicit');
       expect(
@@ -522,27 +1040,24 @@ void main() {
       userText: 'Asha meri close friend hai',
     );
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'relationship',
-          subject: 'user',
-          predicate: 'has_close_friend',
-          objectText: 'Asha is a close friend',
-          temporalStatus: 'current',
-          explicitness: 'explicit',
-          confidence: 0.9,
-          futureUtility: 0.75,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'user',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'relationship',
+        subject: 'user',
+        predicate: 'has_close_friend',
+        objectText: 'Asha is a close friend',
+        temporalStatus: 'current',
+        explicitness: 'explicit',
+        confidence: 0.9,
+        futureUtility: 0.75,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'user',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     await database.upsertUserMessageAndExtractMemory(
       ChatMessagesCompanion.insert(
@@ -573,27 +1088,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final firstJob = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: firstJob,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'goal',
-            subject: 'user',
-            predicate: 'learning_goal',
-            objectText: 'learn guitar',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.94,
-            futureUtility: 0.82,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, firstJob, const [
+        ExtractedMemoryCandidate(
+          kind: 'goal',
+          subject: 'user',
+          predicate: 'learning_goal',
+          objectText: 'learn guitar',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.94,
+          futureUtility: 0.82,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       await _completedTurn(
         database,
@@ -603,27 +1115,25 @@ void main() {
         runDeterministicMemory: false,
       );
       final secondJob = await _claimJob(database, 's1', 't2');
-      await database.validateAndApplyMemoryCandidates(
-        job: secondJob,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'goal',
-            subject: 'user',
-            predicate: 'learning_goal',
-            objectText: 'learn piano instead of guitar',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.95,
-            futureUtility: 0.85,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t2'],
-            evidenceRole: 'user',
-            suggestedAction: 'SUPERSEDE',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      final result = await _apply(database, secondJob, const [
+        ExtractedMemoryCandidate(
+          kind: 'goal',
+          subject: 'user',
+          predicate: 'learning_goal',
+          objectText: 'learn piano instead of guitar',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.95,
+          futureUtility: 0.85,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t2'],
+          evidenceRole: 'user',
+          suggestedAction: 'SUPERSEDE',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
+      expect(result.supersededCount, 1);
 
       final records = await database.select(database.memoryRecords).get();
       expect(records, hasLength(2));
@@ -658,27 +1168,24 @@ void main() {
   test('sensitive candidate fails closed', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'episode',
-          subject: 'user',
-          predicate: 'medical_fact',
-          objectText: 'Private medical detail',
-          temporalStatus: 'current',
-          explicitness: 'explicit',
-          confidence: 0.99,
-          futureUtility: 0.9,
-          sensitivity: 'sensitive',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'user',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'episode',
+        subject: 'user',
+        predicate: 'medical_fact',
+        objectText: 'Private medical detail',
+        temporalStatus: 'current',
+        explicitness: 'explicit',
+        confidence: 0.99,
+        futureUtility: 0.9,
+        sensitivity: 'sensitive',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'user',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
   });
@@ -694,27 +1201,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'goal',
-            subject: 'user',
-            predicate: 'manage_diabetes',
-            objectText: 'manage diabetes after doctor diagnosis',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.99,
-            futureUtility: 0.9,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'goal',
+          subject: 'user',
+          predicate: 'manage_diabetes',
+          objectText: 'manage diabetes after doctor diagnosis',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.99,
+          futureUtility: 0.9,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       expect(await database.select(database.memoryRecords).get(), isEmpty);
       expect(
@@ -736,27 +1240,24 @@ void main() {
       runDeterministicMemory: false,
     );
 
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'goal',
-          subject: 'user',
-          predicate: 'learning_goal',
-          objectText: 'learn piano',
-          temporalStatus: 'current',
-          explicitness: 'explicit',
-          confidence: 0.95,
-          futureUtility: 0.8,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t2'],
-          evidenceRole: 'user',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'goal',
+        subject: 'user',
+        predicate: 'learning_goal',
+        objectText: 'learn piano',
+        temporalStatus: 'current',
+        explicitness: 'explicit',
+        confidence: 0.95,
+        futureUtility: 0.8,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t2'],
+        evidenceRole: 'user',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
     expect(
@@ -776,27 +1277,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final job = await _claimJob(database, 's1', turnId);
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: [
-          ExtractedMemoryCandidate(
-            kind: 'routine',
-            subject: 'user',
-            predicate: 'practice_routine',
-            objectText: 'sometimes practice guitar',
-            temporalStatus: 'current',
-            explicitness: 'implied',
-            confidence: 0.8,
-            futureUtility: 0.7,
-            sensitivity: 'normal',
-            sourceTurnIds: [turnId],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, [
+        ExtractedMemoryCandidate(
+          kind: 'routine',
+          subject: 'user',
+          predicate: 'practice_routine',
+          objectText: 'sometimes practice guitar',
+          temporalStatus: 'current',
+          explicitness: 'implied',
+          confidence: 0.8,
+          futureUtility: 0.7,
+          sensitivity: 'normal',
+          sourceTurnIds: [turnId],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
     }
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
@@ -807,27 +1305,24 @@ void main() {
   test('high-confidence but ungrounded LLM proposal is rejected', () async {
     await _completedTurn(database, sessionId: 's1', turnId: 't1');
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'goal',
-          subject: 'user',
-          predicate: 'plans_marathon',
-          objectText: 'Will run a marathon in Mumbai',
-          temporalStatus: 'future',
-          explicitness: 'explicit',
-          confidence: 0.99,
-          futureUtility: 0.95,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'user',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'goal',
+        subject: 'user',
+        predicate: 'plans_marathon',
+        objectText: 'Will run a marathon in Mumbai',
+        temporalStatus: 'future',
+        explicitness: 'explicit',
+        confidence: 0.99,
+        futureUtility: 0.95,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'user',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
     final audit = await database.select(database.memoryCandidates).getSingle();
@@ -844,27 +1339,24 @@ void main() {
         userText: 'Asha is my close friend and manager at office',
       );
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'relationship',
-            subject: 'user',
-            predicate: 'has_close_friend',
-            objectText: 'Asha close friend manager office',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.92,
-            futureUtility: 0.75,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'relationship',
+          subject: 'user',
+          predicate: 'has_close_friend',
+          objectText: 'Asha close friend manager office',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.92,
+          futureUtility: 0.75,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
       final audit = await database
           .select(database.memoryCandidates)
           .getSingle();
@@ -891,27 +1383,24 @@ void main() {
       runDeterministicMemory: false,
     );
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'goal',
-          subject: 'user',
-          predicate: 'learning_goal',
-          objectText: 'learn guitar',
-          temporalStatus: 'current',
-          explicitness: 'explicit',
-          confidence: 0.95,
-          futureUtility: 0.8,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'user',
-          suggestedAction: 'EXPIRE',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'goal',
+        subject: 'user',
+        predicate: 'learning_goal',
+        objectText: 'learn guitar',
+        temporalStatus: 'current',
+        explicitness: 'explicit',
+        confidence: 0.95,
+        futureUtility: 0.8,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'user',
+        suggestedAction: 'EXPIRE',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
     expect(
@@ -948,10 +1437,7 @@ void main() {
         followUpAllowed: false,
         proactiveAllowed: false,
       );
-      await database.validateAndApplyMemoryCandidates(
-        job: firstJob,
-        candidates: const [baseCandidate],
-      );
+      await _apply(database, firstJob, const [baseCandidate]);
       await _completedTurn(
         database,
         sessionId: 's1',
@@ -960,27 +1446,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final secondJob = await _claimJob(database, 's1', 't2');
-      await database.validateAndApplyMemoryCandidates(
-        job: secondJob,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'goal',
-            subject: 'user',
-            predicate: 'learning_goal',
-            objectText: 'learn guitar',
-            temporalStatus: 'current',
-            explicitness: 'explicit',
-            confidence: 0.95,
-            futureUtility: 0.8,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t2'],
-            evidenceRole: 'user',
-            suggestedAction: 'EXPIRE',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, secondJob, const [
+        ExtractedMemoryCandidate(
+          kind: 'goal',
+          subject: 'user',
+          predicate: 'learning_goal',
+          objectText: 'learn guitar',
+          temporalStatus: 'current',
+          explicitness: 'explicit',
+          confidence: 0.95,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t2'],
+          evidenceRole: 'user',
+          suggestedAction: 'EXPIRE',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       final record = await database.select(database.memoryRecords).getSingle();
       expect(record.temporalStatus, 'expired');
@@ -997,27 +1480,24 @@ void main() {
       runDeterministicMemory: false,
     );
     final job = await _claimJob(database, 's1', 't1');
-    await database.validateAndApplyMemoryCandidates(
-      job: job,
-      candidates: const [
-        ExtractedMemoryCandidate(
-          kind: 'goal',
-          subject: 'user',
-          predicate: 'learning_goal',
-          objectText: 'learn guitar',
-          temporalStatus: 'current',
-          explicitness: 'explicit',
-          confidence: 1.2,
-          futureUtility: 0.8,
-          sensitivity: 'normal',
-          sourceTurnIds: ['t1'],
-          evidenceRole: 'user',
-          suggestedAction: 'ADD',
-          followUpAllowed: false,
-          proactiveAllowed: false,
-        ),
-      ],
-    );
+    await _apply(database, job, const [
+      ExtractedMemoryCandidate(
+        kind: 'goal',
+        subject: 'user',
+        predicate: 'learning_goal',
+        objectText: 'learn guitar',
+        temporalStatus: 'current',
+        explicitness: 'explicit',
+        confidence: 1.2,
+        futureUtility: 0.8,
+        sensitivity: 'normal',
+        sourceTurnIds: ['t1'],
+        evidenceRole: 'user',
+        suggestedAction: 'ADD',
+        followUpAllowed: false,
+        proactiveAllowed: false,
+      ),
+    ]);
 
     expect(await database.select(database.memoryRecords).get(), isEmpty);
     expect(
@@ -1037,27 +1517,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final job = await _claimJob(database, 's1', turnId);
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: [
-          ExtractedMemoryCandidate(
-            kind: 'episode',
-            subject: 'user',
-            predicate: 'attended_interview',
-            objectText: 'attended a design interview',
-            temporalStatus: 'past',
-            explicitness: 'explicit',
-            confidence: 0.92,
-            futureUtility: 0.72,
-            sensitivity: 'normal',
-            sourceTurnIds: [turnId],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: false,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, [
+        ExtractedMemoryCandidate(
+          kind: 'episode',
+          subject: 'user',
+          predicate: 'attended_interview',
+          objectText: 'attended a design interview',
+          temporalStatus: 'past',
+          explicitness: 'explicit',
+          confidence: 0.92,
+          futureUtility: 0.72,
+          sensitivity: 'normal',
+          sourceTurnIds: [turnId],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
     }
 
     expect(await database.select(database.memoryEpisodes).get(), hasLength(2));
@@ -1075,27 +1552,24 @@ void main() {
         runDeterministicMemory: false,
       );
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'open_thread',
-            subject: 'user',
-            predicate: 'has_interview',
-            objectText: 'design interview coming up',
-            temporalStatus: 'future',
-            explicitness: 'explicit',
-            confidence: 0.92,
-            futureUtility: 0.8,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: true,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'open_thread',
+          subject: 'user',
+          predicate: 'has_interview',
+          objectText: 'design interview coming up',
+          temporalStatus: 'future',
+          explicitness: 'explicit',
+          confidence: 0.92,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: true,
+          proactiveAllowed: false,
+        ),
+      ]);
       final record = await database.select(database.memoryRecords).getSingle();
 
       await database.consolidateLocalMemory(
@@ -1119,28 +1593,25 @@ void main() {
     () async {
       await _completedTurn(database, sessionId: 's1', turnId: 't1');
       final job = await _claimJob(database, 's1', 't1');
-      await database.validateAndApplyMemoryCandidates(
-        job: job,
-        candidates: const [
-          ExtractedMemoryCandidate(
-            kind: 'open_thread',
-            subject: 'user',
-            predicate: 'has_interview',
-            objectText: 'Friday design interview',
-            eventStartAt: 172800000,
-            temporalStatus: 'future',
-            explicitness: 'explicit',
-            confidence: 0.95,
-            futureUtility: 0.9,
-            sensitivity: 'normal',
-            sourceTurnIds: ['t1'],
-            evidenceRole: 'user',
-            suggestedAction: 'ADD',
-            followUpAllowed: true,
-            proactiveAllowed: false,
-          ),
-        ],
-      );
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'open_thread',
+          subject: 'user',
+          predicate: 'has_interview',
+          objectText: 'Friday design interview',
+          eventStartAt: 172800000,
+          temporalStatus: 'future',
+          explicitness: 'explicit',
+          confidence: 0.95,
+          futureUtility: 0.9,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: true,
+          proactiveAllowed: false,
+        ),
+      ]);
 
       expect(await database.select(database.memoryRecords).get(), isEmpty);
       final audit = await database
@@ -1149,61 +1620,188 @@ void main() {
       expect(audit.decisionReason, 'event_time_not_grounded');
     },
   );
+
+  test(
+    'clear history removes decision-operation artifacts and judge skips',
+    () async {
+      await _completedTurn(database, sessionId: 's1', turnId: 't1');
+      await database.markTurnDeterministicallyHandled('t_handled');
+      final job = await _claimJob(database, 's1', 't1');
+      await _apply(database, job, const [
+        ExtractedMemoryCandidate(
+          kind: 'episode',
+          subject: 'user',
+          predicate: 'attended_interview',
+          objectText: 'design interview',
+          temporalStatus: 'past',
+          explicitness: 'explicit',
+          confidence: 0.9,
+          futureUtility: 0.8,
+          sensitivity: 'normal',
+          sourceTurnIds: ['t1'],
+          evidenceRole: 'user',
+          suggestedAction: 'ADD',
+          followUpAllowed: false,
+          proactiveAllowed: false,
+        ),
+      ]);
+      expect(
+        await database
+            .customSelect('SELECT * FROM memory_judge_operations')
+            .get(),
+        isNotEmpty,
+      );
+
+      await database.clearAllHistoryAndCompanionMemory();
+
+      for (final table in [
+        'memory_judge_operations',
+        'memory_judge_skips',
+        'memory_candidates',
+        'memory_extraction_jobs',
+        'memory_episodes',
+        'memory_open_threads',
+        'memory_records',
+        'chat_messages',
+      ]) {
+        expect(
+          await database.customSelect('SELECT * FROM $table').get(),
+          isEmpty,
+          reason: '$table should be empty after clear history',
+        );
+      }
+    },
+  );
 }
 
-class _FakeCandidateClient implements MemoryCandidateClient {
+ExtractedMemoryCandidate _episodeCandidate({
+  required List<String> sourceTurnIds,
+}) {
+  return ExtractedMemoryCandidate(
+    kind: 'episode',
+    subject: 'user',
+    predicate: 'attended_interview',
+    objectText: 'design interview',
+    temporalStatus: 'past',
+    explicitness: 'explicit',
+    confidence: 0.9,
+    futureUtility: 0.8,
+    sensitivity: 'normal',
+    sourceTurnIds: sourceTurnIds,
+    evidenceRole: 'user',
+    suggestedAction: 'ADD',
+    followUpAllowed: false,
+    proactiveAllowed: false,
+  );
+}
+
+const _actionForSuggested = {
+  'ADD': 'accept',
+  'REINFORCE': 'update',
+  'SUPERSEDE': 'supersede',
+  'EXPIRE': 'update',
+  'NOOP': 'reject',
+};
+
+/// Wraps proposals in decisions the way the API contract does, with
+/// deterministic per-job decision IDs.
+Future<MemoryJudgeApplyResult> _apply(
+  AppDatabase database,
+  MemoryExtractionJob job,
+  List<ExtractedMemoryCandidate> candidates,
+) {
+  return database.applyMemoryJudgeDecisions(
+    job: job,
+    decisions: [
+      for (var index = 0; index < candidates.length; index += 1)
+        MemoryJudgeDecision(
+          decisionId: 'mjd_${job.id}_${index}_${candidates[index].predicate}'
+              .padRight(16, '0'),
+          action: _actionForSuggested[candidates[index].suggestedAction]!,
+          proposal: candidates[index],
+        ),
+    ],
+    cost: MemoryJudgeCost.unknown,
+    windowTurnCount: 2,
+  );
+}
+
+class _FakeJudgeClient implements MemoryJudgeClient {
   @override
-  Future<List<ExtractedMemoryCandidate>> extract({
+  Future<MemoryJudgeEnvelope> judge({
     required String jobId,
     required String language,
     required List<ChatMessage> turns,
   }) async {
-    return const [
-      ExtractedMemoryCandidate(
-        kind: 'episode',
-        subject: 'user',
-        predicate: 'attended_interview',
-        objectText: 'design interview',
-        temporalStatus: 'past',
-        explicitness: 'explicit',
-        confidence: 0.9,
-        futureUtility: 0.8,
-        sensitivity: 'normal',
-        sourceTurnIds: ['t1'],
-        evidenceRole: 'user',
-        suggestedAction: 'ADD',
-        followUpAllowed: false,
-        proactiveAllowed: false,
-      ),
-    ];
+    return MemoryJudgeEnvelope(
+      jobId: jobId,
+      cost: MemoryJudgeCost.unknown,
+      decisions: [
+        MemoryJudgeDecision(
+          decisionId: 'mjd_${jobId}_episode_1'.padRight(16, '0'),
+          action: 'accept',
+          proposal: _episodeCandidate(sourceTurnIds: const ['t1']),
+        ),
+      ],
+    );
   }
 }
 
-class _FailingCandidateClient implements MemoryCandidateClient {
-  const _FailingCandidateClient(this.statusCode);
+class _FailingJudgeClient implements MemoryJudgeClient {
+  const _FailingJudgeClient(this.statusCode);
 
   final int statusCode;
 
   @override
-  Future<List<ExtractedMemoryCandidate>> extract({
+  Future<MemoryJudgeEnvelope> judge({
     required String jobId,
     required String language,
     required List<ChatMessage> turns,
   }) async {
-    throw MemoryCandidateException(statusCode);
+    throw MemoryJudgeException(statusCode);
   }
 }
 
-class _EmptyCandidateClient implements MemoryCandidateClient {
-  const _EmptyCandidateClient();
+class _TimeoutJudgeClient implements MemoryJudgeClient {
+  const _TimeoutJudgeClient();
 
   @override
-  Future<List<ExtractedMemoryCandidate>> extract({
+  Future<MemoryJudgeEnvelope> judge({
     required String jobId,
     required String language,
     required List<ChatMessage> turns,
   }) async {
-    return const [];
+    throw TimeoutException('judge timed out');
+  }
+}
+
+class _MalformedJudgeClient implements MemoryJudgeClient {
+  const _MalformedJudgeClient();
+
+  @override
+  Future<MemoryJudgeEnvelope> judge({
+    required String jobId,
+    required String language,
+    required List<ChatMessage> turns,
+  }) async {
+    throw const FormatException('Invalid memory judge envelope.');
+  }
+}
+
+class _EmptyJudgeClient implements MemoryJudgeClient {
+  const _EmptyJudgeClient();
+
+  @override
+  Future<MemoryJudgeEnvelope> judge({
+    required String jobId,
+    required String language,
+    required List<ChatMessage> turns,
+  }) async {
+    return MemoryJudgeEnvelope(
+      jobId: jobId,
+      cost: MemoryJudgeCost.unknown,
+      decisions: const [],
+    );
   }
 }
 
@@ -1220,11 +1818,35 @@ Future<MemoryExtractionJob> _claimJob(
   return (await database.claimNextMemoryExtractionJob())!;
 }
 
+/// Seeds a deterministic high-confidence current preferred name (Rahul).
+Future<void> _seedCurrentName(
+  AppDatabase database, {
+  required String sessionId,
+}) async {
+  await _completedTurn(
+    database,
+    sessionId: sessionId,
+    turnId: 't1',
+    userText: 'मेरा नाम राहुल है',
+    sttConfidence: 0.95,
+    runDeterministicMemory: false,
+  );
+  final seeded = await database.resolveMemoryTurn(
+    turnId: 't1',
+    text: 'मेरा नाम राहुल है',
+    language: 'hi-IN',
+    transcriptStatus: 'final',
+    sttConfidence: 0.95,
+  );
+  expect(seeded.directive, 'setting_ack');
+}
+
 Future<void> _completedTurn(
   AppDatabase database, {
   required String sessionId,
   required String turnId,
   String userText = 'Friday ko mera design interview tha',
+  double? sttConfidence = 0.96,
   bool runDeterministicMemory = true,
 }) async {
   final turnOffset =
@@ -1245,7 +1867,7 @@ Future<void> _completedTurn(
     status: 'final',
     language: 'hi-IN',
     createdAt: 10 + turnOffset,
-    sttConfidence: const Value(0.96),
+    sttConfidence: Value(sttConfidence),
   );
   if (runDeterministicMemory) {
     await database.upsertUserMessageAndExtractMemory(userMessage);

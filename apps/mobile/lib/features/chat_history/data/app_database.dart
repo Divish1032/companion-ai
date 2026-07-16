@@ -301,6 +301,7 @@ class AppDatabase extends _$AppDatabase {
       await m.createAll();
       await _ensureMemoryFtsSchema();
       await _ensureTelemetrySchema();
+      await _ensureJudgeOperationsSchema();
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -343,6 +344,7 @@ class AppDatabase extends _$AppDatabase {
       await customStatement('PRAGMA foreign_keys = ON');
       await _ensureMemoryFtsSchema();
       await _ensureTelemetrySchema();
+      await _ensureJudgeOperationsSchema();
     },
   );
 
@@ -397,6 +399,31 @@ class AppDatabase extends _$AppDatabase {
     await customStatement('''
       CREATE INDEX IF NOT EXISTS telemetry_events_session_idx
       ON telemetry_events(session_id, created_at)
+    ''');
+  }
+
+  /// Append-only, content-free decision-operation ledger. It stores decision
+  /// and job IDs, timestamps, redacted counters/cost metadata, and resulting
+  /// local claim IDs; never transcript or memory text.
+  Future<void> _ensureJudgeOperationsSchema() async {
+    await customStatement('''
+      CREATE TABLE IF NOT EXISTS memory_judge_operations (
+        decision_id TEXT PRIMARY KEY NOT NULL,
+        job_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        result_claim_id TEXT,
+        window_turn_count INTEGER NOT NULL,
+        attempt_count INTEGER NOT NULL,
+        cost_source TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        estimated_micro_inr INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
     ''');
   }
 
@@ -1026,11 +1053,22 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
-  Future<List<ExtractedMemoryCandidate>> validateAndApplyMemoryCandidates({
+  /// Applies one `memory_judge_v1` decision batch in a single transaction:
+  /// validate each decision, resolve the local target, mutate/supersede,
+  /// update the active state projection, and append the idempotent
+  /// decision-operation ledger row. A replayed decision ID is a no-op and
+  /// never re-creates claims or user notices.
+  Future<MemoryJudgeApplyResult> applyMemoryJudgeDecisions({
     required MemoryExtractionJob job,
-    required List<ExtractedMemoryCandidate> candidates,
+    required List<MemoryJudgeDecision> decisions,
+    required MemoryJudgeCost cost,
+    required int windowTurnCount,
   }) async {
-    final admitted = <ExtractedMemoryCandidate>[];
+    var appliedCount = 0;
+    var supersededCount = 0;
+    var rejectedCount = 0;
+    var duplicateCount = 0;
+    final appliedSourceTurnIds = <String>{};
     await transaction(() async {
       final evidence = await readExtractionWindow(job);
       final byTurn = <String, List<ChatMessage>>{};
@@ -1038,9 +1076,19 @@ class AppDatabase extends _$AppDatabase {
         byTurn.putIfAbsent(row.turnId, () => []).add(row);
       }
       final now = DateTime.now().millisecondsSinceEpoch;
-      for (var index = 0; index < candidates.take(16).length; index += 1) {
-        final candidate = candidates[index];
+      for (final decision in decisions.take(16)) {
+        final replayed = await customSelect(
+          'SELECT decision_id FROM memory_judge_operations WHERE decision_id = ?',
+          variables: [Variable.withString(decision.decisionId)],
+        ).getSingleOrNull();
+        if (replayed != null) {
+          duplicateCount += 1;
+          continue;
+        }
+        final candidate = decision.proposal;
         final fingerprint = _candidateFingerprint(candidate);
+        // Targets are always resolved locally from normalized content; a
+        // model-supplied database ID is never trusted or even representable.
         final targetId = 'memory_llm_$fingerprint';
         final prior =
             await (select(memoryCandidates)..where(
@@ -1050,11 +1098,7 @@ class AppDatabase extends _$AppDatabase {
                       row.predicate.equals(candidate.predicate) &
                       row.objectText.equals(candidate.objectText) &
                       row.jobId.isNotValue(job.id) &
-                      row.decisionState.isIn([
-                        'admitted',
-                        'confirmed',
-                        'pending_confirmation',
-                      ]),
+                      row.decisionState.isIn(['admitted', 'confirmed']),
                 ))
                 .get();
         final supersessionTargets =
@@ -1071,8 +1115,8 @@ class AppDatabase extends _$AppDatabase {
         final exactTarget = await (select(
           memoryRecords,
         )..where((row) => row.id.equals(targetId))).getSingleOrNull();
-        final decision = _validateMemoryCandidate(
-          candidate,
+        final verdict = _validateJudgeDecision(
+          decision,
           byTurn,
           prior.length,
           hasSupersessionTarget: supersessionTargets.isNotEmpty,
@@ -1080,7 +1124,7 @@ class AppDatabase extends _$AppDatabase {
         );
         await into(memoryCandidates).insertOnConflictUpdate(
           MemoryCandidatesCompanion.insert(
-            id: '${job.id}_$index',
+            id: decision.decisionId,
             jobId: job.id,
             candidateKind: candidate.kind,
             subject: candidate.subject,
@@ -1095,37 +1139,78 @@ class AppDatabase extends _$AppDatabase {
             sensitivity: candidate.sensitivity,
             sourceTurnIdsJson: jsonEncode(candidate.sourceTurnIds),
             evidenceRole: candidate.evidenceRole,
-            suggestedAction: candidate.suggestedAction,
+            suggestedAction: decision.action,
             followUpAllowed: Value(candidate.followUpAllowed),
             proactiveAllowed: Value(candidate.proactiveAllowed),
-            decisionState: decision.state,
-            decisionReason: decision.reason,
-            targetMemoryId: decision.admit
-                ? Value(targetId)
-                : const Value(null),
+            decisionState: verdict.state,
+            decisionReason: verdict.reason,
+            targetMemoryId: verdict.admit ? Value(targetId) : const Value(null),
             createdAt: now,
           ),
         );
-        _logMemoryDiagnostic('memory_candidate_decision', {
+        _logMemoryDiagnostic('memory_judge_decision', {
           'job_id': job.id,
+          'decision_id': decision.decisionId,
+          'action': decision.action,
           'candidate_kind': candidate.kind,
-          'decision_state': decision.state,
-          'decision_reason': decision.reason,
+          'decision_state': verdict.state,
+          'decision_reason': verdict.reason,
         });
-        if (decision.admit) {
-          admitted.add(candidate);
+        String? resultClaimId;
+        if (verdict.admit) {
+          appliedCount += 1;
+          if (decision.action == 'supersede') {
+            supersededCount += 1;
+          }
+          appliedSourceTurnIds.addAll(candidate.sourceTurnIds);
           if (candidate.kind == 'profile') {
-            await _applyLlmJudgedProfileClaim(candidate: candidate, now: now);
+            resultClaimId = await _applyLlmJudgedProfileClaim(
+              candidate: candidate,
+              now: now,
+            );
+            if (resultClaimId != null &&
+                await _profileClaimSuperseded(resultClaimId)) {
+              supersededCount += 1;
+            }
           } else {
+            resultClaimId = targetId;
             await _applyValidatedCandidate(
               candidate: candidate,
+              action: decision.action,
               job: job,
               memoryId: targetId,
-              pendingConfirmation: false,
               now: now,
             );
           }
+        } else {
+          rejectedCount += 1;
         }
+        await customStatement(
+          'INSERT OR IGNORE INTO memory_judge_operations ('
+          'decision_id, job_id, session_id, turn_id, action, outcome, reason, '
+          'result_claim_id, window_turn_count, attempt_count, cost_source, '
+          'input_tokens, output_tokens, estimated_micro_inr, created_at'
+          ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            decision.decisionId,
+            job.id,
+            job.sessionId,
+            job.endTurnId,
+            decision.action,
+            verdict.admit
+                ? (decision.action == 'supersede' ? 'superseded' : 'applied')
+                : 'rejected',
+            verdict.reason,
+            resultClaimId,
+            windowTurnCount,
+            job.attempts,
+            cost.source,
+            cost.inputTokens,
+            cost.outputTokens,
+            cost.estimatedMicroInr,
+            now,
+          ],
+        );
       }
       await (update(
         memoryExtractionJobs,
@@ -1138,10 +1223,24 @@ class AppDatabase extends _$AppDatabase {
         ),
       );
     });
-    return admitted;
+    return MemoryJudgeApplyResult(
+      appliedCount: appliedCount,
+      supersededCount: supersededCount,
+      rejectedCount: rejectedCount,
+      duplicateCount: duplicateCount,
+      appliedSourceTurnIds: appliedSourceTurnIds,
+    );
   }
 
-  Future<void> _applyLlmJudgedProfileClaim({
+  Future<bool> _profileClaimSuperseded(String claimId) async {
+    final row = await customSelect(
+      'SELECT supersedes_claim_id FROM memory_claims WHERE id = ?',
+      variables: [Variable.withString(claimId)],
+    ).getSingleOrNull();
+    return row?.data['supersedes_claim_id'] is String;
+  }
+
+  Future<String?> _applyLlmJudgedProfileClaim({
     required ExtractedMemoryCandidate candidate,
     required int now,
   }) async {
@@ -1155,7 +1254,7 @@ class AppDatabase extends _$AppDatabase {
       ],
     ).getSingleOrNull();
     final claimId = 'llm_claim_${_candidateFingerprint(candidate)}';
-    if (previous?.data['id'] == claimId) return;
+    if (previous?.data['id'] == claimId) return claimId;
     if (previous?.data['id'] is String) {
       await customStatement(
         'UPDATE memory_claims SET claim_state = ?, updated_at = ? WHERE id = ?',
@@ -1205,13 +1304,14 @@ class AppDatabase extends _$AppDatabase {
         now,
       ],
     );
+    return claimId;
   }
 
   Future<void> _applyValidatedCandidate({
     required ExtractedMemoryCandidate candidate,
+    required String action,
     required MemoryExtractionJob job,
     required String memoryId,
-    required bool pendingConfirmation,
     required int now,
   }) async {
     if (candidate.suggestedAction == 'EXPIRE') {
@@ -1275,18 +1375,16 @@ class AppDatabase extends _$AppDatabase {
         recurrenceCount: Value((existing?.recurrenceCount ?? 0) + 1),
         sensitivity: const Value('normal'),
         temporalStatus: Value(candidate.temporalStatus),
-        receiptState: Value(pendingConfirmation ? 'unconfirmed' : 'implicit'),
+        receiptState: const Value('implicit'),
         supersededBy: const Value(null),
         evidenceSummary: Value(
-          pendingConfirmation
-              ? 'Proposed from your statement; waiting for your confirmation.'
-              : candidate.kind == 'assistant_commitment'
+          candidate.kind == 'assistant_commitment'
               ? 'Remembered from the assistant’s explicit commitment.'
               : 'Remembered from your ${candidate.explicitness} statement.',
         ),
       ),
     );
-    if (candidate.suggestedAction == 'SUPERSEDE' && !pendingConfirmation) {
+    if (action == 'supersede') {
       await _supersedePriorLlmSemanticMemories(
         candidate: candidate,
         newMemoryId: memoryId,
@@ -3518,13 +3616,41 @@ class _CandidateDecision {
   bool get admit => state == 'admitted';
 }
 
-_CandidateDecision _validateMemoryCandidate(
-  ExtractedMemoryCandidate candidate,
+class MemoryJudgeApplyResult {
+  const MemoryJudgeApplyResult({
+    required this.appliedCount,
+    required this.supersededCount,
+    required this.rejectedCount,
+    required this.duplicateCount,
+    required this.appliedSourceTurnIds,
+  });
+
+  final int appliedCount;
+  final int supersededCount;
+  final int rejectedCount;
+  final int duplicateCount;
+  final Set<String> appliedSourceTurnIds;
+
+  /// Replays and empty decision batches never produce a user notice.
+  bool get noticeEligible => appliedCount + rejectedCount > 0;
+}
+
+const _judgeActionForSuggested = {
+  'ADD': 'accept',
+  'REINFORCE': 'update',
+  'SUPERSEDE': 'supersede',
+  'EXPIRE': 'update',
+  'NOOP': 'reject',
+};
+
+_CandidateDecision _validateJudgeDecision(
+  MemoryJudgeDecision decision,
   Map<String, List<ChatMessage>> evidence,
   int priorAdmissions, {
   required bool hasSupersessionTarget,
   required bool hasExactTarget,
 }) {
+  final candidate = decision.proposal;
   const allowedKinds = {
     'profile',
     'preference',
@@ -3539,6 +3665,17 @@ _CandidateDecision _validateMemoryCandidate(
   const allowedTemporalStatuses = {'current', 'past', 'future', 'uncertain'};
   const allowedExplicitness = {'explicit', 'implied', 'assistant_only'};
   const allowedEvidenceRoles = {'user', 'mixed', 'assistant'};
+  if (decision.action == 'reject') {
+    // A reject decision must cause no mutation regardless of proposal content.
+    return const _CandidateDecision('rejected', 'judge_rejected');
+  }
+  if (!memoryJudgeActions.contains(decision.action) ||
+      _judgeActionForSuggested[candidate.suggestedAction] != decision.action) {
+    return const _CandidateDecision(
+      'rejected',
+      'invalid_or_unverifiable_schema',
+    );
+  }
   if (!allowedKinds.contains(candidate.kind) ||
       candidate.subject.trim().isEmpty ||
       candidate.subject.length > 100 ||
@@ -3582,17 +3719,7 @@ _CandidateDecision _validateMemoryCandidate(
       'sensitive_memory_requires_explicit_opt_in',
     );
   }
-  const allowedActions = {'ADD', 'REINFORCE', 'SUPERSEDE', 'EXPIRE', 'NOOP'};
-  if (!allowedActions.contains(candidate.suggestedAction)) {
-    return const _CandidateDecision(
-      'rejected',
-      'invalid_or_unverifiable_schema',
-    );
-  }
-  if (candidate.suggestedAction == 'NOOP') {
-    return const _CandidateDecision('rejected', 'unsafe_or_noop_action');
-  }
-  if (candidate.suggestedAction == 'SUPERSEDE' &&
+  if (decision.action == 'supersede' &&
       (!{'routine', 'goal'}.contains(candidate.kind) ||
           candidate.explicitness != 'explicit' ||
           !hasSupersessionTarget)) {
@@ -3612,7 +3739,12 @@ _CandidateDecision _validateMemoryCandidate(
   if (lowConfidence) {
     return const _CandidateDecision('rejected', 'low_confidence_transcript');
   }
-  if (!_candidateEventTimeGrounded(candidate, sourceMessages)) {
+  // Event timestamps are meaningful only for event-shaped memories. Models
+  // sometimes attach spurious timestamps to plain facts; those are ignored
+  // rather than used to reject an otherwise grounded proposal.
+  const eventKinds = {'episode', 'open_thread', 'assistant_commitment'};
+  if (eventKinds.contains(candidate.kind) &&
+      !_candidateEventTimeGrounded(candidate, sourceMessages)) {
     return const _CandidateDecision('rejected', 'event_time_not_grounded');
   }
   if (candidate.kind == 'assistant_commitment') {
@@ -3854,7 +3986,9 @@ bool _sameCalendarDay(DateTime left, DateTime right) =>
 String _candidateContent(ExtractedMemoryCandidate candidate) {
   final object = candidate.objectText.trim();
   final punctuated = RegExp(r'[.!?।]$').hasMatch(object) ? object : '$object.';
-  final time = candidate.eventStartAt == null
+  const eventKinds = {'episode', 'open_thread', 'assistant_commitment'};
+  final time =
+      candidate.eventStartAt == null || !eventKinds.contains(candidate.kind)
       ? ''
       : ' Event time: ${DateTime.fromMillisecondsSinceEpoch(candidate.eventStartAt!).toIso8601String()}.';
   return _truncateMemoryText('$punctuated$time', 700);

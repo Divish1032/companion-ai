@@ -4,11 +4,19 @@ import 'dart:math';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite;
 
 const _databaseKeyName = 'companion_database_key_v1';
 const _sqliteHeader = 'SQLite format 3\u0000';
+
+/// Local developer inspection only. Requires an explicit
+/// `--dart-define=DEBUG_EXPORT_PLAINTEXT_DB=true` debug build and writes a
+/// decrypted copy inside the app-private directory. Never enabled in release.
+const _debugExportPlaintextDb = bool.fromEnvironment(
+  'DEBUG_EXPORT_PLAINTEXT_DB',
+);
 
 Future<QueryExecutor> openEncryptedCompanionDatabase(File file) async {
   const secureStorage = FlutterSecureStorage();
@@ -23,6 +31,9 @@ Future<QueryExecutor> openEncryptedCompanionDatabase(File file) async {
   if (await _isPlaintextSqlite(file)) {
     await _migratePlaintextDatabase(file, passphrase);
   }
+  if (kDebugMode && _debugExportPlaintextDb && await file.exists()) {
+    _exportPlaintextDebugCopy(file, passphrase);
+  }
   final key = passphrase;
   return NativeDatabase.createInBackground(
     file,
@@ -31,6 +42,41 @@ Future<QueryExecutor> openEncryptedCompanionDatabase(File file) async {
       database.execute('PRAGMA cipher_memory_security = ON');
     },
   );
+}
+
+void _exportPlaintextDebugCopy(File file, String passphrase) {
+  final target = File('${file.path}.debug_dump.sqlite');
+  try {
+    if (target.existsSync()) target.deleteSync();
+    final source = sqlite.sqlite3.open(file.path);
+    try {
+      source.execute("PRAGMA key = '${_sqlString(passphrase)}'");
+      source.execute(
+        "ATTACH DATABASE '${_sqlString(target.path)}' AS plain KEY ''",
+      );
+      final tables = source.select('''
+        SELECT name, sql FROM main.sqlite_master
+        WHERE type = 'table' AND sql IS NOT NULL
+          AND name NOT LIKE 'sqlite_%'
+          AND name NOT LIKE 'memory_records_fts%'
+        ORDER BY name
+      ''');
+      for (final table in tables) {
+        final name = table['name']! as String;
+        source.execute(
+          'CREATE TABLE plain.${_sqlIdentifier(name)} AS '
+          'SELECT * FROM main.${_sqlIdentifier(name)}',
+        );
+      }
+      source.execute('DETACH DATABASE plain');
+    } finally {
+      source.close();
+    }
+  } catch (error) {
+    // Best-effort developer tooling; never block or corrupt the real open.
+    // ignore: avoid_print
+    print('debug_plaintext_export_failed: ${error.runtimeType}');
+  }
 }
 
 /// Exposed only so the destructive migration path can be exercised against the

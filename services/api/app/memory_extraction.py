@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 import httpx
@@ -20,6 +21,15 @@ CandidateKind = Literal[
     "assistant_commitment",
 ]
 CandidateAction = Literal["ADD", "REINFORCE", "SUPERSEDE", "EXPIRE", "NOOP"]
+JudgeAction = Literal["accept", "update", "supersede", "reject"]
+
+_SUGGESTED_ACTION_TO_JUDGE_ACTION: dict[str, JudgeAction] = {
+    "ADD": "accept",
+    "REINFORCE": "update",
+    "SUPERSEDE": "supersede",
+    "EXPIRE": "update",
+    "NOOP": "reject",
+}
 
 
 class ExtractionTurn(BaseModel):
@@ -61,7 +71,9 @@ class MemoryExtractionRequest(BaseModel):
     extraction_version: str = Field(min_length=1, max_length=32)
     judge_contract_version: Literal["memory_judge_v1"] = "memory_judge_v1"
     language: str = Field(default="hi-IN", max_length=32)
-    turns: list[ExtractionTurn] = Field(min_length=1, max_length=24)
+    # The bounded cited window: at most 4 exchanges / 8 messages. The judge
+    # never receives unbounded history.
+    turns: list[ExtractionTurn] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def validate_unique_turn_role_pairs(self) -> MemoryExtractionRequest:
@@ -73,15 +85,98 @@ class MemoryExtractionRequest(BaseModel):
         return self
 
 
-class MemoryExtractionResponse(BaseModel):
+class MemoryJudgeProposal(BaseModel):
+    """Untrusted structured proposal; only fields the phone validates locally."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: CandidateKind
+    subject: str = Field(min_length=1, max_length=100)
+    predicate: str = Field(min_length=1, max_length=100)
+    object_text: str = Field(min_length=1, max_length=500)
+    event_start_at_ms: int | None = Field(ge=0)
+    event_end_at_ms: int | None = Field(ge=0)
+    temporal_status: Literal["current", "past", "future", "uncertain"]
+    explicitness: Literal["explicit", "implied", "assistant_only"]
+    confidence: float = Field(ge=0, le=1)
+    future_utility: float = Field(ge=0, le=1)
+    sensitivity: Literal["normal", "sensitive", "highly_sensitive"]
+    source_turn_ids: list[str] = Field(min_length=1, max_length=8)
+    evidence_role: Literal["user", "mixed", "assistant"]
+    suggested_action: CandidateAction
+    follow_up_allowed: bool
+    proactive_allowed: bool
+
+
+class MemoryJudgeDecision(BaseModel):
+    """Untrusted decision; the phone resolves targets and commits locally.
+
+    ``update``/``supersede`` carry no target ID on purpose: the phone resolves
+    the local target by normalized state key/predicate and provenance and never
+    trusts a model-supplied database ID.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: str = Field(min_length=16, max_length=160)
+    action: JudgeAction
+    proposal: MemoryJudgeProposal
+
+
+class MemoryJudgeCost(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["provider_reported", "estimated", "unknown"]
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    estimated_micro_inr: int = Field(ge=0)
+
+
+class MemoryJudgeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     job_id: str
-    extraction_version: str
-    judge_contract_version: Literal["memory_judge_v1"]
-    outcome: Literal["accepted", "rejected"]
-    cost_source: Literal["provider_reported", "estimated", "unknown"]
-    candidates: list[MemoryCandidate] = Field(max_length=16)
+    contract_version: Literal["memory_judge_v1"]
+    cost: MemoryJudgeCost
+    decisions: list[MemoryJudgeDecision] = Field(max_length=16)
+
+
+def build_judge_decision(job_id: str, candidate: MemoryCandidate) -> MemoryJudgeDecision:
+    """Deterministic, idempotency-safe decision ID from job plus content."""
+
+    canonical = json.dumps(candidate.model_dump(), sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(f"{job_id}|{canonical}".encode()).hexdigest()[:40]
+    return MemoryJudgeDecision(
+        decision_id=f"mjd_{digest}",
+        action=_SUGGESTED_ACTION_TO_JUDGE_ACTION[candidate.suggested_action],
+        proposal=MemoryJudgeProposal(
+            kind=candidate.candidate_kind,
+            subject=candidate.subject,
+            predicate=candidate.predicate,
+            object_text=candidate.object_text,
+            event_start_at_ms=candidate.event_start_at_ms,
+            event_end_at_ms=candidate.event_end_at_ms,
+            temporal_status=candidate.temporal_status,
+            explicitness=candidate.explicitness,
+            confidence=candidate.confidence,
+            future_utility=candidate.future_utility,
+            sensitivity=candidate.sensitivity,
+            source_turn_ids=candidate.source_turn_ids,
+            evidence_role=candidate.evidence_role,
+            suggested_action=candidate.suggested_action,
+            follow_up_allowed=candidate.follow_up_allowed,
+            proactive_allowed=candidate.proactive_allowed,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class MemoryExtractionResult:
+    """Candidates plus provider-reported usage when the provider exposes it."""
+
+    candidates: list[MemoryCandidate] = field(default_factory=list)
+    usage_input_tokens: int | None = None
+    usage_output_tokens: int | None = None
 
 
 class MemoryExtractionUnavailable(RuntimeError):
@@ -89,7 +184,7 @@ class MemoryExtractionUnavailable(RuntimeError):
 
 
 class MemoryCandidateExtractor(Protocol):
-    async def extract(self, request: MemoryExtractionRequest) -> list[MemoryCandidate]: ...
+    async def extract(self, request: MemoryExtractionRequest) -> MemoryExtractionResult: ...
 
 
 _SENSITIVE_EVIDENCE_MARKERS = (
@@ -141,15 +236,20 @@ def filter_source_safe_candidates(
 ) -> list[MemoryCandidate]:
     """Apply stateless defense-in-depth before candidates reach the phone."""
 
-    turns_by_id = {turn.turn_id: turn for turn in request.turns}
+    # A voice turn's user message and assistant reply share one turn ID, so a
+    # cited turn maps to a list of messages, never a single collapsed entry.
+    turns_by_id: dict[str, list[ExtractionTurn]] = {}
+    for turn in request.turns:
+        turns_by_id.setdefault(turn.turn_id, []).append(turn)
     safe: list[MemoryCandidate] = []
     for candidate in candidates:
         if candidate.sensitivity != "normal":
             continue
-        cited = [turns_by_id.get(turn_id) for turn_id in candidate.source_turn_ids]
-        if any(turn is None for turn in cited):
+        cited_lists = [turns_by_id.get(turn_id) for turn_id in candidate.source_turn_ids]
+        if any(turns is None for turns in cited_lists):
             continue
-        roles = {turn.role for turn in cited if turn is not None}
+        cited = [turn for turns in cited_lists if turns is not None for turn in turns]
+        roles = {turn.role for turn in cited}
         if candidate.candidate_kind == "assistant_commitment":
             if "assistant" not in roles or candidate.evidence_role not in {
                 "assistant",
@@ -163,7 +263,12 @@ def filter_source_safe_candidates(
                 or candidate.explicitness == "assistant_only"
             ):
                 continue
-            if candidate.evidence_role == "user" and roles != {"user"}:
+            if candidate.evidence_role == "user" and any(
+                turns is not None and all(turn.role != "user" for turn in turns)
+                for turns in cited_lists
+            ):
+                # An assistant-only turn cited as user evidence is a
+                # provenance violation even when other cited turns are fine.
                 continue
             if candidate.evidence_role == "mixed" and roles != {"user", "assistant"}:
                 continue
@@ -172,7 +277,7 @@ def filter_source_safe_candidates(
                 candidate.subject,
                 candidate.predicate,
                 candidate.object_text,
-                *(turn.text for turn in cited if turn is not None),
+                *(turn.text for turn in cited),
             ]
         ).casefold()
         if any(marker in evidence for marker in _SENSITIVE_EVIDENCE_MARKERS):
@@ -191,7 +296,7 @@ class OpenAICompatibleMemoryCandidateExtractor:
     timeout_seconds: float
     transport: httpx.AsyncBaseTransport | None = None
 
-    async def extract(self, request: MemoryExtractionRequest) -> list[MemoryCandidate]:
+    async def extract(self, request: MemoryExtractionRequest) -> MemoryExtractionResult:
         if not self.base_url or not self.api_key or not self.model:
             raise MemoryExtractionUnavailable("memory extraction is not configured")
         schema = _candidate_envelope_schema()
@@ -236,7 +341,8 @@ class OpenAICompatibleMemoryCandidateExtractor:
                     json=payload,
                 )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+            body = response.json()
+            content = body["choices"][0]["message"]["content"]
             decoded = json.loads(content)
             envelope = _CandidateEnvelope.model_validate(decoded)
         except (
@@ -250,7 +356,16 @@ class OpenAICompatibleMemoryCandidateExtractor:
             raise MemoryExtractionUnavailable(
                 "extractor returned no valid candidate envelope"
             ) from error
-        return envelope.candidates
+        usage = body.get("usage") if isinstance(body, dict) else None
+        input_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        return MemoryExtractionResult(
+            candidates=envelope.candidates,
+            usage_input_tokens=input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else None,
+            usage_output_tokens=output_tokens
+            if isinstance(output_tokens, int) and output_tokens >= 0
+            else None,
+        )
 
 
 class _CandidateEnvelope(BaseModel):
@@ -267,10 +382,14 @@ def _candidate_envelope_schema() -> dict[str, object]:
 
 
 _EXTRACTION_SYSTEM_PROMPT = """You extract candidate long-term memories from a short dialogue window.
-Return only the required JSON schema. Be conservative: an empty candidates list is correct when nothing
-will help a future conversation. User turns are the only evidence for user facts. Assistant turns may
-clarify dialogue context and supply assistant_commitment candidates, but never prove a user fact.
-Do not infer diagnoses, protected traits, relationship closeness, or unstated preferences. Mark sensitive
+Return only the required JSON schema. Be conservative: when evidence is insufficient, ambiguous,
+hypothetical, quoted, or low-confidence you must reject by omitting the candidate entirely; an empty
+candidates list is correct when nothing will help a future conversation. User turns are the only
+evidence for user facts. Assistant turns may clarify dialogue context and supply assistant_commitment
+candidates, but never prove a user fact; never propose a user fact whose only evidence is assistant text.
+Do not infer diagnoses, protected traits, relationship closeness, or unstated preferences. Never propose
+sensitive or high-risk facts, including medical, legal, financial, sexual, crisis, precise-contact, or
+protected-trait information; reject them instead of guessing. Mark sensitive
 material accurately. Preserve the user's language and exact names/key nouns in object_text so evidence can
 be checked locally. Use assistant_only explicitness/evidence for assistant-only commitments. Use NOOP
 when the text is merely conversational, hypothetical, quoted, uncertain, or low-confidence. A future
@@ -282,7 +401,15 @@ a design interview and the system-design round felt difficult, create one ground
 preserves those key nouns and assessment. Do not invent an exact date when a relative date cannot be
 safely resolved.
 For every non-assistant memory with evidence_role=user, source_turn_ids must contain user turns only;
-never cite an assistant question or paraphrase as user evidence. object_text must be a standalone,
+never cite an assistant question or paraphrase as user evidence. Always cite exactly the turn(s) in which
+the user actually made the statement, never a recall question such as "mera naam kya hai" and never a
+turn that merely repeats the topic.
+When the user explicitly states or corrects their own name — for example "mera naam Amit hai" or
+"nahi, mera naam Amit hai" — return candidate_kind=profile with subject "user", predicate
+"preferred_name", and object_text containing only the stated name itself (no sentence around it),
+suggested_action ADD, explicitness explicit, citing only the turn(s) where the user stated the name.
+A garbled, uncertain, or joke name ("shayad", laughter, non-name words) must be rejected instead.
+object_text must be a standalone,
 complete recall-worthy statement containing all important explicit details and the user's assessment,
 not merely a topic label. Use a stable semantic predicate such as had_difficult_interview_round, never
 conversational question wording such as kaisa_gaya. Ordinary career and education events—including an

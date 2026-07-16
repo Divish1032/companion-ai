@@ -13,8 +13,8 @@ import 'memory_embedding_service.dart';
 const memoryExtractionVersion = 'v1';
 const memoryJudgeContractVersion = 'memory_judge_v1';
 
-final memoryCandidateClientProvider = Provider<MemoryCandidateClient>((ref) {
-  return HttpMemoryCandidateClient(
+final memoryJudgeClientProvider = Provider<MemoryJudgeClient>((ref) {
+  return HttpMemoryJudgeClient(
     baseUrl: ref.watch(appConfigProvider).apiBaseUrl,
   );
 });
@@ -24,7 +24,7 @@ final longTermMemoryCoordinatorProvider = Provider<LongTermMemoryCoordinator>((
 ) {
   final coordinator = LongTermMemoryCoordinator(
     database: ref.watch(appDatabaseProvider),
-    client: ref.watch(memoryCandidateClientProvider),
+    client: ref.watch(memoryJudgeClientProvider),
     enabled: ref.watch(appConfigProvider).enableMemoryExtraction,
     syncTurnMemories: ref.watch(memoryEmbeddingSyncProvider).syncTurnMemories,
   );
@@ -32,16 +32,16 @@ final longTermMemoryCoordinatorProvider = Provider<LongTermMemoryCoordinator>((
   return coordinator;
 });
 
-abstract interface class MemoryCandidateClient {
-  Future<List<ExtractedMemoryCandidate>> extract({
+abstract interface class MemoryJudgeClient {
+  Future<MemoryJudgeEnvelope> judge({
     required String jobId,
     required String language,
     required List<ChatMessage> turns,
   });
 }
 
-class HttpMemoryCandidateClient implements MemoryCandidateClient {
-  const HttpMemoryCandidateClient({
+class HttpMemoryJudgeClient implements MemoryJudgeClient {
+  const HttpMemoryJudgeClient({
     required this.baseUrl,
     http.Client? client,
     this.timeout = const Duration(seconds: 25),
@@ -52,7 +52,7 @@ class HttpMemoryCandidateClient implements MemoryCandidateClient {
   final Duration timeout;
 
   @override
-  Future<List<ExtractedMemoryCandidate>> extract({
+  Future<MemoryJudgeEnvelope> judge({
     required String jobId,
     required String language,
     required List<ChatMessage> turns,
@@ -70,7 +70,7 @@ class HttpMemoryCandidateClient implements MemoryCandidateClient {
               'judge_contract_version': memoryJudgeContractVersion,
               'language': language,
               'turns': [
-                for (final turn in turns)
+                for (final turn in turns.take(8))
                   {
                     'turn_id': turn.turnId,
                     'role': turn.role == 'ai' ? 'assistant' : turn.role,
@@ -84,34 +84,41 @@ class HttpMemoryCandidateClient implements MemoryCandidateClient {
           )
           .timeout(timeout);
       if (response.statusCode != 200) {
-        throw MemoryCandidateException(response.statusCode);
+        throw MemoryJudgeException(response.statusCode);
       }
-      final decoded = jsonDecode(response.body) as Map<String, Object?>;
-      if (decoded['job_id'] != jobId ||
-          decoded['extraction_version'] != memoryExtractionVersion ||
-          (decoded['judge_contract_version'] != null &&
-              decoded['judge_contract_version'] !=
-                  memoryJudgeContractVersion) ||
-          !{'accepted', 'rejected'}.contains(decoded['outcome']) ||
-          !{
-            'provider_reported',
-            'estimated',
-            'unknown',
-          }.contains(decoded['cost_source']) ||
-          decoded['candidates'] is! List) {
-        throw const FormatException('Invalid memory candidate envelope.');
-      }
-      final rawCandidates = decoded['candidates']! as List<Object?>;
-      if (rawCandidates.any((item) => item is! Map<String, Object?>)) {
-        throw const FormatException('Invalid memory candidate item.');
-      }
-      return rawCandidates
-          .cast<Map<String, Object?>>()
-          .map(ExtractedMemoryCandidate.fromJson)
-          .toList(growable: false);
+      return _parseEnvelope(jobId, response.body);
     } finally {
       if (closeClient) client.close();
     }
+  }
+
+  MemoryJudgeEnvelope _parseEnvelope(String jobId, String body) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } on FormatException {
+      throw const FormatException('Memory judge response is not JSON.');
+    }
+    if (decoded is! Map<String, Object?> ||
+        decoded['job_id'] != jobId ||
+        decoded['contract_version'] != memoryJudgeContractVersion ||
+        decoded['cost'] is! Map<String, Object?> ||
+        decoded['decisions'] is! List) {
+      throw const FormatException('Invalid memory judge envelope.');
+    }
+    final rawDecisions = decoded['decisions']! as List<Object?>;
+    if (rawDecisions.length > 16 ||
+        rawDecisions.any((item) => item is! Map<String, Object?>)) {
+      throw const FormatException('Invalid memory judge decision list.');
+    }
+    return MemoryJudgeEnvelope(
+      jobId: jobId,
+      cost: MemoryJudgeCost.fromJson(decoded['cost']! as Map<String, Object?>),
+      decisions: rawDecisions
+          .cast<Map<String, Object?>>()
+          .map(MemoryJudgeDecision.fromJson)
+          .toList(growable: false),
+    );
   }
 }
 
@@ -126,7 +133,7 @@ class LongTermMemoryCoordinator {
   }) : assert(maxJobsPerDrain > 0);
 
   final AppDatabase database;
-  final MemoryCandidateClient client;
+  final MemoryJudgeClient client;
   final bool enabled;
   final Future<void> Function(String turnId)? syncTurnMemories;
   final _outcomes = StreamController<MemoryJudgeOutcome>.broadcast();
@@ -174,34 +181,45 @@ class LongTermMemoryCoordinator {
           );
           continue;
         }
-        final candidates = await client.extract(
+        final envelope = await client.judge(
           jobId: job.id,
           language: turns.last.language,
           turns: turns,
         );
-        final admitted = await database.validateAndApplyMemoryCandidates(
+        // The DB layer validates, resolves local targets, applies mutations,
+        // and records the decision-operation ledger in one transaction. The
+        // notice below is emitted only after that commit returns.
+        final applied = await database.applyMemoryJudgeDecisions(
           job: job,
-          candidates: candidates,
+          decisions: envelope.decisions,
+          cost: envelope.cost,
+          windowTurnCount: turns.length,
         );
-        _outcomes.add(
-          MemoryJudgeOutcome(
-            sessionId: job.sessionId,
-            turnId: job.endTurnId,
-            outcome: admitted.isNotEmpty
-                ? MemoryJudgeOutcomeKind.accepted
-                : MemoryJudgeOutcomeKind.rejected,
-            acceptedCount: admitted.length,
-            windowTurnCount: turns.length,
-            attemptCount: job.attempts,
-            requestStartedAtMs: requestStartedAtMs,
-            completedAtMs: DateTime.now().millisecondsSinceEpoch,
-          ),
-        );
+        if (applied.noticeEligible) {
+          _outcomes.add(
+            MemoryJudgeOutcome(
+              jobId: job.id,
+              sessionId: job.sessionId,
+              turnId: job.endTurnId,
+              outcome: applied.supersededCount > 0
+                  ? MemoryJudgeOutcomeKind.superseded
+                  : applied.appliedCount > 0
+                  ? MemoryJudgeOutcomeKind.accepted
+                  : MemoryJudgeOutcomeKind.rejected,
+              acceptedCount: applied.appliedCount,
+              windowTurnCount: turns.length,
+              attemptCount: job.attempts,
+              requestStartedAtMs: requestStartedAtMs,
+              completedAtMs: DateTime.now().millisecondsSinceEpoch,
+              costSource: envelope.cost.source,
+              inputTokens: envelope.cost.inputTokens,
+              outputTokens: envelope.cost.outputTokens,
+              estimatedMicroInr: envelope.cost.estimatedMicroInr,
+            ),
+          );
+        }
         if (syncTurnMemories != null) {
-          final sourceTurnIds = {
-            for (final candidate in candidates) ...candidate.sourceTurnIds,
-          };
-          for (final turnId in sourceTurnIds) {
+          for (final turnId in applied.appliedSourceTurnIds) {
             try {
               await syncTurnMemories!(turnId);
             } catch (error) {
@@ -216,27 +234,36 @@ class LongTermMemoryCoordinator {
       } catch (error) {
         await database.failMemoryExtractionJob(
           job,
-          errorCode: error is MemoryCandidateException
-              ? 'http_${error.statusCode}'
-              : error.runtimeType.toString(),
-          retryable: error is! MemoryCandidateException || error.retryable,
+          errorCode: switch (error) {
+            MemoryJudgeException(:final statusCode) => 'http_$statusCode',
+            FormatException() => 'invalid_judge_response',
+            _ => error.runtimeType.toString(),
+          },
+          retryable: error is! MemoryJudgeException || error.retryable,
         );
         developer.log(
-          'memory_extraction_retry {job_id: ${job.id}, error_type: ${error.runtimeType}}',
+          'memory_judge_retry {job_id: ${job.id}, error_type: ${error.runtimeType}}',
           name: 'companion.memory',
         );
         _outcomes.add(
           MemoryJudgeOutcome(
+            jobId: job.id,
             sessionId: job.sessionId,
             turnId: job.endTurnId,
-            outcome: error is TimeoutException
-                ? MemoryJudgeOutcomeKind.timeout
-                : MemoryJudgeOutcomeKind.unavailable,
+            outcome: switch (error) {
+              TimeoutException() => MemoryJudgeOutcomeKind.timeout,
+              FormatException() => MemoryJudgeOutcomeKind.invalid,
+              _ => MemoryJudgeOutcomeKind.unavailable,
+            },
             acceptedCount: 0,
             windowTurnCount: 0,
             attemptCount: job.attempts,
             requestStartedAtMs: requestStartedAtMs,
             completedAtMs: DateTime.now().millisecondsSinceEpoch,
+            costSource: 'unknown',
+            inputTokens: 0,
+            outputTokens: 0,
+            estimatedMicroInr: 0,
           ),
         );
       }
@@ -258,6 +285,7 @@ class LongTermMemoryCoordinator {
 
 enum MemoryJudgeOutcomeKind {
   accepted,
+  superseded,
   rejected,
   unavailable,
   timeout,
@@ -266,6 +294,7 @@ enum MemoryJudgeOutcomeKind {
 
 class MemoryJudgeOutcome {
   const MemoryJudgeOutcome({
+    required this.jobId,
     required this.sessionId,
     required this.turnId,
     required this.outcome,
@@ -274,7 +303,12 @@ class MemoryJudgeOutcome {
     required this.attemptCount,
     required this.requestStartedAtMs,
     required this.completedAtMs,
+    required this.costSource,
+    required this.inputTokens,
+    required this.outputTokens,
+    required this.estimatedMicroInr,
   });
+  final String jobId;
   final String sessionId;
   final String turnId;
   final MemoryJudgeOutcomeKind outcome;
@@ -283,10 +317,14 @@ class MemoryJudgeOutcome {
   final int attemptCount;
   final int requestStartedAtMs;
   final int completedAtMs;
+  final String costSource;
+  final int inputTokens;
+  final int outputTokens;
+  final int estimatedMicroInr;
 }
 
-class MemoryCandidateException implements Exception {
-  const MemoryCandidateException(this.statusCode);
+class MemoryJudgeException implements Exception {
+  const MemoryJudgeException(this.statusCode);
   final int statusCode;
 
   bool get retryable =>

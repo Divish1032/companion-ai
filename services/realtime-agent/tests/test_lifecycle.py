@@ -1069,6 +1069,152 @@ def test_wait_until_started_does_not_cancel_agent_task() -> None:
     assert asyncio.run(scenario()) is True
 
 
+def _memory_judge_notice_event(
+    *,
+    turn_id: str = "session_test:turn:0001",
+    notice_id: str = "memory_job_abc:accepted",
+    outcome: object = "accepted",
+    cost_source: object = "unknown",
+    estimated_micro_inr: object = 0,
+) -> str:
+    return json.dumps(
+        {
+            "type": "memory_judge_notice",
+            "turn_id": turn_id,
+            "notice": "I saved that memory.",
+            "notice_id": notice_id,
+            "outcome": outcome,
+            "accepted_count": 1,
+            "window_turn_count": 2,
+            "attempt_count": 1,
+            "request_started_at_ms": 100,
+            "completed_at_ms": 250,
+            "cost_source": cost_source,
+            "input_tokens": 812,
+            "output_tokens": 96,
+            "estimated_micro_inr": estimated_micro_inr,
+        }
+    )
+
+
+def test_memory_judge_notice_relays_and_appends_immutable_operation_record() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+    )
+
+    async def scenario() -> None:
+        # Freeze the voice turn's terminal record before the delayed judge
+        # event arrives.
+        session.telemetry.turn("session_test:turn:0001").counts["stt_audio_ms"] = 900
+        session.telemetry.terminal("session_test:turn:0001", "completed")
+        assert await session._handle_client_data_event(_memory_judge_notice_event())
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    notices = [event for event in events if event["type"] == "memory_judge_notice"]
+    assert len(notices) == 1
+    assert notices[0]["notice"] == "I saved that memory."
+    assert notices[0]["outcome"] == "accepted"
+    metrics = [event for event in events if event["type"] == "turn_metrics"]
+    assert len(metrics) == 1
+    payload = metrics[0]
+    assert payload["statuses"]["record_kind"] == "memory_judge_operation"
+    assert payload["statuses"]["memory_judge_outcome"] == "accepted"
+    assert payload["terminal_outcome"] == "memory_judge_accepted"
+    assert payload["counts"]["memory_judge_input_tokens"] == 812
+    assert payload["cost_sources"]["memory_judge"] == "unknown"
+    assert payload["cost_complete"] is False
+    assert payload["record_id"].endswith("memory_judge:memory_job_abc:accepted")
+    # The notice text never enters telemetry.
+    assert "notice" not in json.dumps(payload["statuses"])
+    assert "I saved that memory." not in json.dumps(payload)
+    # The immutable voice terminal record was not overwritten.
+    assert session.telemetry.turn("session_test:turn:0001").terminal_outcome == "completed"
+    # No competing TTS stream/audio was started by the notice.
+    assert transport.audio_publications == 0
+
+
+def test_memory_judge_notice_duplicate_delivery_is_suppressed() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+    )
+
+    async def scenario() -> None:
+        assert await session._handle_client_data_event(_memory_judge_notice_event())
+        # Reconnect/replay duplicate of the same notice ID.
+        assert await session._handle_client_data_event(_memory_judge_notice_event())
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    notices = [event for event in events if event["type"] == "memory_judge_notice"]
+    metrics = [event for event in events if event["type"] == "turn_metrics"]
+    assert len(notices) == 1
+    assert len(metrics) == 1
+
+
+def test_memory_judge_notice_covers_failure_outcomes_without_touching_audio() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+    )
+
+    async def scenario() -> None:
+        for index, outcome in enumerate(
+            ["rejected", "unavailable", "timeout", "invalid", "drop table"]
+        ):
+            assert await session._handle_client_data_event(
+                _memory_judge_notice_event(
+                    notice_id=f"memory_job_abc:{index}",
+                    outcome=outcome,
+                )
+            )
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    metrics = [event for event in events if event["type"] == "turn_metrics"]
+    outcomes = [event["statuses"]["memory_judge_outcome"] for event in metrics]
+    # An unknown outcome label is downgraded to invalid, never trusted.
+    assert outcomes == ["rejected", "unavailable", "timeout", "invalid", "invalid"]
+    assert all(event["cost_complete"] is False for event in metrics)
+    assert transport.audio_publications == 0
+
+
+def test_memory_judge_notice_reports_provider_cost_when_labelled() -> None:
+    transport = MemoryAgentTransport()
+    session = RealtimeAgentSession(
+        assignment=_assignment(recent_context=[]),
+        settings=_settings(),
+        transport=transport,
+    )
+
+    async def scenario() -> None:
+        assert await session._handle_client_data_event(
+            _memory_judge_notice_event(
+                cost_source="provider_reported",
+                estimated_micro_inr=4_500,
+            )
+        )
+
+    asyncio.run(scenario())
+
+    events = [_decode(event) for event in transport.events]
+    operation = next(event for event in events if event["type"] == "turn_metrics")
+    assert operation["costs_micro_inr"]["memory_judge"] == 4_500
+    assert operation["cost_sources"]["memory_judge"] == "provider_reported"
+    assert operation["cost_complete"] is True
+
+
 def _assignment(
     *,
     recent_context: dict[str, object] | list[dict[str, object]],

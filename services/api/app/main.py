@@ -20,9 +20,12 @@ from app.embedding_service import (
 from app.memory_extraction import (
     MemoryCandidateExtractor,
     MemoryExtractionRequest,
-    MemoryExtractionResponse,
+    MemoryExtractionResult,
     MemoryExtractionUnavailable,
+    MemoryJudgeCost,
+    MemoryJudgeResponse,
     OpenAICompatibleMemoryCandidateExtractor,
+    build_judge_decision,
     filter_source_safe_candidates,
 )
 from app.session_store import RateLimitExceeded, SessionStore
@@ -354,28 +357,59 @@ async def memory_plan(
     )
 
 
-@app.post("/v1/memory-judge", response_model=MemoryExtractionResponse)
-@app.post("/v1/memory-candidates", response_model=MemoryExtractionResponse, deprecated=True)
+def _judge_cost(result: MemoryExtractionResult) -> MemoryJudgeCost:
+    """Never silently report zero for an unpriced external judge dependency."""
+
+    input_tokens = result.usage_input_tokens
+    output_tokens = result.usage_output_tokens
+    input_rate = settings.memory_judge_input_micro_inr_per_million_tokens
+    output_rate = settings.memory_judge_output_micro_inr_per_million_tokens
+    if input_tokens is None or output_tokens is None:
+        return MemoryJudgeCost(
+            source="unknown",
+            input_tokens=input_tokens or 0,
+            output_tokens=output_tokens or 0,
+            estimated_micro_inr=0,
+        )
+    if input_rate <= 0 or output_rate <= 0:
+        # Usage is provider-reported but the rate is not reviewed; the INR
+        # figure stays unknown/incomplete rather than a fabricated zero.
+        return MemoryJudgeCost(
+            source="unknown",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_micro_inr=0,
+        )
+    estimated = (input_tokens * input_rate + output_tokens * output_rate) // 1_000_000
+    return MemoryJudgeCost(
+        source="provider_reported",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_micro_inr=estimated,
+    )
+
+
+@app.post("/v1/memory-judge", response_model=MemoryJudgeResponse)
 async def memory_judge(
     request: MemoryExtractionRequest,
     extractor: Annotated[MemoryCandidateExtractor, Depends(get_memory_candidate_extractor)],
-) -> MemoryExtractionResponse:
+) -> MemoryJudgeResponse:
     if not settings.enable_memory_extraction:
         raise HTTPException(status_code=503, detail={"code": "memory_extraction_disabled"})
     try:
-        candidates = await extractor.extract(request)
+        result = await extractor.extract(request)
     except MemoryExtractionUnavailable as error:
         raise HTTPException(
             status_code=503, detail={"code": "memory_extraction_unavailable"}
         ) from error
-    safe_candidates = filter_source_safe_candidates(request, candidates)
-    return MemoryExtractionResponse(
+    safe_candidates = filter_source_safe_candidates(request, result.candidates)
+    return MemoryJudgeResponse(
         job_id=request.job_id,
-        extraction_version=request.extraction_version,
-        judge_contract_version=request.judge_contract_version,
-        outcome="accepted" if safe_candidates else "rejected",
-        cost_source="unknown",
-        candidates=safe_candidates,
+        contract_version="memory_judge_v1",
+        cost=_judge_cost(result),
+        decisions=[
+            build_judge_decision(request.job_id, candidate) for candidate in safe_candidates
+        ],
     )
 
 

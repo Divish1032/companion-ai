@@ -51,6 +51,61 @@ void main() {
     );
 
     test(
+      'chained corrections Rahul -> Vinay -> Amit leave only Amit current',
+      () async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(database.close);
+
+        await _resolve(
+          database,
+          turnId: 't1',
+          text: 'मेरा नाम राहुल है',
+          transcriptStatus: 'final',
+          sttConfidence: 0.94,
+        );
+        await _resolve(
+          database,
+          turnId: 't2',
+          text: 'असल में मेरा नाम विनय है',
+          transcriptStatus: 'final',
+          sttConfidence: 0.93,
+        );
+        await _resolve(
+          database,
+          turnId: 't3',
+          text: 'नहीं मेरा नाम अमित है',
+          transcriptStatus: 'final',
+          sttConfidence: 0.95,
+        );
+        final answer = await _resolve(
+          database,
+          turnId: 't4',
+          text: 'मेरा नाम क्या है?',
+          transcriptStatus: 'final',
+          sttConfidence: 0.95,
+        );
+        final claims = await database
+            .customSelect(
+              'SELECT claim_state, value_json FROM memory_claims '
+              "WHERE state_key = 'user.profile.preferred_name'",
+            )
+            .get();
+        final current = claims
+            .where((claim) => claim.data['claim_state'] == 'current')
+            .toList();
+
+        expect(answer.directive, 'fact_answer');
+        expect((answer.stateFacts.single['value'] as Map)['text'], 'अमित');
+        expect(current, hasLength(1));
+        expect(current.single.data['value_json'], contains('अमित'));
+        expect(
+          claims.where((claim) => claim.data['claim_state'] == 'superseded'),
+          hasLength(2),
+        );
+      },
+    );
+
+    test(
       'unknown confidence silently commits an exact low-risk assertion',
       () async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());

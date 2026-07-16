@@ -164,6 +164,49 @@ class TurnMetricsCollector:
             metric.statuses["cost_overage"] = "not_applicable"
         return metric.envelope()
 
+    def memory_judge_operation(
+        self,
+        turn_id: str,
+        *,
+        outcome: str,
+        accepted_count: int,
+        window_turn_count: int,
+        attempt_count: int,
+        request_started_at_ms: int,
+        completed_at_ms: int,
+        cost_source: CostSource,
+        cost_micro_inr: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> dict[str, object]:
+        """Immutable memory-judge operation record.
+
+        This is a separate append-only observation: it never touches the
+        voice turn's ``TurnMetrics`` and therefore can never overwrite the
+        immutable terminal voice record. It contains only timestamps,
+        bounded-window/attempt counters, the outcome, and cost metadata.
+        """
+
+        record = TurnMetrics(
+            session_id=self.session_id,
+            turn_id=turn_id,
+            rate_card_version=self.card.version,
+            rate_card_fingerprint=self.card.fingerprint,
+        )
+        record.statuses["record_kind"] = "memory_judge_operation"
+        record.statuses["memory_judge_outcome"] = outcome
+        record.counts["memory_judge_accepted_count"] = max(accepted_count, 0)
+        record.counts["memory_judge_window_turn_count"] = max(window_turn_count, 0)
+        record.counts["memory_judge_attempt_count"] = max(attempt_count, 0)
+        record.counts["memory_judge_input_tokens"] = max(input_tokens, 0)
+        record.counts["memory_judge_output_tokens"] = max(output_tokens, 0)
+        record.timestamps_ms["memory_judge_request_started"] = max(request_started_at_ms, 0)
+        record.timestamps_ms["memory_judge_completed"] = max(completed_at_ms, 0)
+        # An unpriced external judge stays unknown/incomplete, never zero.
+        record.add_cost("memory_judge", cost_micro_inr, cost_source)
+        record.finish(f"memory_judge_{outcome}")
+        return record.envelope()
+
 
 def monotonic_ms() -> int:
     return time.monotonic_ns() // 1_000_000
