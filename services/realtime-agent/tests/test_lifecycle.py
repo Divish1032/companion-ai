@@ -31,7 +31,6 @@ from app.providers.interfaces import (
     TranscriptEvent,
 )
 from app.providers.mock import MockSTTProvider
-from app.providers.llm import PersonaLLMProvider
 
 
 def test_query_echo_guard_only_matches_question_restatement() -> None:
@@ -242,6 +241,7 @@ def test_final_transcript_streams_assistant_response() -> None:
         settings=_settings(vad_provider="energy"),
         transport=transport,
         stt_provider=StaticSTTProvider("namaste mera mood theek nahi hai"),
+        llm_provider=RecordingLLMProvider(),
     )
 
     async def scenario() -> None:
@@ -262,8 +262,8 @@ def test_final_transcript_streams_assistant_response() -> None:
     assistant = next(event for event in reliable if event["type"] == "assistant_transcript_final")
 
     assert any(event["type"] == "assistant_transcript_partial" for event in lossy)
-    assert "Samajh raha hoon" in str(assistant["text"])
-    assert assistant["provider"] == "persona_local"
+    assert assistant["text"] == "recorded reply"
+    assert assistant["provider"] == "test-recording"
     assert assistant["status"] == "final"
     assert assistant["cost_units"] == 0
 
@@ -302,11 +302,11 @@ def test_final_transcript_synthesizes_tts_audio_and_metrics() -> None:
     assert metrics["first_audio_ms"] >= 0
 
 
-def test_llm_error_produces_graceful_fallback() -> None:
+def test_llm_error_is_ui_only_and_never_becomes_a_fabricated_reply() -> None:
     transport = MemoryAgentTransport()
     session = RealtimeAgentSession(
         assignment=_assignment(recent_context=[]),
-        settings=_settings(vad_provider="energy"),
+        settings=_settings(vad_provider="energy", llm_provider="sarvam"),
         transport=transport,
         stt_provider=StaticSTTProvider("namaste"),
         llm_provider=FailingLLMProvider(),
@@ -319,23 +319,25 @@ def test_llm_error_produces_graceful_fallback() -> None:
             await transport.activity.put(pcm_sine_frame(duration_ms=30, amplitude=5000))
         for _ in range(24):
             await transport.activity.put(pcm_silence_frame(duration_ms=30))
-        await _wait_for_event_type(transport, "assistant_transcript_final")
+        await _wait_for_event_type(transport, "llm_error")
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
 
     events = [_decode(event) for event in transport.events]
-    assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
-    assert "jawab dene mein dikkat" in str(assistant["text"])
-    assert assistant["provider"] == "persona_local"
+    error = next(event for event in events if event["type"] == "llm_error")
+    assert error["provider"] == "sarvam"
+    assert error["message"] == "AI response is temporarily unavailable. Please try again."
+    assert not any(event["type"] == "assistant_transcript_final" for event in events)
+    assert transport.audio_publications == 0
 
 
 def test_overlong_llm_output_is_clipped_before_final_response() -> None:
     transport = MemoryAgentTransport()
     session = RealtimeAgentSession(
         assignment=_assignment(recent_context=[]),
-        settings=_settings(vad_provider="energy"),
+        settings=_settings(vad_provider="energy", llm_provider="sarvam"),
         transport=transport,
         stt_provider=StaticSTTProvider("namaste"),
         llm_provider=LongLLMProvider(),
@@ -427,6 +429,7 @@ def test_crisis_final_transcript_uses_safety_response_for_devanagari_input() -> 
 
 def test_previous_session_memory_reaches_llm_response_path() -> None:
     transport = MemoryAgentTransport()
+    llm = RecordingLLMProvider()
     session = RealtimeAgentSession(
         assignment=_assignment(
             recent_context={
@@ -455,7 +458,7 @@ def test_previous_session_memory_reaches_llm_response_path() -> None:
         ),
         transport=transport,
         stt_provider=StaticSTTProvider("mera naam kya yaad hai"),
-        llm_provider=PersonaLLMProvider(),
+        llm_provider=llm,
     )
 
     async def scenario() -> None:
@@ -473,7 +476,8 @@ def test_previous_session_memory_reaches_llm_response_path() -> None:
 
     events = [_decode(event) for event in transport.events]
     assistant = next(event for event in events if event["type"] == "assistant_transcript_final")
-    assert "Rahul" in str(assistant["text"])
+    assert assistant["text"] == "recorded reply"
+    assert any("Rahul" in message.content for call in llm.calls for message in call)
 
 
 def test_crisis_input_is_not_overridden_by_memory_context() -> None:
@@ -1234,6 +1238,7 @@ def _settings(**overrides: object) -> Settings:
         "enable_livekit_rtc": False,
         "max_idle_seconds": 1,
         "fake_audio_ms": 20,
+        "llm_provider": "mock",
         "tts_provider": "mock",
         # Keep lifecycle tests fast; endpointing-specific tests cover the
         # production coalescing window explicitly.

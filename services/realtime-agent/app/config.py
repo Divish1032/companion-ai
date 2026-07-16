@@ -98,7 +98,6 @@ class Settings(BaseSettings):
 @dataclass(frozen=True)
 class PersonaSettings:
     system_prompt: str
-    fallback_response: str
     max_output_chars: int
     partial_chunk_chars: int
     history_messages: int
@@ -132,9 +131,6 @@ def load_persona_settings(settings: Settings) -> PersonaSettings:
     history = data.get("history", {})
     return PersonaSettings(
         system_prompt=str(prompt.get("system", "")).strip(),
-        fallback_response=str(
-            response.get("fallback", "Mujhe abhi jawab dene mein dikkat aa rahi hai.")
-        ).strip(),
         max_output_chars=int(response.get("max_chars", 240)),
         partial_chunk_chars=int(response.get("partial_chunk_chars", 48)),
         history_messages=int(history.get("messages", 4)),

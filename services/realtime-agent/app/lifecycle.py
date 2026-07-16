@@ -26,10 +26,10 @@ from app.memory_router import MemoryRoutingDecision
 from app.memory_planner import HttpMemoryPlanner, MemoryPlanner
 from app.providers import (
     LLMProvider,
+    LLMProviderUnavailable,
     MemoryStrategyRoute,
     FailoverTTSProvider,
     KokoroTTSProvider,
-    PersonaLLMProvider,
     ProviderRouting,
     SarvamBulbulTTSProvider,
     SarvamChatLLMProvider,
@@ -39,7 +39,7 @@ from app.providers import (
     VoskSTTProvider,
 )
 from app.providers.interfaces import LLMMessage, LLMToken, TTSAudioFrame, TranscriptEvent
-from app.providers.mock import MockSTTProvider, MockTTSProvider
+from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
 from app.safety import SafetyClassifier
 from app.telemetry import (
     TurnMetricsCollector,
@@ -770,24 +770,8 @@ class RealtimeAgentSession:
                     turn_admission=turn_admission,
                 )
         except Exception as error:
-            text = self.persona.fallback_response
-            clipped = False
-            last_token = LLMToken(
-                text="",
-                provider=selected_llm_provider_name(self.settings),
-                model=self.settings.llm_model,
-            )
-            print(
-                "llm_error",
-                {
-                    "session_id": self.assignment.session_id,
-                    "turn_id": turn_id,
-                    "provider": last_token.provider,
-                    "error_code": _error_code(error),
-                },
-                flush=True,
-            )
-            self.telemetry.turn(turn_id).statuses["llm_status"] = "error"
+            await self._emit_llm_error(turn_id, error)
+            return
 
         output_decision = self.safety_classifier.classify_output(text)
         if output_decision.response_override is not None:
@@ -845,7 +829,7 @@ class RealtimeAgentSession:
         text = "".join(chunks).strip()
         text = _sanitize_llm_output(text)
         if not text:
-            text = self.persona.fallback_response
+            raise LLMProviderUnavailable("LLM stream did not include usable content.")
         if _is_question_turn(user_text) and _looks_like_question_echo(user_text, text):
             print(
                 "llm_query_echo_guard",
@@ -1512,6 +1496,35 @@ class RealtimeAgentSession:
         await self._emit_turn_metrics(turn_id, "stt_error")
         await self._emit_state("listening", turn_id=turn_id)
 
+    async def _emit_llm_error(self, turn_id: str, error: Exception) -> None:
+        provider = selected_llm_provider_name(self.settings)
+        await self.transport.publish_reliable(
+            self.sequencer.encode(
+                event_type="llm_error",
+                turn_id=turn_id,
+                payload={
+                    "error_code": _error_code(error),
+                    "provider": provider,
+                    # This is a UI-only operational message, never an assistant
+                    # reply, transcript, memory input, or TTS payload.
+                    "message": "AI response is temporarily unavailable. Please try again.",
+                },
+            )
+        )
+        print(
+            "llm_error",
+            {
+                "session_id": self.assignment.session_id,
+                "turn_id": turn_id,
+                "provider": provider,
+                "error_code": _error_code(error),
+            },
+            flush=True,
+        )
+        self.telemetry.turn(turn_id).statuses["llm_status"] = "error"
+        await self._emit_turn_metrics(turn_id, "llm_error")
+        await self._emit_state("listening", turn_id=turn_id)
+
 
 class AgentSupervisor:
     def __init__(self, settings: Settings) -> None:
@@ -1608,8 +1621,6 @@ def create_stt_provider(settings: Settings) -> STTProvider:
 def create_llm_provider(settings: Settings) -> LLMProvider:
     provider_name = selected_llm_provider_name(settings)
     try:
-        if provider_name in {"persona_local", "mock"}:
-            return PersonaLLMProvider()
         if provider_name == "sarvam":
             return SarvamChatLLMProvider(
                 api_key=settings.sarvam_api_key,
@@ -1617,6 +1628,10 @@ def create_llm_provider(settings: Settings) -> LLMProvider:
                 base_url=settings.sarvam_base_url,
                 timeout_seconds=settings.llm_timeout_seconds,
             )
+        if provider_name == "mock" and settings.environment != "production":
+            return MockLLMProvider()
+        if provider_name == "mock":
+            raise AgentAssignmentError("The mock LLM provider is not allowed in production.")
         raise AgentAssignmentError(f"Unsupported LLM provider: {provider_name}")
     except Exception as error:
         return _UnavailableLLMProvider(provider_name=provider_name, error=error)
@@ -1681,7 +1696,7 @@ def selected_llm_provider_name(settings: Settings) -> str:
         routing = ProviderRouting.from_dict(_load_persona_config(settings))
         return routing.for_language(settings.language).llm
     except Exception:
-        return "persona_local"
+        return "sarvam"
 
 
 def selected_stt_provider_name(settings: Settings) -> str:

@@ -163,8 +163,10 @@ Before accepting real sessions:
    `infra/docker-compose.yml`. Do not expose port 8880 publicly: the
    realtime-agent reaches it only over the Docker network. Keep the local
    loopback binding only for host diagnostics. Configure `AGENT_KOKORO_BASE_URL`
-   to the Docker service URL, and keep `AGENT_SARVAM_API_KEY` available for the
-   existing Bulbul fallback.
+   to the Docker service URL, and set `AGENT_SARVAM_API_KEY` for required
+   Sarvam conversation inference and the existing Bulbul fallback. Without a
+   usable inference key, the phone receives an operational error and no
+   fabricated assistant message is stored or spoken.
 
 ## Hindi TTS installation, readiness, and rollback
 

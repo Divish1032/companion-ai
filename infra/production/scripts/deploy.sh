@@ -220,6 +220,10 @@ set_env API_MEMORY_EXTRACTION_TIMEOUT_SECONDS "$(get_env API_MEMORY_EXTRACTION_T
 [[ -n $(get_env API_MEMORY_EXTRACTION_TIMEOUT_SECONDS || true) ]] || set_env API_MEMORY_EXTRACTION_TIMEOUT_SECONDS 20
 set_env HF_TOKEN "$(get_env HF_TOKEN || true)"
 set_env AGENT_SARVAM_API_KEY "$(get_env AGENT_SARVAM_API_KEY || true)"
+set_env AGENT_LLM_PROVIDER "$(get_env AGENT_LLM_PROVIDER || true)"
+[[ -n $(get_env AGENT_LLM_PROVIDER || true) ]] || set_env AGENT_LLM_PROVIDER sarvam
+set_env AGENT_LLM_MODEL "$(get_env AGENT_LLM_MODEL || true)"
+[[ -n $(get_env AGENT_LLM_MODEL || true) ]] || set_env AGENT_LLM_MODEL sarvam-30b
 chmod 600 "$environment_file"
 
 vosk_dir="$runtime_root/models/vosk-model-small-hi-0.22"

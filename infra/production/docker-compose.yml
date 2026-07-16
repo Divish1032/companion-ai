@@ -143,6 +143,10 @@ services:
       AGENT_METRICS_INGEST_URL: http://api:8000/v1/telemetry/ingest
       AGENT_METRICS_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN}
       AGENT_KOKORO_BASE_URL: http://kokoro-tts:8880/v1
+      # Conversational inference is always Sarvam in production. A missing or
+      # failed key produces a UI error event; it never falls back to templates.
+      AGENT_LLM_PROVIDER: ${AGENT_LLM_PROVIDER:-sarvam}
+      AGENT_LLM_MODEL: ${AGENT_LLM_MODEL:-sarvam-30b}
       AGENT_SARVAM_API_KEY: ${AGENT_SARVAM_API_KEY:-}
     volumes:
       - ${RUNTIME_ROOT}/models/vosk-model-small-hi-0.22:/models/vosk-model-small-hi-0.22:ro

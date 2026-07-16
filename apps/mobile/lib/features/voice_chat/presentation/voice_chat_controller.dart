@@ -427,6 +427,17 @@ class VoiceChatController extends Notifier<VoiceChatState> {
         clearPartialTranscript: true,
         errorMessage: 'Speech recognition failed. Please try again.',
       );
+    } else if (event.type == 'llm_error') {
+      // An inference outage is operational UI state, not a companion message.
+      // It is deliberately neither persisted nor sent to memory processing.
+      state = state.copyWith(
+        phase: VoiceSessionPhase.listening,
+        isBusy: false,
+        clearPartialTranscript: true,
+        errorMessage:
+            (event.payload['message'] as String?) ??
+            'AI response is temporarily unavailable. Please try again.',
+      );
     } else if (event.type == 'barge_in') {
       state = state.copyWith(
         phase: VoiceSessionPhase.userSpeaking,

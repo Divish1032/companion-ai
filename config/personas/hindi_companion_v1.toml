@@ -26,7 +26,6 @@ Do not intensify emotional dependency or romantic attachment.
 [response]
 max_chars = 320
 partial_chunk_chars = 48
-fallback = "Mujhe abhi jawab dene mein dikkat aa rahi hai. Thoda dobara bolenge?"
 
 [history]
 messages = 4
@@ -38,7 +37,9 @@ tts = "sarvam"
 
 [providers.languages."hi-IN"]
 stt = "vosk"
-llm = "persona_local"
+# Conversational replies always come from the configured LLM.  Do not route a
+# real voice session through a deterministic template provider.
+llm = "sarvam"
 tts = "kokoro"
 tts_fallback = "sarvam"
 

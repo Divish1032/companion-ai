@@ -193,8 +193,8 @@ void main() {
           'text': 'Haan, main sun raha hoon.',
           'status': 'final',
           'language': 'hi-IN',
-          'provider': 'persona_local',
-          'model': 'hindi_companion_rules_v1',
+          'provider': 'sarvam',
+          'model': 'sarvam-30b',
           'latency_ms': 7,
           'billed_units': 0,
           'cost_units': 0,
@@ -208,10 +208,32 @@ void main() {
 
     liveKit.emitEvent(
       const LiveKitDataEvent(
-        type: 'error',
+        type: 'llm_error',
         sequence: 6,
         sessionId: 'session_test',
         timestampMs: 6,
+        turnId: 'session_test:turn:0002',
+        payload: {
+          'message':
+              'AI response is temporarily unavailable. Please try again.',
+          'provider': 'sarvam',
+          'error_code': 'provider_unavailable',
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Listening'), findsOneWidget);
+    expect(
+      find.text('AI response is temporarily unavailable. Please try again.'),
+      findsOneWidget,
+    );
+
+    liveKit.emitEvent(
+      const LiveKitDataEvent(
+        type: 'error',
+        sequence: 7,
+        sessionId: 'session_test',
+        timestampMs: 7,
         payload: {'message': 'Simulated LiveKit error.'},
       ),
     );

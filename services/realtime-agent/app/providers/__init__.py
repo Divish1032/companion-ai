@@ -6,7 +6,7 @@ from app.providers.interfaces import (
     TTSAudioFrame,
     TTSProvider,
 )
-from app.providers.llm import LLMProviderUnavailable, PersonaLLMProvider, SarvamChatLLMProvider
+from app.providers.llm import LLMProviderUnavailable, SarvamChatLLMProvider
 from app.providers.routing import MemoryStrategyRoute, ProviderRoute, ProviderRouting
 from app.providers.stt import SarvamSTTProvider, STTProviderUnavailable, VoskSTTProvider
 from app.providers.tts import (
@@ -23,7 +23,6 @@ __all__ = [
     "LLMProviderUnavailable",
     "LLMToken",
     "MemoryStrategyRoute",
-    "PersonaLLMProvider",
     "ProviderRoute",
     "ProviderRouting",
     "SarvamChatLLMProvider",

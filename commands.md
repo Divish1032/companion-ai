@@ -192,11 +192,17 @@ After adding or changing the API memory-extraction key, restart only API:
 compose up -d api
 ```
 
-After adding or changing the realtime Sarvam key, restart only the agent:
+Sarvam is required for conversation inference. After adding or changing the
+realtime Sarvam key, restart only the agent and confirm the live route:
 
 ```bash
 compose up -d realtime-agent
+curl --fail http://localhost:8001/debug/provider-route/hi-IN
 ```
+
+The response must show `"effective_llm":"sarvam"`. If the key is missing or
+Sarvam is unavailable, the phone shows an operational error and the agent does
+not speak or persist a fabricated assistant reply.
 
 Prepare and enable the pinned EmbeddingGemma artifact only after `HF_TOKEN` is
 set in `production.env` and its Hugging Face terms have been accepted:

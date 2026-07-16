@@ -31,10 +31,11 @@ Flutter app -> API -> LiveKit room <-> realtime agent
 - `infra/production`: public single-node deployment tooling for Ubuntu/macOS.
 - `config/personas/hindi_companion_v1.toml`: persona and provider routing.
 
-For `hi-IN`, the normal keyless local path is Vosk STT, `persona_local` LLM,
-and Kokoro TTS. Sarvam is a configured paid provider/fallback when the relevant
-key is supplied. Provider selection stays config-driven rather than being
-embedded in voice-turn logic.
+For `hi-IN`, Vosk is the local STT path, Sarvam is the required conversational
+LLM, and Kokoro is the primary TTS provider with Sarvam TTS fallback. If
+Sarvam inference is unavailable, the app displays an operational error rather
+than saving or speaking a fabricated companion reply. Provider selection stays
+config-driven rather than being embedded in voice-turn logic.
 
 ## Memory and privacy model
 
@@ -134,11 +135,12 @@ flutter run --dart-define=API_BASE_URL=http://<reachable-api-host>:8000 \
 ## Configuration and optional providers
 
 `.env` is for local Compose only and is gitignored. The root example documents
-the common switches. `AGENT_SARVAM_API_KEY` enables Sarvam in the realtime
-agent; `API_MEMORY_EXTRACTION_API_KEY` is separate and enables the API memory
-judge. Never paste either key into source code, logs, or issues.
+the common switches. `AGENT_SARVAM_API_KEY` is required for Sarvam inference
+in the realtime agent; `API_MEMORY_EXTRACTION_API_KEY` is separate and enables
+the API memory judge. Never paste either key into source code, logs, or issues.
 
-The base local path needs no paid key. Optional memory extraction requires:
+Real voice conversations require `AGENT_SARVAM_API_KEY`. Optional memory
+extraction uses a separate key:
 
 ```dotenv
 API_ENABLE_MEMORY_EXTRACTION=true

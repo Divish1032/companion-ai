@@ -1,7 +1,7 @@
 from app.providers import ProviderRouting
 from app.memory_router import route_memory_query
 from app.providers.interfaces import LLMMessage
-from app.providers.llm import PersonaLLMProvider, SarvamChatLLMProvider
+from app.providers.llm import SarvamChatLLMProvider
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
 from app.providers.tts import (
     FailoverTTSProvider,
@@ -12,7 +12,7 @@ from app.providers.tts import (
 )
 from app.audio_pipeline import pcm_sine_frame
 from app.config import Settings
-from app.lifecycle import selected_stt_provider_name
+from app.lifecycle import selected_llm_provider_name, selected_stt_provider_name
 
 
 def test_provider_routing_supports_language_override() -> None:
@@ -63,6 +63,11 @@ def test_hindi_routes_kokoro_with_sarvam_fallback() -> None:
 def test_hindi_uses_vosk_by_default_and_sarvam_remains_an_explicit_override() -> None:
     assert selected_stt_provider_name(Settings(stt_provider="", language="hi-IN")) == "vosk"
     assert selected_stt_provider_name(Settings(stt_provider="sarvam", language="hi-IN")) == "sarvam"
+
+
+def test_hindi_conversation_always_routes_to_sarvam() -> None:
+    assert selected_llm_provider_name(Settings(llm_provider="", language="hi-IN")) == "sarvam"
+    assert selected_llm_provider_name(Settings(llm_provider="sarvam", language="hi-IN")) == "sarvam"
 
 
 def test_memory_strategies_are_language_scoped_and_default_safe() -> None:
@@ -143,71 +148,6 @@ def test_mock_providers_are_available_for_skeleton() -> None:
         assert chunks
 
     asyncio.run(scenario())
-
-
-def test_persona_llm_asks_explicit_memory_receipt_question() -> None:
-    import asyncio
-
-    async def scenario() -> str:
-        provider = PersonaLLMProvider()
-        chunks = [
-            token.text
-            async for token in provider.stream(
-                [
-                    LLMMessage(
-                        role="system",
-                        content=(
-                            "[memory_receipt]\n"
-                            "After answering naturally, ask at most one short voice-only "
-                            "confirmation question.\n"
-                            "- (recurring_work_stressor; memory_id=m1) Potential memory: "
-                            "User has previously mentioned work stress related to office "
-                            "or manager pressure."
-                        ),
-                    ),
-                    LLMMessage(role="user", content="[latest_user] aaj office ka din heavy tha"),
-                ],
-                "hi-IN",
-                max_output_chars=220,
-            )
-        ]
-        return "".join(chunks)
-
-    response = asyncio.run(scenario())
-
-    assert response.endswith("Kya main office/manager pressure wali baat yaad rakhun?")
-
-
-def test_persona_llm_uses_relationship_admission_without_calling_person_the_user() -> None:
-    import asyncio
-
-    async def scenario() -> str:
-        provider = PersonaLLMProvider()
-        chunks = [
-            token.text
-            async for token in provider.stream(
-                [
-                    LLMMessage(
-                        role="system",
-                        content=(
-                            "[turn_admission]\n"
-                            "The user said their brother is named रोहन. रोहन is not the user; "
-                            "never address the user as रोहन. Acknowledge the relationship naturally, "
-                            "without mentioning memory storage."
-                        ),
-                    ),
-                    LLMMessage(role="user", content="मेरे भाई का नाम रोहन है"),
-                ],
-                "hi-IN",
-                max_output_chars=320,
-            )
-        ]
-        return "".join(chunks)
-
-    response = asyncio.run(scenario())
-
-    assert response == "रोहन—अच्छा नाम है। आप दोनों काफ़ी करीब हैं?"
-    assert not response.startswith("ठीक है रोहन")
 
 
 def test_sarvam_llm_uses_voice_safe_request_shape(monkeypatch) -> None:  # noqa: ANN001

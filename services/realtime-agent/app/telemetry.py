@@ -75,7 +75,7 @@ def llm_cost_micro_inr(
     card: CostRateCard,
     usage_reported: bool,
 ) -> tuple[int, CostSource]:
-    if provider in {"persona_local", "mock"}:
+    if provider == "mock":
         return 0, "none"
     if provider != "sarvam" or model != "sarvam-30b":
         return 0, "unknown"
