@@ -198,6 +198,20 @@ After adding or changing the realtime Sarvam key, restart only the agent:
 compose up -d realtime-agent
 ```
 
+Prepare and enable the pinned EmbeddingGemma artifact only after `HF_TOKEN` is
+set in `production.env` and its Hugging Face terms have been accepted:
+
+```bash
+compose --profile model-maintenance run --rm model-prep
+sudoedit "$environment_file" # set API_ENABLE_MEMORY_EMBEDDINGS=true
+compose up -d --build api
+curl --fail https://<domain>/readiness
+```
+
+The final readiness response must show `"embedding": {"enabled": true,
+"state": "ready"}`. Keep reranker and planner disabled: they require a
+separate GPU-capacity validation and are not part of the current CPU host.
+
 Safe stop/start commands:
 
 ```bash

@@ -138,9 +138,17 @@ configured Hugging Face model names and must persist in the cache volume.
 Before accepting real sessions:
 
 1. Create the persistent Hugging Face cache volume.
-2. Run `scripts/prepare_embedding_onnx.py` once per model revision to
-   create the complete Sentence Transformer artifact in the persistent cache.
-   Then start the API; startup warm-up loads that artifact before readiness.
+2. Run the production one-shot service once per model revision to create the
+   complete Sentence Transformer artifact in the persistent cache:
+
+   ```bash
+   docker compose --env-file /opt/companion/runtime/production.env \
+     -f infra/production/docker-compose.yml --profile model-maintenance \
+     run --rm model-prep
+   ```
+
+   Then set `API_ENABLE_MEMORY_EMBEDDINGS=true` in `production.env` and start
+   API; startup warm-up loads that artifact before readiness.
 3. Record the exact model repository revision, licence/terms review, cache
    size, download result, and serving image digest in the deployment notes.
    The configured revision is exposed by `/readiness`, and the preparation

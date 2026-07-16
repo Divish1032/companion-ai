@@ -77,8 +77,11 @@ services:
       API_DURABLE_STORE_PATH: /data/companion_api_sessions.sqlite
       API_TELEMETRY_STORE_PATH: /data/companion_telemetry.sqlite
       API_TELEMETRY_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN}
-      # The gated artifact is prepared as a separate verified operation.
-      API_ENABLE_MEMORY_EMBEDDINGS: "false"
+      API_ENABLE_MEMORY_EMBEDDINGS: ${API_ENABLE_MEMORY_EMBEDDINGS:-false}
+      API_MEMORY_EMBEDDING_MODEL: ${API_MEMORY_EMBEDDING_MODEL:-google/embeddinggemma-300m}
+      API_MEMORY_EMBEDDING_REVISION: ${API_MEMORY_EMBEDDING_REVISION:-57c266a740f537b4dc058e1b0cda161fd15afa75}
+      API_MEMORY_EMBEDDING_DIMENSION: ${API_MEMORY_EMBEDDING_DIMENSION:-768}
+      API_MEMORY_EMBEDDING_BACKEND: ${API_MEMORY_EMBEDDING_BACKEND:-onnx}
       API_ENABLE_MEMORY_RERANKER: "false"
       API_ENABLE_MEMORY_PLANNER: "false"
       API_ENABLE_MEMORY_EXTRACTION: ${API_ENABLE_MEMORY_EXTRACTION:-true}
@@ -86,7 +89,7 @@ services:
       API_MEMORY_EXTRACTION_API_KEY: ${API_MEMORY_EXTRACTION_API_KEY:-}
       API_MEMORY_EXTRACTION_MODEL: ${API_MEMORY_EXTRACTION_MODEL:-sarvam-30b}
       API_MEMORY_EXTRACTION_TIMEOUT_SECONDS: ${API_MEMORY_EXTRACTION_TIMEOUT_SECONDS:-20}
-      API_MEMORY_EMBEDDING_MODEL_PATH: /models/huggingface/embeddinggemma-onnx-fp32-r57c266a7
+      API_MEMORY_EMBEDDING_MODEL_PATH: ${API_MEMORY_EMBEDDING_MODEL_PATH:-/models/huggingface/embeddinggemma-onnx-fp32-r57c266a7}
       HF_HOME: /models/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
@@ -103,6 +106,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging: *default-logging
+
+  model-prep:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    command: ["python", "/app/scripts/prepare_embedding_onnx.py"]
+    profiles: ["model-maintenance"]
+    environment:
+      HF_HOME: /models/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${RUNTIME_ROOT}/models/huggingface:/models/huggingface
+    restart: "no"
     logging: *default-logging
 
   realtime-agent:

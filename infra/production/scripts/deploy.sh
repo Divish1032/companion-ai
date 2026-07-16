@@ -195,6 +195,20 @@ set_env LIVEKIT_API_KEY "$(get_env LIVEKIT_API_KEY || true)"
 [[ -n $(get_env LIVEKIT_API_KEY || true) ]] || set_env LIVEKIT_API_KEY companion
 if [[ -z $(get_env LIVEKIT_API_SECRET || true) ]]; then set_env LIVEKIT_API_SECRET "$(openssl rand -hex 32)"; fi
 if [[ -z $(get_env API_TELEMETRY_INGEST_TOKEN || true) ]]; then set_env API_TELEMETRY_INGEST_TOKEN "$(openssl rand -hex 32)"; fi
+set_env API_ENABLE_MEMORY_EMBEDDINGS "$(get_env API_ENABLE_MEMORY_EMBEDDINGS || true)"
+[[ -n $(get_env API_ENABLE_MEMORY_EMBEDDINGS || true) ]] || set_env API_ENABLE_MEMORY_EMBEDDINGS false
+set_env API_MEMORY_EMBEDDING_MODEL "$(get_env API_MEMORY_EMBEDDING_MODEL || true)"
+[[ -n $(get_env API_MEMORY_EMBEDDING_MODEL || true) ]] || set_env API_MEMORY_EMBEDDING_MODEL google/embeddinggemma-300m
+set_env API_MEMORY_EMBEDDING_REVISION "$(get_env API_MEMORY_EMBEDDING_REVISION || true)"
+[[ -n $(get_env API_MEMORY_EMBEDDING_REVISION || true) ]] || set_env API_MEMORY_EMBEDDING_REVISION 57c266a740f537b4dc058e1b0cda161fd15afa75
+set_env API_MEMORY_EMBEDDING_DIMENSION "$(get_env API_MEMORY_EMBEDDING_DIMENSION || true)"
+[[ -n $(get_env API_MEMORY_EMBEDDING_DIMENSION || true) ]] || set_env API_MEMORY_EMBEDDING_DIMENSION 768
+set_env API_MEMORY_EMBEDDING_BACKEND "$(get_env API_MEMORY_EMBEDDING_BACKEND || true)"
+[[ -n $(get_env API_MEMORY_EMBEDDING_BACKEND || true) ]] || set_env API_MEMORY_EMBEDDING_BACKEND onnx
+set_env API_MEMORY_EMBEDDING_MODEL_PATH "$(get_env API_MEMORY_EMBEDDING_MODEL_PATH || true)"
+[[ -n $(get_env API_MEMORY_EMBEDDING_MODEL_PATH || true) ]] || set_env API_MEMORY_EMBEDDING_MODEL_PATH /models/huggingface/embeddinggemma-onnx-fp32-r57c266a7
+set_env API_EMBEDDING_TIMEOUT_SECONDS "$(get_env API_EMBEDDING_TIMEOUT_SECONDS || true)"
+[[ -n $(get_env API_EMBEDDING_TIMEOUT_SECONDS || true) ]] || set_env API_EMBEDDING_TIMEOUT_SECONDS 1.0
 set_env API_ENABLE_MEMORY_EXTRACTION "$(get_env API_ENABLE_MEMORY_EXTRACTION || true)"
 [[ -n $(get_env API_ENABLE_MEMORY_EXTRACTION || true) ]] || set_env API_ENABLE_MEMORY_EXTRACTION true
 set_env API_MEMORY_EXTRACTION_BASE_URL "$(get_env API_MEMORY_EXTRACTION_BASE_URL || true)"

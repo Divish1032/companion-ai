@@ -9,6 +9,7 @@ COPY services/api/pyproject.toml ./pyproject.toml
 RUN uv pip install --system --torch-backend cpu '.[model-serving]'
 
 COPY services/api/app ./app
+COPY scripts/prepare_embedding_onnx.py ./scripts/prepare_embedding_onnx.py
 COPY config ./config
 
 EXPOSE 8000
