@@ -8,6 +8,9 @@ fi
 
 environment_file=$1
 runtime_root=$2
+if [[ ${COMPANION_DOCKER_SUDO:-false} == true ]]; then
+  docker() { command sudo docker "$@"; }
+fi
 set -a
 # shellcheck disable=SC1090
 source "$environment_file"
@@ -28,7 +31,8 @@ fi
 install -d -m 0750 "$runtime_root/certs" "$runtime_root/acme-webroot"
 
 # Port 80 must be reachable from the Internet and unused for HTTP-01 validation.
-docker run --rm --network host \
+# Published port mapping works on both Ubuntu Docker Engine and Docker Desktop.
+docker run --rm -p 80:80 \
   -v "$runtime_root/certs:/etc/letsencrypt" \
   -v "$runtime_root/acme-webroot:/var/www/certbot" \
   certbot/certbot:v3.1.0 certonly --standalone \

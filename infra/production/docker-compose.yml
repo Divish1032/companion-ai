@@ -12,7 +12,7 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
     restart: unless-stopped
     ports:
-      # LiveKit uses host networking; no other public client may reach Redis.
+      # No other public client may reach Redis.
       - "127.0.0.1:6379:6379"
     volumes:
       - ${RUNTIME_ROOT}/data/redis:/data

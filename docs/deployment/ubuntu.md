@@ -1,17 +1,54 @@
 # Ubuntu Deployment Runbook
 
-This is the Sprint 9 handoff for public-network phone testing. It covers the
-single-node Docker Compose deployment and the optional stateless long-term-memory
-model service. It is not a production-release guide.
+This is the single-node public-network deployment runbook for phone testing.
+It covers the Docker Compose stack and the optional stateless long-term-memory
+model service. It is not a production-release guide or a substitute for a
+managed high-availability deployment.
+
+## One-command install
+
+After the external prerequisites below are complete, the full host setup and
+application deployment is one interactive command from a checked-out copy of
+this repository:
+
+```bash
+git clone git@github.com:Divish1032/companion-ai.git /opt/companion/app
+cd /opt/companion/app
+git checkout main
+./infra/production/scripts/deploy.sh
+```
+
+The command asks for the public DNS hostname, Let's Encrypt contact email, and
+the server's public IPv4 address. It installs Docker Engine/Compose and helper
+tools on Ubuntu when Docker is absent; downloads the Hindi Vosk model; creates
+`/opt/companion/runtime/production.env` with generated LiveKit and telemetry
+secrets; renders LiveKit configuration; starts Redis, LiveKit (with embedded
+authenticated TURN), Kokoro, API, realtime agent, and Nginx; obtains a TLS
+certificate; and installs the twice-daily certificate-renewal timer.
+
+For unattended rebuilds, supply every value explicitly. Use an approved Vosk
+model artifact URL if your environment does not permit the default public
+`rhasspy/vosk-models` mirror:
+
+```bash
+./infra/production/scripts/deploy.sh --non-interactive \
+  --domain voice.example.com \
+  --email ops@example.com \
+  --node-ip 203.0.113.10 \
+  --vosk-url 'https://your-approved-artifacts.example/vosk-model-small-hi-0.22.zip'
+```
+
+Do not create or commit a repository-root `.env` for production. The only
+runtime secret file is `/opt/companion/runtime/production.env`, mode `0600`.
 
 ## Deployment shape
 
 Run these services on the Ubuntu host:
 
 ```text
-caddy or nginx       TLS and public HTTP/WebSocket entry point
+nginx                TLS and public HTTP/WebSocket entry point
 livekit              WebRTC SFU
-coturn               authenticated TURN fallback
+LiveKit embedded TURN authenticated TURN fallback
 redis                durable rate-limit/session support
 api                  sessions, tokens, memory model endpoints
 realtime-agent       VAD, STT, LLM, TTS, room agent
@@ -26,10 +63,14 @@ are stateless compute only; they must not become a server-side memory store.
 
 - Ubuntu 22.04 or 24.04.
 - Candidate starting point: 4 vCPU, 8 GB RAM, and 80-100 GB SSD.
-- Docker Engine and the Compose plugin.
-- A DNS name and TLS certificate path for the API/LiveKit deployment.
-- Firewall/security-group rules for HTTPS, LiveKit signaling/WebRTC, TURN
-  TLS/TCP, and the explicitly configured TURN relay UDP range.
+- A DNS name resolving to the server's public IPv4 before deployment. Let's
+  Encrypt will not issue a certificate for a bare IP address.
+- At the cloud provider/network edge, allow TCP `80`, `443`, `7881`, and
+  `5349`; UDP `3478`, `40000-40100`, and `50000-50100`. The script adds these
+  rules only when UFW is already active; it intentionally does not enable a
+  new host firewall because doing so could lock out a custom SSH setup.
+- If the repository is private, a GitHub deploy key or other read-only Git
+  access must be configured before `git clone`.
 - A private host directory for the Hugging Face model cache, separate from
   application/session data and excluded from routine application backups.
 
@@ -39,12 +80,10 @@ optional model experiments. Hindi/Hinglish traffic does not require a GPU, but
 the measured 1- and 5-session Kokoro latency, CPU, RAM, and fallback rate must
 pass the deployment gate before selecting an instance size.
 
-## Configuration order
+## Optional model configuration
 
-1. Copy the repository and environment templates to the host. Set real
-   LiveKit, domain, TURN, and provider values; never use the local `devkey` or
-   `secret` outside local development.
-2. Mount a persistent host directory as `HF_HOME=/models/huggingface` for the
+1. The deploy command mounts a persistent host directory as
+   `HF_HOME=/models/huggingface` for the
    API container. The current Compose development file uses a named
    `memory-model-cache` volume; the Ubuntu deployment should use an explicitly
    backed-up-or-excluded host volume so cache retention is intentional.
@@ -174,8 +213,8 @@ This must not require a mobile schema migration or delete phone-owned memory.
 
 - Put the API and LiveKit behind TLS; use secure WebSocket signaling in the
   mobile build.
-- Configure coturn with authenticated credentials and a bounded relay port
-  range. Test at least one restrictive mobile network.
+- LiveKit's embedded TURN service mints authenticated credentials and uses the
+  bounded relay range. Test at least one restrictive mobile network.
 - Apply request and payload rate limits to the memory endpoints. No-auth MVP
   does not mean unlimited model compute.
 - Keep the model cache outside the public web root and readable only by the

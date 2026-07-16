@@ -5,5 +5,5 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/companion/app
-ExecStart=/opt/companion/app/infra/production/scripts/renew-cert.sh /opt/companion/app/infra/production/docker-compose.yml /opt/companion/runtime/production.env
+WorkingDirectory=__REPO_ROOT__
+ExecStart=__REPO_ROOT__/infra/production/scripts/renew-cert.sh __REPO_ROOT__/infra/production/docker-compose.yml __RUNTIME_ROOT__/production.env
