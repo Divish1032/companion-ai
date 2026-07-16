@@ -6,8 +6,8 @@ API container, the realtime agent, or Kokoro to the public Internet.
 It uses LiveKit's embedded TURN server, not a separate coturn container. This
 is deliberate: LiveKit mints and supplies TURN credentials to the Flutter SDK
 over the authenticated signaling connection. The server exposes TURN/UDP on
-`3478`, TURN/TLS on `5349`, LiveKit TCP fallback on `7881`, and media UDP on
-`50000-50100`.
+`3478`, TURN/TLS on `5349`, TURN relay UDP on `40000-40100`, LiveKit TCP
+fallback on `7881`, and media UDP on `50000-50100`.
 
 ## Required input
 
