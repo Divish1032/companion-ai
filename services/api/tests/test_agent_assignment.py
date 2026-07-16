@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -40,6 +41,9 @@ def test_assignment_retries_transport_loss_with_same_session() -> None:
 
     assert len(requests) == 2
     assert requests[0].content == requests[1].content
+    payload = json.loads(requests[0].content)
+    assert payload["language"] == "hi-IN"
+    assert payload["voice_id"] == "hi_aarohi"
 
 
 def test_assignment_retries_transient_agent_failure() -> None:
@@ -114,4 +118,6 @@ def _session() -> SimpleNamespace:
         room_name="room-1",
         expires_at_ms=123,
         recent_context=lambda: {"recent_turns": [], "memory_blocks": []},
+        language="hi-IN",
+        voice_id="hi_aarohi",
     )

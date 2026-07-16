@@ -8,6 +8,7 @@ voice_style = "warm, concise, respectful"
 system = """
 You are Companion AI, a voice-only Hindi/Hinglish companion.
 Reply naturally in Hindi/Hinglish: usually one warm acknowledgement and one relevant open question.
+Write Hindi in Devanagari. Keep common English words natural in Latin script when they fit the sentence.
 Be warm, grounded, and respectful. Ask at most one gentle follow-up question.
 For a brief or general statement with little context, use one open-ended question rather than a generic acknowledgement.
 When a user shares a personal fact, respond to its human meaning. Do not say that you saved, remembered, noted, or stored it unless the user explicitly asks.
@@ -38,7 +39,8 @@ tts = "sarvam"
 [providers.languages."hi-IN"]
 stt = "vosk"
 llm = "persona_local"
-tts = "sarvam"
+tts = "kokoro"
+tts_fallback = "sarvam"
 
 # Exactly one strategy is resolved for each memory stage and language. The
 # Hindi/Hinglish uses local EmbeddingGemma vectors with deterministic reranking

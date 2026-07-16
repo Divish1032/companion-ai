@@ -7,6 +7,7 @@ class ProviderRoute:
     stt: str
     llm: str
     tts: str
+    tts_fallback: str = ""
 
 
 @dataclass(frozen=True)
@@ -44,12 +45,14 @@ class ProviderRouting:
                 stt=defaults["stt"],
                 llm=defaults["llm"],
                 tts=defaults["tts"],
+                tts_fallback=str(defaults.get("tts_fallback", "")),
             ),
             languages={
                 language: ProviderRoute(
                     stt=route.get("stt", defaults["stt"]),
                     llm=route.get("llm", defaults["llm"]),
                     tts=route.get("tts", defaults["tts"]),
+                    tts_fallback=str(route.get("tts_fallback", defaults.get("tts_fallback", ""))),
                 )
                 for language, route in language_data.items()
             },

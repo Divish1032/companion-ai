@@ -7,6 +7,9 @@ import '../../../core/privacy/consent_store.dart';
 import '../../chat_history/data/app_database.dart';
 import '../../chat_history/presentation/memory_controls_screen.dart';
 import '../domain/voice_session_state.dart';
+import '../data/voice_preference_store.dart';
+import '../data/voice_preview_player.dart';
+import '../../livekit_session/data/session_api_client.dart';
 import 'voice_chat_controller.dart';
 import 'telemetry_diagnostics_screen.dart';
 
@@ -18,12 +21,24 @@ class VoiceChatHomeScreen extends ConsumerWidget {
     final state = ref.watch(voiceChatControllerProvider);
     final messages = ref.watch(chatMessagesProvider);
     final deviceId = ref.watch(anonymousDeviceIdProvider);
+    final catalog = ref.watch(ttsVoiceCatalogProvider);
+    final selectedVoiceId = ref.watch(selectedVoiceIdProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Companion AI'),
         actions: [
+          IconButton(
+            tooltip: state.isSessionActive
+                ? 'Voice can change after this session'
+                : 'Choose voice',
+            onPressed: state.isSessionActive
+                ? null
+                : () =>
+                      _showVoicePicker(context, ref, catalog, selectedVoiceId),
+            icon: const Icon(Icons.record_voice_over_outlined),
+          ),
           if (kDebugMode && state.activeSessionId != null)
             IconButton(
               tooltip: 'Diagnostics',
@@ -116,6 +131,97 @@ class VoiceChatHomeScreen extends ConsumerWidget {
 
     if (confirmed == true) {
       await ref.read(voiceChatControllerProvider.notifier).clearHistory();
+    }
+  }
+
+  Future<void> _showVoicePicker(
+    BuildContext context,
+    WidgetRef ref,
+    AsyncValue<TtsVoiceCatalog> catalogState,
+    AsyncValue<String?> selectedVoiceId,
+  ) async {
+    final catalog = switch (catalogState) {
+      AsyncData(:final value) => value,
+      _ => null,
+    };
+    if (catalog == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Voice choices are unavailable. Please try again.'),
+        ),
+      );
+      return;
+    }
+    final preferredVoiceId = switch (selectedVoiceId) {
+      AsyncData(:final value) => value,
+      _ => null,
+    };
+    final activeVoiceId = catalog.resolve(preferredVoiceId);
+    final previewPlayer = ref.read(voicePreviewPlayerProvider);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('Choose companion voice'),
+                subtitle: Text(
+                  'Your choice is used for the next voice session.',
+                ),
+              ),
+              for (final voice in catalog.voices)
+                ListTile(
+                  selected: voice.id == activeVoiceId,
+                  title: Text(voice.displayName),
+                  subtitle: Text('${voice.voicePresentation} Hindi voice'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (voice.previewUri != null)
+                        IconButton(
+                          tooltip: 'Preview ${voice.displayName}',
+                          onPressed: () async {
+                            try {
+                              await previewPlayer.play(voice.previewUri!);
+                            } catch (_) {
+                              if (sheetContext.mounted) {
+                                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Voice preview is unavailable.',
+                                    ),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.play_circle_outline),
+                        ),
+                      Icon(
+                        voice.id == activeVoiceId
+                            ? Icons.check_circle
+                            : Icons.circle_outlined,
+                      ),
+                    ],
+                  ),
+                  onTap: () async {
+                    await ref
+                        .read(voicePreferenceStoreProvider)
+                        .write(voice.id);
+                    ref.invalidate(selectedVoiceIdProvider);
+                    if (sheetContext.mounted) {
+                      Navigator.of(sheetContext).pop();
+                    }
+                  },
+                ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      await previewPlayer.stop();
     }
   }
 }

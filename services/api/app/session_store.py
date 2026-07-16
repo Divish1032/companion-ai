@@ -17,6 +17,8 @@ class SessionRecord:
     expires_at_ms: int
     status: str
     recent_context_json: str
+    language: str = "hi-IN"
+    voice_id: str | None = None
 
     def recent_context(self) -> dict[str, object]:
         data = json.loads(self.recent_context_json)
@@ -58,7 +60,9 @@ class SessionStore:
                     created_at_ms INTEGER NOT NULL,
                     expires_at_ms INTEGER NOT NULL,
                     status TEXT NOT NULL,
-                    recent_context_json TEXT NOT NULL
+                    recent_context_json TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT 'hi-IN',
+                    voice_id TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_sessions_device_status
@@ -73,6 +77,16 @@ class SessionStore:
                 );
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "language" not in columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN language TEXT NOT NULL DEFAULT 'hi-IN'"
+                )
+            if "voice_id" not in columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN voice_id TEXT")
 
     def create_session(
         self,
@@ -81,6 +95,8 @@ class SessionStore:
         max_session_seconds: int,
         recent_context: dict[str, object] | list[dict[str, object]],
         session_create_limit_per_day: int,
+        language: str = "hi-IN",
+        voice_id: str | None = None,
     ) -> SessionRecord:
         now = datetime.now(UTC)
         now_ms = _to_ms(now)
@@ -122,13 +138,15 @@ class SessionStore:
                 expires_at_ms=expires_at_ms,
                 status="active",
                 recent_context_json=json.dumps(recent_context, separators=(",", ":")),
+                language=language,
+                voice_id=voice_id,
             )
             connection.execute(
                 """
                 INSERT INTO sessions (
                     session_id, device_id, room_name, created_at_ms,
-                    expires_at_ms, status, recent_context_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    expires_at_ms, status, recent_context_json, language, voice_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.session_id,
@@ -138,6 +156,8 @@ class SessionStore:
                     record.expires_at_ms,
                     record.status,
                     record.recent_context_json,
+                    record.language,
+                    record.voice_id,
                 ),
             )
             return record
@@ -174,7 +194,7 @@ class SessionStore:
             cursor = connection.execute(
                 """
                 UPDATE sessions
-                SET status = 'ended', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}'
+                SET status = 'ended', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}', voice_id = NULL
                 WHERE session_id = ? AND device_id = ? AND status = 'active'
                 """,
                 (session_id, device_id),
@@ -196,7 +216,7 @@ class SessionStore:
         connection.execute(
             """
             UPDATE sessions
-            SET status = 'expired', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}'
+            SET status = 'expired', recent_context_json = '{"recent_turns":[],"memory_blocks":[]}', voice_id = NULL
             WHERE status = 'active' AND expires_at_ms <= ?
             """,
             (now_ms,),
@@ -245,6 +265,8 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         expires_at_ms=int(row["expires_at_ms"]),
         status=str(row["status"]),
         recent_context_json=str(row["recent_context_json"]),
+        language=str(row["language"]),
+        voice_id=str(row["voice_id"]) if row["voice_id"] is not None else None,
     )
 
 

@@ -15,13 +15,46 @@ import 'package:companion_mobile/features/chat_history/data/objectbox_memory_vec
 import 'package:companion_mobile/features/livekit_session/data/livekit_connection_service.dart';
 import 'package:companion_mobile/features/livekit_session/data/session_api_client.dart';
 import 'package:companion_mobile/features/livekit_session/domain/livekit_data_event.dart';
+import 'package:companion_mobile/features/voice_chat/data/voice_preference_store.dart';
+import 'package:companion_mobile/features/voice_chat/data/voice_preview_player.dart';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'voice preview stops before selecting a voice and starting a session',
+    (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final previewPlayer = _FakeVoicePreviewPlayer();
+      addTearDown(database.close);
+
+      await tester.pumpWidget(_testApp(database, previewPlayer: previewPlayer));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Choose voice'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Preview Aarohi'));
+      await tester.pumpAndSettle();
+      expect(previewPlayer.playCount, 1);
+
+      await tester.tap(find.text('Aarohi'));
+      await tester.pumpAndSettle();
+      expect(previewPlayer.stopCount, greaterThanOrEqualTo(1));
+
+      await tester.tap(find.text('Start voice session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Agree'));
+      await tester.pumpAndSettle();
+      expect(previewPlayer.stopCount, greaterThanOrEqualTo(2));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
   testWidgets(
     'voice session connects, persists simulated turns, and clears history',
     (tester) async {
@@ -456,6 +489,7 @@ Widget _testApp(
   _FakeLiveKitConnectionService? liveKit,
   InMemoryMemoryVectorIndex? vectorIndex,
   bool memoryExtractionEnabled = false,
+  _FakeVoicePreviewPlayer? previewPlayer,
 }) {
   return ProviderScope(
     overrides: [
@@ -481,6 +515,12 @@ Widget _testApp(
         (ref) => _NoopAudioSessionService(),
       ),
       sessionApiClientProvider.overrideWith((ref) => _FakeSessionApiClient()),
+      voicePreferenceStoreProvider.overrideWith(
+        (ref) => _FakeVoicePreferenceStore(),
+      ),
+      voicePreviewPlayerProvider.overrideWith(
+        (ref) => previewPlayer ?? _FakeVoicePreviewPlayer(),
+      ),
       liveKitConnectionServiceProvider.overrideWith(
         (ref) => liveKit ?? _FakeLiveKitConnectionService(),
       ),
@@ -505,6 +545,38 @@ class _FakeConsentStore implements ConsentStore {
   Future<bool> hasAcceptedCurrentCopy() async => _accepted;
 }
 
+class _FakeVoicePreferenceStore extends VoicePreferenceStore {
+  _FakeVoicePreferenceStore() : super(const FlutterSecureStorage());
+
+  String? _voiceId;
+
+  @override
+  Future<String?> read() async => _voiceId;
+
+  @override
+  Future<void> write(String voiceId) async {
+    _voiceId = voiceId;
+  }
+}
+
+class _FakeVoicePreviewPlayer implements VoicePreviewPlayer {
+  int playCount = 0;
+  int stopCount = 0;
+
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Future<void> play(Uri previewUri) async {
+    playCount += 1;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount += 1;
+  }
+}
+
 class _GrantedMicrophonePermissionService
     implements MicrophonePermissionService {
   @override
@@ -520,12 +592,36 @@ class _NoopAudioSessionService extends AudioSessionService {
 
 class _FakeSessionApiClient implements SessionApiClient {
   @override
-  Future<LiveKitSessionInfo> createSession({required String deviceId}) async {
+  Future<TtsVoiceCatalog> fetchTtsVoiceCatalog() async {
+    return TtsVoiceCatalog(
+      language: 'hi-IN',
+      defaultVoiceId: 'hi_aarohi',
+      voices: [
+        TtsVoiceOption(
+          id: 'hi_aarohi',
+          displayName: 'Aarohi',
+          voicePresentation: 'female',
+          previewUri: Uri.parse(
+            'https://api.test/v1/tts-previews/hi_aarohi.opus',
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<LiveKitSessionInfo> createSession({
+    required String deviceId,
+    String language = 'hi-IN',
+    String? voiceId,
+  }) async {
     return const LiveKitSessionInfo(
       sessionId: 'session_test',
       roomName: 'companion_session_test',
       liveKitUrl: 'ws://localhost:7880',
       expiresAtMs: 1,
+      language: 'hi-IN',
+      voiceId: 'hi_aarohi',
     );
   }
 

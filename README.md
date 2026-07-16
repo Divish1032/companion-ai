@@ -6,7 +6,7 @@ Low-latency Hindi/Hinglish voice-only AI companion MVP for Android and iOS.
 
 Active phase: Sprint 7.5 local long-term-memory implementation complete; Sprints 8-10 validation and deployment hardening pending.
 
-Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Sprint 7 turns final user transcripts into audible Hindi/Hinglish assistant responses through Sarvam Bulbul TTS and LiveKit audio playback. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, stateless API model contracts, and bounded asynchronous LLM candidate extraction. The pinned EmbeddingGemma ONNX artifact and configured real extractor are locally validated. Physical-device Phase 6 evidence, Ubuntu capacity, and public-network validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
+Sprint -1 through Sprint 7.5 are complete for the local MVP implementation and green under the documented checks. Hindi TTS now uses self-hosted Kokoro as the primary provider and keeps Sarvam Bulbul as an automatic fallback; neither provider integration is removed. Sprint 7.5 adds phone-owned long-term memory with query-time retrieval, a local ObjectBox vector index, stateless API model contracts, and bounded asynchronous LLM candidate extraction. The pinned EmbeddingGemma ONNX artifact and configured real extractor are locally validated. Physical-device Phase 6 evidence, Ubuntu capacity, and public-network validation remain in Sprints 8-10. Auth, text input, video/avatar, cloud transcript storage, and raw audio persistence remain out of scope.
 
 ## Repo Layout
 
@@ -46,6 +46,10 @@ make dev      # start Redis, LiveKit, API, and realtime-agent
 make check    # docs, scaffold, Python, and Flutter checks
 make mobile   # run the Flutter app
 make logs     # follow Docker Compose logs
+make tts-kokoro-smoke      # verify all enabled Hindi Kokoro packs synthesize PCM
+make tts-kokoro-benchmark  # report local 1- and 5-concurrency latency metrics
+make tts-kokoro-previews   # regenerate fixed, non-user voice previews/checksums
+make tts-e2e-sarvam        # paid, one-utterance Sarvam fallback validation
 ```
 
 Health endpoints when `make dev` is running:
@@ -90,7 +94,9 @@ The filler-audio path is represented by reliable `filler_audio` start/stop event
 
 ## Provider Routing
 
-Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi STT defaults to Sarvam Saaras v3 in `codemix` mode, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Vosk remains a standalone local STT adapter selectable with `AGENT_STT_PROVIDER=vosk` or a language-specific route.
+Provider choices are config-driven by pipeline leg and language in `config/personas/hindi_companion_v1.toml`. Hindi TTS defaults to the self-hosted, pinned Kokoro CPU service. The supported, non-cloned Hindi catalogue is four native packs (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) exposed as four user-facing voice choices. Kokoro failure before any audio, or a Latin-only response, cuts the session over to Sarvam Bulbul; a failure after audio does not replay already-spoken text and uses Sarvam on the next utterance. Hindi STT defaults to Sarvam Saaras v3 in `codemix` mode, Hindi LLM routes to the local `persona_local` provider for keyless local development, and Vosk remains a standalone local STT adapter selectable with `AGENT_STT_PROVIDER=vosk` or a language-specific route.
+
+`kokoro-tts` is intentionally bound to loopback only for local diagnostics; the realtime agent reaches it over the Docker network. Its `/health` endpoint is liveness only. The realtime agent warms every published pack at startup and exposes its result at `http://localhost:8001/readiness`; run `make tts-kokoro-smoke` after starting or upgrading it as an independent all-voice check. The app's selector uses four fixed synthetic Opus preview clips generated from the pinned image; no user or conversation audio is retained. Sarvam fallback requires `AGENT_SARVAM_API_KEY` and retains its existing Bulbul configuration. `make tts-e2e-sarvam` deliberately incurs one short paid fallback request and never prints the key or synthesized text.
 
 For Sarvam Hindi STT, set `AGENT_SARVAM_API_KEY`; the adapter streams 16 kHz WAV chunks over the Sarvam SDK WebSocket using `AGENT_SARVAM_STT_MODEL=saaras:v3` and `AGENT_SARVAM_STT_MODE=codemix`. For local Vosk STT, download or mount `vosk-model-small-hi-0.22` under `models/`, set `AGENT_VOSK_MODEL_PATH` to the model directory visible to the realtime-agent process, and select it with `AGENT_STT_PROVIDER=vosk`. Docker Compose mounts `../models:/models:ro` and sets `AGENT_VOSK_MODEL_PATH=/models/vosk-model-small-hi-0.22`. If a selected provider is unavailable, the agent emits an `stt_error` event rather than fabricating a transcript. Local Vosk has zero provider cost units, but STT audio seconds are still counted and logged.
 

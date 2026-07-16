@@ -3,11 +3,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../identity/anonymous_device_id.dart';
 
-const privacyConsentCopyVersion = 'voice_mic_ai_processing_v1';
+const privacyConsentCopyVersion = 'voice_mic_ai_processing_v2';
 
 const firstSessionPrivacyCopy =
-    'Your voice and transcript are sent to our server and AI providers to '
-    'understand and respond.\n\n'
+    'Your voice and transcript are sent to our server to understand and respond. '
+    'Hindi speech is normally generated on our self-hosted service; if it is '
+    'unavailable, the response text may be sent to Sarvam AI for speech.\n\n'
     'We do not store raw audio in this MVP. Chat history is saved on this '
     'device.\n\n'
     'You can clear chat history anytime.\n\n'

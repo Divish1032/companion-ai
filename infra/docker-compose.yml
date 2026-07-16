@@ -39,6 +39,25 @@ services:
       - "7881:7881"
       - "7882:7882/udp"
 
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0@sha256:d2c63627e80e32df7fab7f1e969c2b6b26272439d837ef195f40d4a82eca195e
+    environment:
+      DOWNLOAD_MODEL: "false"
+      ENABLE_WEB_PLAYER: "false"
+      CORS_ENABLED: "false"
+      ENABLE_DEBUG_ENDPOINTS: "false"
+      ALLOW_DEV_UNLOAD: "false"
+      ALLOW_LOCAL_VOICE_SAVING: "false"
+      API_LOG_LEVEL: WARNING
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8880/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    ports:
+      - "127.0.0.1:8880:8880"
+
   api:
     build:
       context: ..
@@ -100,6 +119,7 @@ services:
       AGENT_ENABLE_METRICS_INGEST: ${AGENT_ENABLE_METRICS_INGEST:-false}
       AGENT_METRICS_INGEST_URL: http://api:8000/v1/telemetry/ingest
       AGENT_METRICS_INGEST_TOKEN: ${API_TELEMETRY_INGEST_TOKEN:-}
+      AGENT_KOKORO_BASE_URL: http://kokoro-tts:8880/v1
     ports:
       - "8001:8001"
     volumes:
@@ -109,6 +129,8 @@ services:
         condition: service_healthy
       livekit:
         condition: service_started
+      kokoro-tts:
+        condition: service_healthy
 
 volumes:
   redis-data:

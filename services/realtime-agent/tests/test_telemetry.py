@@ -5,6 +5,7 @@ def test_sarvam_costs_use_integer_micro_inr_and_request_rounding() -> None:
     card = CostRateCard()
     assert stt_cost_micro_inr(provider="sarvam", audio_millis=1, card=card) == (8_333, "estimated")
     assert tts_cost_micro_inr(model="bulbul:v3", billed_chars=320, card=card) == (960_000, "estimated")
+    assert tts_cost_micro_inr(model="kokoro-82m", billed_chars=320, card=card) == (0, "none")
     assert llm_cost_micro_inr(
         provider="sarvam", model="sarvam-30b", input_tokens=1_000_000,
         cached_input_tokens=200_000, output_tokens=100_000, card=card, usage_reported=True,

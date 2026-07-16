@@ -14,7 +14,12 @@ final sessionApiClientProvider = Provider<SessionApiClient>((ref) {
 });
 
 abstract interface class SessionApiClient {
-  Future<LiveKitSessionInfo> createSession({required String deviceId});
+  Future<TtsVoiceCatalog> fetchTtsVoiceCatalog();
+  Future<LiveKitSessionInfo> createSession({
+    required String deviceId,
+    String language = 'hi-IN',
+    String? voiceId,
+  });
   Future<LiveKitTokenInfo> mintToken({
     required String deviceId,
     required String sessionId,
@@ -37,7 +42,22 @@ class HttpSessionApiClient implements SessionApiClient {
   final http.Client? _client;
 
   @override
-  Future<LiveKitSessionInfo> createSession({required String deviceId}) async {
+  Future<TtsVoiceCatalog> fetchTtsVoiceCatalog() async {
+    final response = await _get('/v1/config');
+    if (response.statusCode != 200) {
+      throw SessionApiException(response.statusCode, response.body);
+    }
+    final body = jsonDecode(response.body) as Map<String, Object?>;
+    final tts = body['tts'] as Map<String, Object?>;
+    return TtsVoiceCatalog.fromJson(tts, baseUrl: baseUrl);
+  }
+
+  @override
+  Future<LiveKitSessionInfo> createSession({
+    required String deviceId,
+    String language = 'hi-IN',
+    String? voiceId,
+  }) async {
     final context = await database.readRecentTranscriptContext(limit: 12);
     // Exact state is delivered only by the reliable V2 local-memory protocol;
     // semantic recall is selected at query time. Session startup therefore
@@ -45,6 +65,8 @@ class HttpSessionApiClient implements SessionApiClient {
     final memories = <MemoryRecord>[];
     final response = await _postJson('/v1/session', {
       'device_id': deviceId,
+      'language': language,
+      'voice_id': voiceId,
       'recent_transcript_context': _recentTranscriptPayload(context),
       'memory_context': _memoryPayload(memories),
     });
@@ -57,6 +79,8 @@ class HttpSessionApiClient implements SessionApiClient {
       roomName: body['room_name'] as String,
       liveKitUrl: body['livekit_url'] as String,
       expiresAtMs: body['expires_at_ms'] as int,
+      language: body['language'] as String? ?? language,
+      voiceId: body['voice_id'] as String? ?? voiceId ?? '',
     );
   }
 
@@ -110,6 +134,83 @@ class HttpSessionApiClient implements SessionApiClient {
       }
     }
   }
+
+  Future<http.Response> _get(String path) async {
+    final client = _client ?? http.Client();
+    final shouldCloseClient = _client == null;
+    try {
+      return await client.get(Uri.parse('$baseUrl$path'));
+    } finally {
+      if (shouldCloseClient) {
+        client.close();
+      }
+    }
+  }
+}
+
+class TtsVoiceCatalog {
+  const TtsVoiceCatalog({
+    required this.language,
+    required this.defaultVoiceId,
+    required this.voices,
+  });
+
+  factory TtsVoiceCatalog.fromJson(
+    Map<String, Object?> json, {
+    required String baseUrl,
+  }) {
+    final rawVoices = json['voices'] as List<Object?>? ?? const [];
+    return TtsVoiceCatalog(
+      language: json['language'] as String,
+      defaultVoiceId: json['default_voice_id'] as String,
+      voices: [
+        for (final raw in rawVoices)
+          TtsVoiceOption.fromJson(
+            raw as Map<String, Object?>,
+            baseUrl: baseUrl,
+          ),
+      ],
+    );
+  }
+
+  final String language;
+  final String defaultVoiceId;
+  final List<TtsVoiceOption> voices;
+
+  String resolve(String? selectedVoiceId) {
+    if (selectedVoiceId != null &&
+        voices.any((voice) => voice.id == selectedVoiceId)) {
+      return selectedVoiceId;
+    }
+    return defaultVoiceId;
+  }
+}
+
+class TtsVoiceOption {
+  const TtsVoiceOption({
+    required this.id,
+    required this.displayName,
+    required this.voicePresentation,
+    required this.previewUri,
+  });
+
+  factory TtsVoiceOption.fromJson(
+    Map<String, Object?> json, {
+    required String baseUrl,
+  }) {
+    final previewUrl = json['preview_url'] as String? ?? '';
+    return TtsVoiceOption(
+      id: json['id'] as String,
+      displayName: json['display_name'] as String,
+      voicePresentation: json['voice_presentation'] as String,
+      previewUri: previewUrl.isEmpty ? null : Uri.parse('$baseUrl$previewUrl'),
+    );
+  }
+
+  final String id;
+  final String displayName;
+  final String voicePresentation;
+  final Uri? previewUri;
 }
 
 List<Map<String, Object?>> _recentTranscriptPayload(List<ChatMessage> context) {
@@ -165,12 +266,16 @@ class LiveKitSessionInfo {
     required this.roomName,
     required this.liveKitUrl,
     required this.expiresAtMs,
+    required this.language,
+    required this.voiceId,
   });
 
   final String sessionId;
   final String roomName;
   final String liveKitUrl;
   final int expiresAtMs;
+  final String language;
+  final String voiceId;
 }
 
 class LiveKitTokenInfo {

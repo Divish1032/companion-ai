@@ -20,6 +20,9 @@ Initial estimated provider costs:
 - Memory model serving: no per-request provider charge when enabled locally,
   but it adds model-cache storage, warm resident memory, CPU/GPU time, and
   potentially a larger Ubuntu instance.
+- Kokoro TTS: no per-request provider charge. Its CPU, RAM, disk, and host
+  allocation must be measured as infrastructure cost; zero provider billing is
+  never a claim that synthesis is free.
 
 Sprint -1 measured note:
 
@@ -63,6 +66,8 @@ Interpretation:
 - Estimated INR cost per session.
 - Provider fallback/retry count.
 - Memory-enabled versus memory-disabled session cost and latency delta.
+- Kokoro primary characters, Sarvam fallback characters, fallback reason, and
+  the measured Kokoro host cost curve for 100k, 1M, and 10M characters/month.
 - Embedding/reranker/planner request counts, model cache size, and amortized
   model-serving infrastructure cost.
 

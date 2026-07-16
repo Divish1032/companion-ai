@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from livekit import api
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,7 @@ from app.memory_extraction import (
 )
 from app.session_store import RateLimitExceeded, SessionStore
 from app.telemetry_store import TelemetryStore, TelemetryValidationError
+from app.voice_catalog import load_voice_catalog
 
 settings = Settings()
 store = SessionStore(settings.durable_store_path)
@@ -53,6 +55,7 @@ memory_candidate_extractor: MemoryCandidateExtractor = OpenAICompatibleMemoryCan
     timeout_seconds=settings.memory_extraction_timeout_seconds,
 )
 telemetry_store = TelemetryStore(settings.telemetry_store_path)
+voice_catalog = load_voice_catalog(settings.voice_catalog)
 
 
 @asynccontextmanager
@@ -66,6 +69,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Companion AI API", version="0.1.0", lifespan=lifespan)
+app.mount(
+    "/v1/tts-previews",
+    StaticFiles(directory="app/static/tts-previews", check_dir=False),
+    name="tts-previews",
+)
 
 
 @app.exception_handler(RequestValidationError)
@@ -124,6 +132,8 @@ class MemoryContextItem(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     device_id: str = Field(min_length=8, max_length=128)
+    language: str = Field(default="hi-IN", min_length=2, max_length=32)
+    voice_id: str | None = Field(default=None, min_length=1, max_length=80)
     recent_transcript_context: list[RecentTranscriptItem] = Field(default_factory=list)
     memory_context: list[MemoryContextItem] = Field(default_factory=list)
 
@@ -133,6 +143,8 @@ class CreateSessionResponse(BaseModel):
     room_name: str
     livekit_url: str
     expires_at_ms: int
+    language: str
+    voice_id: str
 
 
 class TokenRequest(BaseModel):
@@ -234,10 +246,11 @@ async def readiness() -> dict[str, object]:
 
 
 @app.get("/v1/config")
-async def config() -> dict[str, str]:
+async def config() -> dict[str, object]:
     return {
         "environment": settings.environment,
         "livekit_url": settings.livekit_url,
+        "tts": voice_catalog.public_payload(),
     }
 
 
@@ -419,6 +432,12 @@ async def create_session(
     session_store: Annotated[SessionStore, Depends(get_store)],
     assigner: Annotated[AgentAssigner, Depends(get_agent_assigner)],
 ) -> CreateSessionResponse:
+    if request.language != voice_catalog.language:
+        raise HTTPException(status_code=422, detail={"code": "unsupported_language"})
+    try:
+        selected_voice = voice_catalog.require(request.voice_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={"code": "unsupported_voice"}) from error
     bounded_context = [
         item.model_dump()
         for item in request.recent_transcript_context[-settings.max_recent_context_messages :]
@@ -435,6 +454,8 @@ async def create_session(
                 "memory_blocks": bounded_memory,
             },
             session_create_limit_per_day=settings.session_create_limit_per_day,
+            language=request.language,
+            voice_id=selected_voice.id,
         )
     except RateLimitExceeded as error:
         raise HTTPException(status_code=429, detail={"code": "rate_limited"}) from error
@@ -458,6 +479,8 @@ async def create_session(
         room_name=session.room_name,
         livekit_url=settings.livekit_url,
         expires_at_ms=session.expires_at_ms,
+        language=session.language,
+        voice_id=session.voice_id or voice_catalog.default_voice_id,
     )
 
 

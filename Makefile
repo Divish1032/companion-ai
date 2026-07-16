@@ -1,4 +1,4 @@
-.PHONY: setup dev check mobile logs
+.PHONY: setup dev check mobile logs tts-kokoro-smoke tts-kokoro-benchmark tts-kokoro-previews tts-e2e-sarvam
 
 setup:
 	cd apps/mobile && flutter pub get
@@ -20,3 +20,15 @@ mobile:
 
 logs:
 	docker compose --env-file .env -f infra/docker-compose.yml logs -f
+
+tts-kokoro-smoke:
+	./scripts/kokoro-smoke.sh
+
+tts-kokoro-benchmark:
+	./scripts/kokoro-benchmark.py
+
+tts-kokoro-previews:
+	./scripts/generate-kokoro-previews.py
+
+tts-e2e-sarvam:
+	./scripts/sarvam-fallback-e2e.sh

@@ -5,6 +5,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
+
 from sarvamai import AsyncSarvamAI
 from sarvamai.environment import SarvamAIEnvironment
 
@@ -14,6 +16,206 @@ from app.providers.interfaces import TTSAudioFrame, TTSProvider
 
 class TTSProviderUnavailable(RuntimeError):
     pass
+
+
+class KokoroTTSProvider(TTSProvider):
+    """Kokoro-FastAPI adapter for streamed, raw 24 kHz PCM16 audio."""
+
+    provider_name = "kokoro"
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        voice: str,
+        model: str = "kokoro",
+        sample_rate: int = 24000,
+        first_audio_timeout_seconds: float = 2.0,
+        total_timeout_seconds: float = 12.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.voice = voice
+        self.model_name = model
+        self.sample_rate = sample_rate
+        self.first_audio_timeout_seconds = first_audio_timeout_seconds
+        self.total_timeout_seconds = total_timeout_seconds
+        self.client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout=None, connect=2.0, write=2.0, pool=2.0)
+        )
+
+    async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
+        started = time.perf_counter()
+        emitted_frame = False
+        for chunk in chunk_tts_text(text):
+            pending = bytearray()
+            first_chunk_frame = True
+            emitted_chunk_frame = False
+            request = {
+                "model": self.model_name,
+                "input": chunk,
+                "voice": self.voice,
+                "response_format": "pcm",
+                "stream": True,
+                "lang_code": "h",
+                "speed": 1.0,
+                "return_download_link": False,
+            }
+            try:
+                async with asyncio.timeout(self.total_timeout_seconds):
+                    async with self.client.stream(
+                        "POST",
+                        f"{self.base_url}/audio/speech",
+                        json=request,
+                        headers={"accept": "audio/pcm"},
+                    ) as response:
+                        response.raise_for_status()
+                        stream = response.aiter_bytes()
+                        while True:
+                            try:
+                                if not emitted_chunk_frame:
+                                    audio_chunk = await asyncio.wait_for(
+                                        anext(stream),
+                                        timeout=self.first_audio_timeout_seconds,
+                                    )
+                                else:
+                                    audio_chunk = await anext(stream)
+                            except StopAsyncIteration:
+                                break
+                            if not audio_chunk:
+                                continue
+                            pending.extend(audio_chunk)
+                            while len(pending) >= _pcm16_frame_bytes(self.sample_rate, frame_ms=20):
+                                frame = _take_pcm16_frame(pending, self.sample_rate, frame_ms=20)
+                                emitted_frame = True
+                                emitted_chunk_frame = True
+                                yield self._audio_frame(
+                                    frame,
+                                    chunk=chunk,
+                                    first_chunk_frame=first_chunk_frame,
+                                    started=started,
+                                )
+                                first_chunk_frame = False
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, httpx.HTTPError) as error:
+                raise TTSProviderUnavailable(f"Kokoro TTS stream failed: {type(error).__name__}") from error
+
+            if len(pending) % 2:
+                raise TTSProviderUnavailable("Kokoro TTS stream returned misaligned PCM16 audio.")
+            if pending:
+                emitted_frame = True
+                emitted_chunk_frame = True
+                frame = _final_pcm16_frame(bytes(pending), self.sample_rate)
+                yield self._audio_frame(
+                    frame,
+                    chunk=chunk,
+                    first_chunk_frame=first_chunk_frame,
+                    started=started,
+                )
+            if not emitted_chunk_frame:
+                raise TTSProviderUnavailable("Kokoro TTS stream returned no audio for a text chunk.")
+
+        if not emitted_frame and text.strip():
+            raise TTSProviderUnavailable("Kokoro TTS stream returned no audio.")
+
+    def _audio_frame(
+        self,
+        frame: CanonicalAudioFrame,
+        *,
+        chunk: str,
+        first_chunk_frame: bool,
+        started: float,
+    ) -> TTSAudioFrame:
+        return TTSAudioFrame(
+            frame=frame,
+            provider=self.provider_name,
+            model="kokoro-82m",
+            text=chunk if first_chunk_frame else "",
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            audio_ms=frame.duration_ms,
+            chars=len(chunk) if first_chunk_frame else 0,
+            billed_units=0,
+            cost_units=0,
+        )
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+class FailoverTTSProvider(TTSProvider):
+    """Session-scoped primary/fallback TTS without replaying partial speech."""
+
+    def __init__(
+        self,
+        *,
+        primary: TTSProvider,
+        fallback: TTSProvider,
+        primary_name: str,
+        fallback_name: str,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.primary_name = primary_name
+        self.fallback_name = fallback_name
+        self._active: TTSProvider = primary
+        self._fallback_events: list[dict[str, object]] = []
+
+    async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
+        if self._active is self.fallback:
+            async for frame in self.fallback.synthesize(text, language):
+                yield frame
+            return
+
+        if _is_latin_only(text):
+            self._cut_over(reason="latin_only", audio_started=False)
+            async for frame in self.fallback.synthesize(text, language):
+                yield frame
+            return
+
+        audio_started = False
+        try:
+            async for frame in self.primary.synthesize(text, language):
+                audio_started = True
+                yield frame
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._cut_over(reason="primary_after_audio" if audio_started else "primary_before_audio", audio_started=audio_started)
+            if audio_started:
+                return
+            try:
+                async for frame in self.fallback.synthesize(text, language):
+                    yield frame
+            except asyncio.CancelledError:
+                raise
+            except Exception as fallback_error:
+                raise TTSProviderUnavailable(
+                    f"{self.primary_name} failed before audio and {self.fallback_name} fallback failed: "
+                    f"{type(fallback_error).__name__}"
+                ) from fallback_error
+
+    def drain_fallback_events(self) -> list[dict[str, object]]:
+        events = self._fallback_events
+        self._fallback_events = []
+        return events
+
+    async def close(self) -> None:
+        await self.primary.close()
+        if self.fallback is not self.primary:
+            await self.fallback.close()
+
+    def _cut_over(self, *, reason: str, audio_started: bool) -> None:
+        self._active = self.fallback
+        self._fallback_events.append(
+            {
+                "from": self.primary_name,
+                "to": self.fallback_name,
+                "reason": reason,
+                "audio_started": audio_started,
+            }
+        )
 
 
 class SarvamBulbulTTSProvider(TTSProvider):
@@ -91,7 +293,7 @@ class SarvamBulbulTTSProvider(TTSProvider):
                 raise TTSProviderUnavailable(f"Sarvam TTS stream failed: {error}") from error
 
             if pending:
-                frame = _pcm16_frame(bytes(pending), self.sample_rate)
+                frame = _final_pcm16_frame(bytes(pending), self.sample_rate)
                 emitted_frame = True
                 emitted_chunk_frame = True
                 yield TTSAudioFrame(
@@ -169,6 +371,12 @@ def _safe_boundary(text: str, max_chars: int) -> int:
     return max_chars
 
 
+def _is_latin_only(text: str) -> bool:
+    has_devanagari = any("\u0900" <= char <= "\u097f" for char in text)
+    has_latin = any(("a" <= char.lower() <= "z") for char in text)
+    return has_latin and not has_devanagari
+
+
 def _sarvam_environment(base_url: str) -> SarvamAIEnvironment:
     websocket_url = base_url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
     return SarvamAIEnvironment(base=base_url, production=websocket_url)
@@ -188,6 +396,17 @@ def _take_pcm16_frame(
     pcm = bytes(pending[:byte_count])
     del pending[:byte_count]
     return _pcm16_frame(pcm, sample_rate)
+
+
+def _final_pcm16_frame(pcm: bytes, sample_rate: int) -> CanonicalAudioFrame:
+    """Return one exact 20 ms frame, padding only the final incomplete PCM."""
+
+    if len(pcm) % 2:
+        raise TTSProviderUnavailable("TTS stream returned misaligned PCM16 audio.")
+    frame_bytes = _pcm16_frame_bytes(sample_rate, frame_ms=20)
+    if len(pcm) > frame_bytes:
+        raise TTSProviderUnavailable("TTS stream final PCM exceeded a 20 ms frame.")
+    return _pcm16_frame(pcm.ljust(frame_bytes, b"\x00"), sample_rate)
 
 
 def _pcm16_frame(pcm: bytes, sample_rate: int) -> CanonicalAudioFrame:

@@ -1,0 +1,31 @@
+[catalog]
+language = "hi-IN"
+default_voice_id = "hi_aarohi"
+
+[[voices]]
+id = "hi_aarohi"
+display_name = "Aarohi"
+voice_presentation = "female"
+kokoro_voice = "hf_alpha"
+sarvam_fallback_speaker = "ritu"
+
+[[voices]]
+id = "hi_naina"
+display_name = "Naina"
+voice_presentation = "female"
+kokoro_voice = "hf_beta"
+sarvam_fallback_speaker = "priya"
+
+[[voices]]
+id = "hi_kabir"
+display_name = "Kabir"
+voice_presentation = "male"
+kokoro_voice = "hm_omega"
+sarvam_fallback_speaker = "shubh"
+
+[[voices]]
+id = "hi_vihaan"
+display_name = "Vihaan"
+voice_presentation = "male"
+kokoro_voice = "hm_psi"
+sarvam_fallback_speaker = "aditya"

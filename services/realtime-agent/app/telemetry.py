@@ -54,6 +54,10 @@ def stt_cost_micro_inr(*, provider: str, audio_millis: int, card: CostRateCard) 
 
 
 def tts_cost_micro_inr(*, model: str, billed_chars: int, card: CostRateCard) -> tuple[int, CostSource]:
+    if model == "kokoro-82m":
+        # There is no provider invoice for the local model. Infrastructure is
+        # measured separately and must not be represented as a free request.
+        return 0, "none"
     if model == "bulbul:v2":
         return max(billed_chars, 0) * card.tts_v2_micro_inr_per_char, "estimated"
     if model == "bulbul:v3":

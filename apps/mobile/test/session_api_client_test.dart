@@ -88,6 +88,65 @@ void main() {
       expect(ids, isEmpty);
     },
   );
+
+  test('catalog and selected voice are sent with a new session', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    final client = HttpSessionApiClient(
+      baseUrl: 'http://api.test',
+      database: database,
+      client: MockClient((request) async {
+        if (request.url.path == '/v1/config') {
+          return http.Response(
+            jsonEncode({
+              'tts': {
+                'language': 'hi-IN',
+                'default_voice_id': 'hi_aarohi',
+                'voices': [
+                  {
+                    'id': 'hi_aarohi',
+                    'display_name': 'Aarohi',
+                    'voice_presentation': 'female',
+                    'traits': [],
+                    'preview_url': '/v1/tts-previews/hi_aarohi.opus',
+                  },
+                ],
+              },
+            }),
+            200,
+          );
+        }
+        expect(request.url.path, '/v1/session');
+        final body = jsonDecode(request.body) as Map<String, Object?>;
+        expect(body['language'], 'hi-IN');
+        expect(body['voice_id'], 'hi_aarohi');
+        return http.Response(
+          jsonEncode({
+            'session_id': 'session_test',
+            'room_name': 'room_test',
+            'livekit_url': 'ws://livekit.test',
+            'expires_at_ms': 123,
+            'language': 'hi-IN',
+            'voice_id': 'hi_aarohi',
+          }),
+          200,
+        );
+      }),
+    );
+
+    final catalog = await client.fetchTtsVoiceCatalog();
+    expect(catalog.resolve('removed_voice'), 'hi_aarohi');
+    final session = await client.createSession(
+      deviceId: 'device_test',
+      language: catalog.language,
+      voiceId: catalog.defaultVoiceId,
+    );
+    expect(session.voiceId, 'hi_aarohi');
+    expect(
+      catalog.voices.single.previewUri.toString(),
+      'http://api.test/v1/tts-previews/hi_aarohi.opus',
+    );
+  });
 }
 
 MemoryRecordsCompanion _memory({

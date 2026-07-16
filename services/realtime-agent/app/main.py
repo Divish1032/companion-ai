@@ -1,3 +1,6 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -8,12 +11,27 @@ from app.lifecycle import (
     AgentSupervisor,
     selected_llm_provider_name,
     selected_stt_provider_name,
+    selected_tts_fallback_provider_name,
     selected_tts_provider_name,
 )
+from app.tts_readiness import TTSReadiness
 
 settings = Settings()
 supervisor = AgentSupervisor(settings)
-app = FastAPI(title="Companion AI Realtime Agent", version="0.1.0")
+tts_readiness = TTSReadiness(settings)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    warmup_task = asyncio.create_task(tts_readiness.warm_up())
+    try:
+        yield
+    finally:
+        warmup_task.cancel()
+        await asyncio.gather(warmup_task, return_exceptions=True)
+
+
+app = FastAPI(title="Companion AI Realtime Agent", version="0.1.0", lifespan=lifespan)
 
 
 class AgentAssignRequest(BaseModel):
@@ -21,6 +39,8 @@ class AgentAssignRequest(BaseModel):
     room_name: str = Field(min_length=1, max_length=128)
     expires_at_ms: int
     recent_context: dict[str, object] | list[dict[str, object]] = Field(default_factory=dict)
+    language: str = Field(default="hi-IN", min_length=2, max_length=32)
+    voice_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class AgentCancelRequest(BaseModel):
@@ -36,6 +56,14 @@ async def health() -> dict[str, str]:
     }
 
 
+@app.get("/readiness")
+async def readiness() -> dict[str, object]:
+    payload = tts_readiness.payload()
+    if payload["status"] != "ready":
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
 @app.post("/v1/agent/assign")
 async def assign_agent(request: AgentAssignRequest) -> dict[str, str]:
     try:
@@ -45,6 +73,8 @@ async def assign_agent(request: AgentAssignRequest) -> dict[str, str]:
                 room_name=request.room_name,
                 expires_at_ms=request.expires_at_ms,
                 recent_context=request.recent_context,
+                language=request.language,
+                voice_id=request.voice_id,
             )
         )
     except AgentAssignmentError as error:
@@ -76,9 +106,11 @@ async def provider_route(language: str) -> dict[str, str]:
         "stt": route.stt,
         "llm": route.llm,
         "tts": route.tts,
+        "tts_fallback": route.tts_fallback,
         "effective_stt": selected_stt_provider_name(settings),
         "effective_llm": selected_llm_provider_name(settings),
         "effective_tts": selected_tts_provider_name(settings),
+        "effective_tts_fallback": selected_tts_fallback_provider_name(settings),
         "memory_retrieval": memory.retrieval,
         "memory_reranker": memory.reranker,
         "memory_planner": memory.planner,

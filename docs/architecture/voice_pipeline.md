@@ -205,4 +205,35 @@ Tune based on actual Sarvam TTS latency.
 
 Never force a TTS chunk in the middle of a Devanagari word or Romanized Hindi word. Validate chunking against actual Hindi/Hinglish LLM outputs before field testing.
 
+### 8.5 Hindi TTS provider selection and failover
+
+Hindi (`hi-IN`) uses self-hosted Kokoro as its default TTS provider. The MVP
+catalogue is a set of four native, non-cloned Hindi packs, mapped to stable
+public voice IDs. The mobile client sends only a public voice ID; provider
+speaker names and fallback mappings stay server-side.
+
+Sarvam Bulbul remains the fallback provider. Failover is session-scoped:
+
+1. A Kokoro failure before the first audio frame retries the same TTS chunk via
+   Sarvam and selects Sarvam for the rest of that session.
+2. A Latin-only assistant response selects Sarvam before synthesis, because the
+   Hindi Kokoro packs are not the quality baseline for that response shape.
+3. A Kokoro failure after audio has been published never replays the chunk,
+   avoiding duplicate speech. The next chunk/utterance uses Sarvam instead.
+4. Cancellation (including barge-in) is never treated as provider failure and
+   must not trigger fallback.
+
+The agent emits a reliable, text-free `tts_provider_changed` event and records
+the transition reason, provider, character count, and audio timing. It must not
+log TTS input text or raw PCM. Kokoro's `/health` is a liveness check only; a
+deployment is ready for Hindi traffic only after every enabled pack has passed
+a real synthesis smoke test. At process startup the agent warms every published
+pack using a fixed non-user phrase and exposes the aggregate result on
+`/readiness`; the normal two-second live first-audio cutoff remains unchanged.
+
+The app may play only fixed synthetic preview clips generated from the pinned
+model image. Preview playback stops when its selector closes and before any
+microphone/session audio starts; no conversation audio is used or retained for
+this feature.
+
 ---

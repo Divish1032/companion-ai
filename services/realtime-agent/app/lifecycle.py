@@ -27,6 +27,8 @@ from app.memory_planner import HttpMemoryPlanner, MemoryPlanner
 from app.providers import (
     LLMProvider,
     MemoryStrategyRoute,
+    FailoverTTSProvider,
+    KokoroTTSProvider,
     PersonaLLMProvider,
     ProviderRouting,
     SarvamBulbulTTSProvider,
@@ -45,6 +47,7 @@ from app.telemetry import (
     stt_cost_micro_inr,
     tts_cost_micro_inr,
 )
+from app.voice_catalog import load_voice_catalog
 
 
 class AgentAssignmentError(Exception):
@@ -57,6 +60,8 @@ class AgentAssignment:
     room_name: str
     expires_at_ms: int
     recent_context: dict[str, object] | list[dict[str, object]]
+    language: str = "hi-IN"
+    voice_id: str | None = None
 
 
 class AgentTransport(Protocol):
@@ -306,7 +311,11 @@ class RealtimeAgentSession:
         self.transport = transport
         self.stt_provider = stt_provider or create_stt_provider(settings)
         self.llm_provider = llm_provider or create_llm_provider(settings)
-        self.tts_provider = tts_provider or create_tts_provider(settings)
+        self.tts_provider = tts_provider or create_tts_provider(
+            settings,
+            language=assignment.language,
+            voice_id=assignment.voice_id,
+        )
         self.safety_classifier = safety_classifier or SafetyClassifier()
         self.memory_strategy = selected_memory_strategy(settings)
         self.memory_planner = memory_planner or HttpMemoryPlanner(
@@ -366,6 +375,7 @@ class RealtimeAgentSession:
         finally:
             self.cancel_current_turn()
             await self.close_stt_streams()
+            await self.tts_provider.close()
             await self.transport.disconnect()
 
     def cancel_current_turn(self) -> bool:
@@ -1321,10 +1331,10 @@ class RealtimeAgentSession:
             "billed_units": 0.0,
             "cost_units": 0.0,
         }
-        provider = selected_tts_provider_name(self.settings)
+        provider = selected_tts_provider_name(self.settings, language=self.assignment.language)
         model = self.settings.tts_model
         try:
-            async for tts_frame in self.tts_provider.synthesize(text, self.settings.language):
+            async for tts_frame in self.tts_provider.synthesize(text, self.assignment.language):
                 if first_audio_ms is None:
                     first_audio_ms = _monotonic_ms() - started
                     metric.mark("tts_first_audio")
@@ -1348,6 +1358,26 @@ class RealtimeAgentSession:
                 await self.transport.publish_audio_frame(tts_frame.frame)
                 if "tts_first_published" not in metric.timestamps_ms:
                     metric.mark("tts_first_published")
+            if isinstance(self.tts_provider, FailoverTTSProvider):
+                for fallback_event in self.tts_provider.drain_fallback_events():
+                    provider = str(fallback_event["to"])
+                    metric.statuses["tts_fallback_reason"] = str(fallback_event["reason"])
+                    metric.statuses["tts_fallback_provider"] = provider
+                    metric.counts["tts_fallback_count"] = (
+                        metric.counts.get("tts_fallback_count", 0) + 1
+                    )
+                    if fallback_event["audio_started"]:
+                        metric.statuses["tts_status"] = "partial_primary_failure"
+                    await self.transport.publish_reliable(
+                        self.sequencer.encode(
+                            event_type="tts_provider_changed",
+                            turn_id=turn_id,
+                            payload={
+                                **fallback_event,
+                                "voice_id": self.assignment.voice_id,
+                            },
+                        )
+                    )
         except asyncio.CancelledError:
             await self.transport.stop_audio(fade_out_ms=60)
             metric.mark("cancel_complete")
@@ -1426,7 +1456,9 @@ class RealtimeAgentSession:
                 turn_id=turn_id,
                 payload={
                     "error_code": _error_code(message),
-                    "provider": selected_tts_provider_name(self.settings),
+                    "provider": selected_tts_provider_name(
+                        self.settings, language=self.assignment.language
+                    ),
                 },
             )
         )
@@ -1590,22 +1622,54 @@ def create_llm_provider(settings: Settings) -> LLMProvider:
         return _UnavailableLLMProvider(provider_name=provider_name, error=error)
 
 
-def create_tts_provider(settings: Settings) -> TTSProvider:
-    provider_name = selected_tts_provider_name(settings)
+def create_tts_provider(
+    settings: Settings,
+    *,
+    language: str | None = None,
+    voice_id: str | None = None,
+) -> TTSProvider:
+    resolved_language = language or settings.language
+    provider_name = selected_tts_provider_name(settings, language=resolved_language)
+    fallback_name = selected_tts_fallback_provider_name(settings, language=resolved_language)
     try:
-        if provider_name == "mock":
-            return MockTTSProvider()
-        if provider_name == "sarvam":
-            return SarvamBulbulTTSProvider(
-                api_key=settings.sarvam_api_key,
-                model=settings.tts_model,
-                base_url=settings.sarvam_tts_base_url,
-                speaker=settings.tts_speaker,
-                sample_rate=settings.tts_sample_rate,
-                timeout_seconds=settings.tts_timeout_seconds,
-                price_per_10k_chars=settings.tts_price_per_10k_chars,
+        catalog = load_voice_catalog(settings.voice_catalog)
+        profile = catalog.require(voice_id)
+        if resolved_language != catalog.language:
+            raise AgentAssignmentError(f"Unsupported TTS language: {resolved_language}")
+
+        def build(name: str) -> TTSProvider:
+            if name == "mock":
+                return MockTTSProvider()
+            if name == "kokoro":
+                return KokoroTTSProvider(
+                    base_url=settings.kokoro_base_url,
+                    model=settings.kokoro_model,
+                    voice=profile.kokoro_voice,
+                    sample_rate=settings.tts_sample_rate,
+                    first_audio_timeout_seconds=settings.kokoro_first_audio_timeout_seconds,
+                    total_timeout_seconds=settings.kokoro_total_timeout_seconds,
+                )
+            if name == "sarvam":
+                return SarvamBulbulTTSProvider(
+                    api_key=settings.sarvam_api_key,
+                    model=settings.tts_model,
+                    base_url=settings.sarvam_tts_base_url,
+                    speaker=profile.sarvam_fallback_speaker,
+                    sample_rate=settings.tts_sample_rate,
+                    timeout_seconds=settings.tts_timeout_seconds,
+                    price_per_10k_chars=settings.tts_price_per_10k_chars,
+                )
+            raise AgentAssignmentError(f"Unsupported TTS provider: {name}")
+
+        primary = build(provider_name)
+        if fallback_name and fallback_name != provider_name:
+            return FailoverTTSProvider(
+                primary=primary,
+                fallback=build(fallback_name),
+                primary_name=provider_name,
+                fallback_name=fallback_name,
             )
-        raise AgentAssignmentError(f"Unsupported TTS provider: {provider_name}")
+        return primary
     except Exception as error:
         return _UnavailableTTSProvider(provider_name=provider_name, error=error)
 
@@ -1630,14 +1694,26 @@ def selected_stt_provider_name(settings: Settings) -> str:
         return "vosk"
 
 
-def selected_tts_provider_name(settings: Settings) -> str:
+def selected_tts_provider_name(settings: Settings, *, language: str | None = None) -> str:
     if settings.tts_provider:
         return settings.tts_provider
     try:
         routing = ProviderRouting.from_dict(_load_persona_config(settings))
-        return routing.for_language(settings.language).tts
+        return routing.for_language(language or settings.language).tts
     except Exception:
         return "mock"
+
+
+def selected_tts_fallback_provider_name(settings: Settings, *, language: str | None = None) -> str:
+    if settings.tts_fallback_provider:
+        return settings.tts_fallback_provider
+    if settings.tts_provider:
+        return ""
+    try:
+        routing = ProviderRouting.from_dict(_load_persona_config(settings))
+        return routing.for_language(language or settings.language).tts_fallback
+    except Exception:
+        return ""
 
 
 def selected_memory_strategy(settings: Settings) -> MemoryStrategyRoute:

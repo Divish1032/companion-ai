@@ -80,7 +80,8 @@ Current expected processors and roles:
 | Processor | Role | Data categories sent | Status | Public policy reference |
 | --- | --- | --- | --- | --- |
 | Companion AI backend | primary service operator | session audio in transit, transcript text, response text, metrics | required for MVP | internal docs and future public privacy notice |
-| Sarvam AI (Axonwise Private Limited) | STT, TTS, and possibly LLM processor | audio, transcript text, response text needed for active turn processing | expected primary provider, subject to final integration choice | https://www.sarvam.ai/privacy-policy and https://www.sarvam.ai/terms-of-service |
+| Kokoro TTS self-hosted service | primary Hindi speech synthesis processor operated by us | assistant response text needed for an active turn; generated audio remains in the live session | deployed primary Hindi TTS; no raw microphone audio is sent to it | pinned container image and infrastructure runbook |
+| Sarvam AI (Axonwise Private Limited) | STT, fallback TTS, and possibly LLM processor | audio, transcript text, response text needed for an active turn; response text reaches TTS only after a Kokoro fallback | deployed fallback/selected-provider processor, subject to final integration choice | https://www.sarvam.ai/privacy-policy and https://www.sarvam.ai/terms-of-service |
 | LiveKit self-hosted deployment | realtime transport processor controlled by us | live audio transport metadata and media in transit | expected for MVP | self-hosted infra under our control |
 
 Notes:

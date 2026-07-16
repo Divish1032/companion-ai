@@ -3,7 +3,13 @@ from app.memory_router import route_memory_query
 from app.providers.interfaces import LLMMessage
 from app.providers.llm import PersonaLLMProvider, SarvamChatLLMProvider
 from app.providers.mock import MockLLMProvider, MockSTTProvider, MockTTSProvider
-from app.providers.tts import SarvamBulbulTTSProvider, chunk_tts_text
+from app.providers.tts import (
+    FailoverTTSProvider,
+    KokoroTTSProvider,
+    SarvamBulbulTTSProvider,
+    TTSProviderUnavailable,
+    chunk_tts_text,
+)
 from app.audio_pipeline import pcm_sine_frame
 from app.config import Settings
 from app.lifecycle import selected_stt_provider_name
@@ -33,7 +39,25 @@ def test_provider_routing_supports_language_override() -> None:
     assert hindi_route.stt == "sarvam"
     assert hindi_route.llm == "sarvam"
     assert hindi_route.tts == "sarvam"
+    assert hindi_route.tts_fallback == ""
     assert fallback_route.stt == "sarvam"
+
+
+def test_hindi_routes_kokoro_with_sarvam_fallback() -> None:
+    routing = ProviderRouting.from_dict(
+        {
+            "providers": {
+                "default": {"stt": "sarvam", "llm": "sarvam", "tts": "sarvam"},
+                "languages": {
+                    "hi-IN": {"tts": "kokoro", "tts_fallback": "sarvam"},
+                },
+            },
+        }
+    )
+
+    route = routing.for_language("hi-IN")
+    assert route.tts == "kokoro"
+    assert route.tts_fallback == "sarvam"
 
 
 def test_hindi_uses_vosk_by_default_and_sarvam_remains_an_explicit_override() -> None:
@@ -306,7 +330,142 @@ def test_sarvam_tts_streams_linear16_as_canonical_frames() -> None:
     assert captured["output_audio_codec"] == "linear16"
     assert frames[0].provider == "sarvam"
     assert frames[0].billed_units == len("Namaste.")
-    assert sum(frame.audio_ms for frame in frames) == 50
+    assert sum(frame.audio_ms for frame in frames) == 60
     assert all(frame.frame.sample_rate == 24000 for frame in frames)
     assert all(frame.frame.num_channels == 1 for frame in frames)
-    assert all(len(frame.frame.pcm16) <= 960 for frame in frames)
+    assert all(len(frame.frame.pcm16) == 960 for frame in frames)
+
+
+def test_kokoro_tts_streams_fragmented_pcm_and_uses_hindi_request_shape() -> None:
+    import asyncio
+    import httpx
+
+    captured = {}
+
+    class FragmentedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):  # noqa: ANN202
+            yield b"\x00" * 801
+            yield b"\x00" * 1119
+            yield b"\x00" * 880
+
+        async def aclose(self) -> None:
+            return None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, stream=FragmentedStream())
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = KokoroTTSProvider(
+                base_url="http://kokoro.test/v1",
+                voice="hf_alpha",
+                client=client,
+            )
+            return [frame async for frame in provider.synthesize("नमस्ते", "hi-IN")]
+
+    frames = asyncio.run(scenario())
+
+    assert len(frames) == 3
+    assert frames[0].provider == "kokoro"
+    assert frames[0].model == "kokoro-82m"
+    assert frames[0].chars == len("नमस्ते")
+    assert frames[0].billed_units == 0
+    assert all(frame.frame.sample_rate == 24000 for frame in frames)
+    assert all(len(frame.frame.pcm16) == 960 for frame in frames)
+    import json
+
+    payload = json.loads(captured["request"].content)
+    assert payload == {
+        "model": "kokoro",
+        "input": "नमस्ते",
+        "voice": "hf_alpha",
+        "response_format": "pcm",
+        "stream": True,
+        "lang_code": "h",
+        "speed": 1.0,
+        "return_download_link": False,
+    }
+
+
+def test_failover_retries_before_audio_and_never_replays_after_audio() -> None:
+    import asyncio
+
+    class FailingProvider:
+        async def synthesize(self, text, language):  # noqa: ANN001, ANN202
+            if False:
+                yield None
+            raise TTSProviderUnavailable("primary failure")
+
+    class PartialProvider:
+        async def synthesize(self, text, language):  # noqa: ANN001, ANN202
+            yield _tts_frame("kokoro")
+            raise TTSProviderUnavailable("mid-stream failure")
+
+    class FallbackProvider:
+        async def synthesize(self, text, language):  # noqa: ANN001, ANN202
+            yield _tts_frame("sarvam")
+
+    async def before_audio():
+        provider = FailoverTTSProvider(
+            primary=FailingProvider(),
+            fallback=FallbackProvider(),
+            primary_name="kokoro",
+            fallback_name="sarvam",
+        )
+        return [frame async for frame in provider.synthesize("नमस्ते", "hi-IN")], provider
+
+    async def after_audio():
+        provider = FailoverTTSProvider(
+            primary=PartialProvider(),
+            fallback=FallbackProvider(),
+            primary_name="kokoro",
+            fallback_name="sarvam",
+        )
+        return [frame async for frame in provider.synthesize("नमस्ते", "hi-IN")], provider
+
+    before_frames, before = asyncio.run(before_audio())
+    assert [frame.provider for frame in before_frames] == ["sarvam"]
+    assert before.drain_fallback_events()[0]["reason"] == "primary_before_audio"
+
+    after_frames, after = asyncio.run(after_audio())
+    assert [frame.provider for frame in after_frames] == ["kokoro"]
+    assert after.drain_fallback_events()[0]["reason"] == "primary_after_audio"
+
+
+def test_failover_uses_sarvam_for_latin_only_output() -> None:
+    import asyncio
+
+    class PrimaryProvider:
+        async def synthesize(self, text, language):  # noqa: ANN001, ANN202
+            raise AssertionError("Kokoro must not receive Latin-only Hindi")
+            yield _tts_frame("kokoro")
+
+    class FallbackProvider:
+        async def synthesize(self, text, language):  # noqa: ANN001, ANN202
+            yield _tts_frame("sarvam")
+
+    async def scenario():
+        provider = FailoverTTSProvider(
+            primary=PrimaryProvider(),
+            fallback=FallbackProvider(),
+            primary_name="kokoro",
+            fallback_name="sarvam",
+        )
+        frames = [frame async for frame in provider.synthesize("aaj mood off hai", "hi-IN")]
+        return frames, provider
+
+    frames, provider = asyncio.run(scenario())
+    assert [frame.provider for frame in frames] == ["sarvam"]
+    assert provider.drain_fallback_events()[0]["reason"] == "latin_only"
+
+
+def _tts_frame(provider: str):  # noqa: ANN201
+    from app.providers.interfaces import TTSAudioFrame
+
+    return TTSAudioFrame(
+        frame=pcm_sine_frame(duration_ms=20),
+        provider=provider,
+        model="test",
+        chars=1,
+    )

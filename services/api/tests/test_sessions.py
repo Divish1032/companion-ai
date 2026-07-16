@@ -93,6 +93,54 @@ def test_one_active_session_per_device_until_end(tmp_path: Path) -> None:
     assert third.json()["session_id"] != first.json()["session_id"]
 
 
+def test_tts_catalog_is_public_and_session_voice_is_validated(tmp_path: Path) -> None:
+    assigner = _FakeAgentAssigner()
+    client, store = _client(tmp_path, assigner=assigner)
+
+    config = client.get("/v1/config")
+    assert config.status_code == 200
+    tts = config.json()["tts"]
+    assert tts["language"] == "hi-IN"
+    assert tts["default_voice_id"] == "hi_aarohi"
+    assert {voice["id"] for voice in tts["voices"]} == {
+        "hi_aarohi",
+        "hi_naina",
+        "hi_kabir",
+        "hi_vihaan",
+    }
+    assert tts["voices"][0]["preview_url"] == "/v1/tts-previews/hi_aarohi.opus"
+    assert all("kokoro_voice" not in voice for voice in tts["voices"])
+    preview = client.get(tts["voices"][0]["preview_url"])
+    assert preview.status_code == 200
+    assert len(preview.content) > 1000
+
+    response = client.post(
+        "/v1/session",
+        json={"device_id": "anon_test_device", "language": "hi-IN", "voice_id": "hi_kabir"},
+    )
+    assert response.status_code == 200
+    assert response.json()["voice_id"] == "hi_kabir"
+    session = store.get_active_session(
+        session_id=response.json()["session_id"], device_id="anon_test_device"
+    )
+    assert session is not None
+    assert (session.language, session.voice_id) == ("hi-IN", "hi_kabir")
+
+    invalid_voice = client.post(
+        "/v1/session",
+        json={"device_id": "anon_other_device", "voice_id": "hf_alpha"},
+    )
+    assert invalid_voice.status_code == 422
+    assert invalid_voice.json()["detail"]["code"] == "unsupported_voice"
+
+    invalid_language = client.post(
+        "/v1/session",
+        json={"device_id": "anon_third_device", "language": "ta-IN"},
+    )
+    assert invalid_language.status_code == 422
+    assert invalid_language.json()["detail"]["code"] == "unsupported_language"
+
+
 def test_token_requires_active_matching_session(tmp_path: Path) -> None:
     client, _store = _client(tmp_path)
     main.settings.livekit_api_key = "devkey"

@@ -1,0 +1,28 @@
+{
+  "codec": "opus",
+  "model_image": "ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0@sha256:d2c63627e80e32df7fab7f1e969c2b6b26272439d837ef195f40d4a82eca195e",
+  "preview_text": "\u0928\u092e\u0938\u094d\u0924\u0947, \u0906\u091c \u0906\u092a\u0915\u093e \u0926\u093f\u0928 \u0915\u0948\u0938\u093e \u0930\u0939\u093e?",
+  "sample_rate": 24000,
+  "voices": {
+    "hi_aarohi": {
+      "file": "hi_aarohi.opus",
+      "kokoro_voice": "hf_alpha",
+      "sha256": "ec45acd3d456ca0fa34fc3c01d3715a047bd6dcc3c4420176b341d59d1a21bef"
+    },
+    "hi_kabir": {
+      "file": "hi_kabir.opus",
+      "kokoro_voice": "hm_omega",
+      "sha256": "b15911366d46f4be6b58ab889de822f9b50a6d263a9510f7eead9fc95eef551e"
+    },
+    "hi_naina": {
+      "file": "hi_naina.opus",
+      "kokoro_voice": "hf_beta",
+      "sha256": "648cd35a7a9fde4c5f1e5aa4558159b88b4faaec5c807a854f20e095a20fa1c6"
+    },
+    "hi_vihaan": {
+      "file": "hi_vihaan.opus",
+      "kokoro_voice": "hm_psi",
+      "sha256": "239703d8048a6e69c2f1ae045970ed2426e43941d9b5c7c717314f9e51c45f4a"
+    }
+  }
+}

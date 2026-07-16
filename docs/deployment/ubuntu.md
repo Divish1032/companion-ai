@@ -15,6 +15,7 @@ coturn               authenticated TURN fallback
 redis                durable rate-limit/session support
 api                  sessions, tokens, memory model endpoints
 realtime-agent       VAD, STT, LLM, TTS, room agent
+kokoro-tts           private CPU Hindi TTS service; primary TTS for hi-IN
 ```
 
 Phone-owned SQLite/Drift memory and the ObjectBox vector index remain on the
@@ -24,7 +25,7 @@ are stateless compute only; they must not become a server-side memory store.
 ## Host prerequisites
 
 - Ubuntu 22.04 or 24.04.
-- Recommended starting point: 4 vCPU, 8 GB RAM, and 80-100 GB SSD.
+- Candidate starting point: 4 vCPU, 8 GB RAM, and 80-100 GB SSD.
 - Docker Engine and the Compose plugin.
 - A DNS name and TLS certificate path for the API/LiveKit deployment.
 - Firewall/security-group rules for HTTPS, LiveKit signaling/WebRTC, TURN
@@ -32,9 +33,11 @@ are stateless compute only; they must not become a server-side memory store.
 - A private host directory for the Hugging Face model cache, separate from
   application/session data and excluded from routine application backups.
 
-The 4 vCPU/8 GB size is only a starting point for optional model experiments.
-Hindi/Hinglish production traffic uses deterministic memory processing and does
-not require model serving or GPU hardware.
+The 4 vCPU/8 GB size is only a starting point, not a capacity commitment. It
+must accommodate LiveKit, the agent, and the resident Kokoro model as well as
+optional model experiments. Hindi/Hinglish traffic does not require a GPU, but
+the measured 1- and 5-session Kokoro latency, CPU, RAM, and fallback rate must
+pass the deployment gate before selecting an instance size.
 
 ## Configuration order
 
@@ -93,6 +96,49 @@ Before accepting real sessions:
 5. Keep EmbeddingGemma enabled for embedding creation. Keep Qwen reranking and
    planning disabled; deterministic reranking/planning and deterministic local
    fallback remain the default safety path.
+6. Use the exact pinned `kokoro-tts` image digest from
+   `infra/docker-compose.yml`. Do not expose port 8880 publicly: the
+   realtime-agent reaches it only over the Docker network. Keep the local
+   loopback binding only for host diagnostics. Configure `AGENT_KOKORO_BASE_URL`
+   to the Docker service URL, and keep `AGENT_SARVAM_API_KEY` available for the
+   existing Bulbul fallback.
+
+## Hindi TTS installation, readiness, and rollback
+
+Kokoro is the primary Hindi TTS provider and Sarvam Bulbul remains the fallback.
+The public voice catalogue contains four native Hindi packs, not custom or
+cloned user voices. Treat a new image, voice catalogue, or instance type as a
+new quality and capacity validation.
+
+Before accepting sessions:
+
+1. Start `kokoro-tts` and wait for its `/health` liveness check.
+2. Wait for realtime-agent `/readiness` to return `ready` with four checked
+   voices. It performs a full all-pack warm-up using a fixed non-user phrase;
+   `/health` alone is not readiness proof. Run `make tts-kokoro-smoke` as an
+   independent all-voice deployment check; it rejects empty or malformed PCM.
+3. Run `make tts-kokoro-benchmark` with the intended host shape. Preserve its
+   redacted JSON output together with CPU and resident-memory observations at
+   one and five concurrent requests. The command intentionally does not print
+   response text or audio.
+4. Run an end-to-end Hindi voice turn and a controlled Kokoro-unavailable test
+   with a valid Sarvam key. Confirm the reliable provider-change event, Sarvam
+   fallback audio, and that no text or PCM appears in logs. The controlled
+   local command is `make tts-e2e-sarvam`; it sends one fixed short phrase and
+   has a small paid Sarvam cost.
+
+If Kokoro is unavailable or does not meet the measured latency/quality gate,
+roll back without removing Sarvam:
+
+```text
+AGENT_TTS_PROVIDER=sarvam
+AGENT_TTS_FALLBACK_PROVIDER=
+```
+
+Restart only `realtime-agent`; this leaves the mobile public voice IDs and
+session API unchanged. Re-enable Kokoro only after the all-voice smoke and
+benchmark gates pass. A post-audio Kokoro failure is not replayed, preventing
+duplicate spoken content; the following synthesis uses Sarvam for the session.
 
 The warm-up operation must not log request text, memory text, vectors, or
 device IDs. If the ONNX artifact fails to load, the API does not load another
@@ -137,6 +183,12 @@ This must not require a mobile schema migration or delete phone-owned memory.
 - Confirm logs contain only request IDs, model IDs/revisions, dimensions,
   counts, timings, statuses, and resource measurements - not transcript or
   memory content.
+- Confirm Kokoro and agent logs contain no TTS input text, no raw PCM, and no
+  public exposure of port 8880. The voice ID sent by mobile is a public label;
+  provider speaker mappings remain server-side.
+- Confirm preview assets are only the committed fixed synthetic clips under
+  `services/api/app/static/tts-previews/`, with the pinned image/pack/checksum
+  manifest. Do not create previews from user or conversation audio.
 - Confirm clear history deletes the phone's SQLite/ObjectBox memory artifacts;
   there should be no corresponding server-side memory deletion workflow
   because the server must not retain those records.
@@ -151,6 +203,8 @@ For each Ubuntu test run, retain a short redacted record of:
   latency;
 - resident memory and CPU/GPU usage at 1 and 5 concurrent sessions;
 - model timeout/unavailable/fallback counts;
+- Kokoro all-voice smoke output, 1/5-concurrency benchmark JSON, and the
+  corresponding CPU/RAM measurements;
 - Android and iPhone public-network results, including TURN fallback.
 
 Do not treat Mac-only Docker results or cold model-download latency as proof of

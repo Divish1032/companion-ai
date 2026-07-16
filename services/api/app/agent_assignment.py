@@ -48,6 +48,8 @@ class AgentAssigner:
             "room_name": session.room_name,
             "expires_at_ms": session.expires_at_ms,
             "recent_context": session.recent_context(),
+            "language": getattr(session, "language", "hi-IN"),
+            "voice_id": getattr(session, "voice_id", None),
         }
         async with httpx.AsyncClient(
             timeout=self.settings.agent_assignment_timeout_seconds,

@@ -89,3 +89,6 @@ class TTSProvider(ABC):
     @abstractmethod
     async def synthesize(self, text: str, language: str) -> AsyncIterator[TTSAudioFrame]:
         raise NotImplementedError
+
+    async def close(self) -> None:
+        """Release optional provider resources when a room agent exits."""

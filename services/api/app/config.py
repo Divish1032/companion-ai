@@ -44,5 +44,6 @@ class Settings(BaseSettings):
     telemetry_store_path: str = "/tmp/companion_telemetry.sqlite"
     telemetry_ingest_token: str = ""
     telemetry_raw_retention_days: int = 30
+    voice_catalog: str = "config/voices/hindi_v1.toml"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="API_")

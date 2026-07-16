@@ -19,6 +19,8 @@ import '../../livekit_session/data/livekit_connection_service.dart';
 import '../../livekit_session/data/session_api_client.dart';
 import '../../livekit_session/domain/livekit_data_event.dart';
 import '../data/mock_conversation_service.dart';
+import '../data/voice_preference_store.dart';
+import '../data/voice_preview_player.dart';
 import '../domain/voice_session_state.dart';
 
 final chatMessagesProvider = StreamProvider<List<ChatMessage>>((ref) {
@@ -120,6 +122,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     );
 
     try {
+      await ref.read(voicePreviewPlayerProvider).stop();
       final hasConsent = await ref
           .read(consentStoreProvider)
           .hasAcceptedCurrentCopy();
@@ -149,9 +152,21 @@ class VoiceChatController extends Notifier<VoiceChatState> {
 
       final liveKitService = ref.read(liveKitConnectionServiceProvider);
       final apiClient = ref.read(sessionApiClientProvider);
+      final catalog = await apiClient.fetchTtsVoiceCatalog();
+      final preferenceStore = ref.read(voicePreferenceStoreProvider);
+      final preferredVoiceId = await preferenceStore.read();
+      final voiceId = catalog.resolve(preferredVoiceId);
+      if (voiceId != preferredVoiceId) {
+        await preferenceStore.write(voiceId);
+        ref.invalidate(selectedVoiceIdProvider);
+      }
       LiveKitSessionInfo? createdSession;
       try {
-        createdSession = await apiClient.createSession(deviceId: deviceId);
+        createdSession = await apiClient.createSession(
+          deviceId: deviceId,
+          language: catalog.language,
+          voiceId: voiceId,
+        );
         final token = await apiClient.mintToken(
           deviceId: deviceId,
           sessionId: createdSession.sessionId,
