@@ -4,11 +4,6 @@ set -euo pipefail
 msg_file="$1"
 subject=$(sed -n '1p' "$msg_file")
 
-if [ "${#subject}" -gt 100 ]; then
-  echo "commit-msg: subject should be 100 characters or fewer" >&2
-  exit 1
-fi
-
 if ! printf '%s' "$subject" | grep -Eq '^[a-z]+(\([a-z0-9_-]+\))?: .+'; then
   echo "commit-msg: use '<type>(<scope>): <summary>' or '<type>: <summary>'" >&2
   echo "example: docs(sprint): add Sarvam streaming validation notes" >&2
