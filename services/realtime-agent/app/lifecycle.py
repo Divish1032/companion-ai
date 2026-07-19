@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import struct
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
@@ -789,6 +790,8 @@ class RealtimeAgentSession:
             token=last_token,
         )
         self.context_builder.remember_complete_turn(turn_id, user_text, text)
+        if self.settings.enable_sync_extraction:
+            asyncio.create_task(self._extract_turn_memory(turn_id, user_text, text))
         await self._speak_text(turn_id, text)
         await self._emit_state("listening", turn_id=turn_id)
 
@@ -1404,6 +1407,89 @@ class RealtimeAgentSession:
             {"session_id": self.assignment.session_id, "turn_id": turn_id, **metrics},
             flush=True,
         )
+
+    async def _extract_turn_memory(
+        self,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        if not self.settings.memory_extraction_api_url:
+            return
+        now_ms = int(time.time() * 1000)
+        payload = {
+            "job_id": f"sync_{self.assignment.session_id}_{turn_id}",
+            "extraction_version": "sync_v1",
+            "judge_contract_version": "memory_judge_v1",
+            "language": self.assignment.language,
+            "turns": [
+                {
+                    "turn_id": turn_id,
+                    "role": "user",
+                    "text": user_text[:800],
+                    "created_at_ms": now_ms,
+                    "status": "final",
+                    "confidence": self._turn_stt_confidence.get(turn_id),
+                },
+                {
+                    "turn_id": turn_id,
+                    "role": "assistant",
+                    "text": assistant_text[:800],
+                    "created_at_ms": now_ms + 1,
+                    "status": "final",
+                },
+            ],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.memory_extraction_timeout_seconds) as client:
+                response = await client.post(
+                    self.settings.memory_extraction_api_url,
+                    json=payload,
+                )
+            if response.status_code != 200:
+                print(
+                    "sync_extraction_failed",
+                    {
+                        "session_id": self.assignment.session_id,
+                        "turn_id": turn_id,
+                        "status_code": response.status_code,
+                    },
+                    flush=True,
+                )
+                return
+            body = response.json()
+            decisions = body.get("decisions", []) if isinstance(body, dict) else []
+            if not decisions:
+                return
+            await self.transport.publish_reliable(
+                self.sequencer.encode(
+                    event_type="sync_memory_candidates",
+                    turn_id=turn_id,
+                    payload={
+                        "decisions": decisions,
+                        "job_id": payload["job_id"],
+                        "extraction_version": payload["extraction_version"],
+                    },
+                )
+            )
+            print(
+                "sync_extraction_complete",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                    "candidate_count": len(decisions),
+                },
+                flush=True,
+            )
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            print(
+                "sync_extraction_error",
+                {
+                    "session_id": self.assignment.session_id,
+                    "turn_id": turn_id,
+                },
+                flush=True,
+            )
 
     async def _emit_tts_metrics(self, turn_id: str, metrics: dict[str, object]) -> None:
         await self.transport.publish_reliable(

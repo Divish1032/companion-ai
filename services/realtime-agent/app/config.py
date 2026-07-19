@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     enable_memory_planner: bool = False
     memory_planner_model: str = "Qwen/Qwen3-0.6B"
     memory_planner_timeout_seconds: float = 0.1
+    enable_sync_extraction: bool = False
+    memory_extraction_api_url: str = "http://api:8000/v1/memory-judge"
+    memory_extraction_timeout_seconds: float = 8.0
     # Phone-owned vector lookup includes a reliable data-channel round trip and
     # a warm local embedding.  200 ms caused systematic false fallbacks on real
     # devices; retain a bounded one-second budget instead.

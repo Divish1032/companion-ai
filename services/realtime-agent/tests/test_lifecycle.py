@@ -700,7 +700,7 @@ def test_query_time_memory_lookup_can_carry_pending_receipt_prompt() -> None:
 
     context_text = "\n".join(message.content for message in llm.calls[0])
     assert "[memory_receipt]" in context_text
-    assert "Potential memory" in context_text
+    assert "recurring_work_stressor" in context_text
     assert "voice-only confirmation question" in context_text
 
 
