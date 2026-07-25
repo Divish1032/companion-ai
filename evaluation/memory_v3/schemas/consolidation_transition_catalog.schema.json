@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/consolidation-transition-catalog.schema.json",
+  "title": "MemoryV3ConsolidationTransitionCatalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "development_only", "policy_version", "cases"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "contract_version": {"type": "string", "const": "memory_v3_consolidation_transition_v1"},
+    "development_only": {"type": "boolean", "const": true},
+    "policy_version": {"type": "string", "const": "consolidation_reference_v1"},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "now_ms", "observations", "accepted_links", "expected"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 240},
+        "now_ms": {"type": "integer", "minimum": 0},
+        "observations": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/observation"}},
+        "accepted_links": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/link"}},
+        "expected": {"$ref": "#/$defs/expected"}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_id", "session_id", "observed_at_ms", "kind", "predicate", "subject_key", "statement", "normalized_value", "temporal_status", "explicitness", "confidence", "admission", "event_start_at_ms", "user_assessment", "affect", "target_entity"],
+      "properties": {
+        "observation_id": {"type": "string", "pattern": "^observation_[a-z0-9_]+$"},
+        "session_id": {"type": "string", "pattern": "^session_[a-z0-9_]+$"},
+        "observed_at_ms": {"type": "integer", "minimum": 0},
+        "kind": {"type": "string", "enum": ["profile", "relationship", "preference", "routine", "goal", "value", "boundary", "episode", "open_thread", "assistant_commitment"]},
+        "predicate": {"$ref": "#/$defs/predicate"},
+        "subject_key": {"type": "string", "pattern": "^[a-z0-9_:-]+$"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 500},
+        "normalized_value": {"type": "string", "minLength": 1, "maxLength": 240},
+        "temporal_status": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "explicitness": {"type": "string", "enum": ["explicit", "implied"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "admission": {"type": "string", "enum": ["auto_admit", "confirmed", "defer", "confirmation_required", "reject"]},
+        "event_start_at_ms": {"type": ["integer", "null"], "minimum": 0},
+        "user_assessment": {"type": ["string", "null"], "maxLength": 300},
+        "affect": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/affect"}]},
+        "target_entity": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/target_entity"}]}
+      }
+    },
+    "affect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emotion", "valence", "intensity"],
+      "properties": {
+        "emotion": {"type": "string", "minLength": 1, "maxLength": 80},
+        "valence": {"type": "number", "minimum": -1, "maximum": 1},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "target_entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "mention", "normalized_alias", "disambiguation_hint"],
+      "properties": {
+        "entity_type": {"type": "string", "enum": ["person", "organization", "place", "event", "goal", "preference", "routine", "topic", "value"]},
+        "mention": {"type": "string", "minLength": 1, "maxLength": 160},
+        "normalized_alias": {"type": "string", "minLength": 1, "maxLength": 160},
+        "disambiguation_hint": {"type": ["string", "null"], "maxLength": 160}
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["link_id", "link_type", "source_observation_id", "target_observation_id", "decision_source", "signal"],
+      "properties": {
+        "link_id": {"type": "string", "pattern": "^link_[a-z0-9_]+$"},
+        "link_type": {"type": "string", "enum": ["entity_equivalent", "episode_equivalent", "thread_outcome"]},
+        "source_observation_id": {"type": "string", "pattern": "^observation_[a-z0-9_]+$"},
+        "target_observation_id": {"type": "string", "pattern": "^observation_[a-z0-9_]+$"},
+        "decision_source": {"type": "string", "enum": ["deterministic", "bounded_adjudicator"]},
+        "signal": {"type": "string", "enum": ["exact_normalized_value", "explicit_alias", "explicit_relationship", "shared_event_time", "shared_participant", "explicit_outcome_reference"]}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts", "ignored_observation_ids", "assertions"],
+      "properties": {
+        "counts": {"$ref": "#/$defs/counts"},
+        "ignored_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^observation_[a-z0-9_]+$"}},
+        "assertions": {"type": "array", "items": {"$ref": "#/$defs/assertion"}}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims", "episodes", "threads", "entities", "relations", "reflections"],
+      "properties": {
+        "claims": {"type": "integer", "minimum": 0},
+        "episodes": {"type": "integer", "minimum": 0},
+        "threads": {"type": "integer", "minimum": 0},
+        "entities": {"type": "integer", "minimum": 0},
+        "relations": {"type": "integer", "minimum": 0},
+        "reflections": {"type": "integer", "minimum": 0}
+      }
+    },
+    "assertion": {
+      "oneOf": [
+        {"$ref": "#/$defs/claim_assertion"},
+        {"$ref": "#/$defs/episode_assertion"},
+        {"$ref": "#/$defs/thread_assertion"},
+        {"$ref": "#/$defs/entity_count_assertion"},
+        {"$ref": "#/$defs/entity_identity_assertion"},
+        {"$ref": "#/$defs/relation_assertion"},
+        {"$ref": "#/$defs/reflection_assertion"},
+        {"$ref": "#/$defs/reflection_absent_assertion"}
+      ]
+    },
+    "claim_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "predicate", "value", "status", "supporting_observation_ids", "contradicting_observation_ids"],
+      "properties": {
+        "type": {"const": "claim"}, "predicate": {"$ref": "#/$defs/predicate"},
+        "value": {"type": "string"}, "status": {"type": "string", "enum": ["current", "historical", "uncertain"]},
+        "supporting_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "contradicting_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "episode_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "primary_observation_id", "resolution_state", "outcome", "supporting_observation_ids"],
+      "properties": {
+        "type": {"const": "episode"}, "primary_observation_id": {"type": "string"},
+        "resolution_state": {"type": "string", "enum": ["resolved", "unresolved", "uncertain"]},
+        "outcome": {"type": ["string", "null"]},
+        "supporting_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "thread_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "primary_observation_id", "status", "supporting_observation_ids"],
+      "properties": {
+        "type": {"const": "thread"}, "primary_observation_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["open", "due", "resolved"]},
+        "supporting_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "entity_count_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "normalized_alias", "count"],
+      "properties": {"type": {"const": "entity_count"}, "normalized_alias": {"type": "string"}, "count": {"type": "integer", "minimum": 0}}
+    },
+    "entity_identity_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "observation_ids"],
+      "properties": {
+        "type": {"type": "string", "enum": ["entity_same", "entity_distinct"]},
+        "observation_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "relation_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "family", "target_alias", "supporting_observation_ids"],
+      "properties": {
+        "type": {"const": "relation"},
+        "family": {"type": "string", "enum": ["HAS_RELATIONSHIP", "ASSOCIATED_WITH", "PARTICIPATED_IN"]},
+        "target_alias": {"type": "string"},
+        "supporting_observation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "reflection_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "pattern_value", "status", "supporting_observation_ids"],
+      "properties": {
+        "type": {"const": "reflection"}, "pattern_value": {"type": "string"}, "status": {"const": "uncertain"},
+        "supporting_observation_ids": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "reflection_absent_assertion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "pattern_value"],
+      "properties": {"type": {"const": "reflection_absent"}, "pattern_value": {"type": "string"}}
+    },
+    "predicate": {
+      "type": "string",
+      "enum": ["preferred_name", "has_relationship", "response_language", "response_length", "support_style", "likes", "dislikes", "avoids_topic", "follows_routine", "pursues_goal", "holds_value", "experienced_event", "event_outcome", "open_thread", "assistant_commitment", "works_at", "profile_association", "relationship_association", "episode_association", "causes_stress"]
+    }
+  }
+}

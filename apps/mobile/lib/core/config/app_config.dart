@@ -19,6 +19,14 @@ class AppConfig {
       'ENABLE_MEMORY_EXTRACTION',
       defaultValue: false,
     ),
+    this.enableMemoryV3Compiler = const bool.fromEnvironment(
+      'ENABLE_MEMORY_V3_COMPILER',
+      defaultValue: false,
+    ),
+    this.memoryTimezone = const String.fromEnvironment(
+      'MEMORY_TIMEZONE',
+      defaultValue: 'Asia/Kolkata',
+    ),
   });
 
   final String apiBaseUrl;
@@ -28,4 +36,6 @@ class AppConfig {
   final bool enableMemoryEmbeddings;
   final bool enableMemoryReranker;
   final bool enableMemoryExtraction;
+  final bool enableMemoryV3Compiler;
+  final String memoryTimezone;
 }

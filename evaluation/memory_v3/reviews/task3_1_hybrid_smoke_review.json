@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "review_id": "task3_1_hybrid_smoke_20260720",
+  "decision": "continue_local_hardening_no_full_spend_no_runtime_enablement",
+  "catalog_sha256": "6c7eb231d57839c0f2d9d2dacdc216ac9bce179223a7be6237f61d8c2b3cca35",
+  "provider": "deepseek",
+  "requested_model": "deepseek-v4-flash",
+  "request_profile": "deepseek_json_object",
+  "prompt_version": "memory_semantic_atoms_v3_1",
+  "artifacts": [
+    {
+      "path": "tmp/memory-v3-hybrid-deepseek-smoke.json",
+      "sha256": "9c287763965ec896ab71a32e20ead257e7133a6626244844f2cd99f68e3a25f8",
+      "purpose": "four-scenario pre-schema smoke",
+      "result": "two semantic-schema errors, one correct no-memory result, one extraction miss"
+    },
+    {
+      "path": "tmp/memory-v3-hybrid-deepseek-diagnostic.json",
+      "sha256": "937de820cf628725c42ba448fc239b83e89c49739c3f3c78b38a4f7777bbd0c8",
+      "purpose": "validation-path-only diagnostic",
+      "result": "model invented temporal_expressions, omitted temporal_class, and used an invalid sensitivity enum"
+    },
+    {
+      "path": "tmp/memory-v3-hybrid-deepseek-schema-guided.json",
+      "sha256": "0bbf92da73cbc0d9b9989cfcab7a5d5b01dbfb7dd740ee86c76f9bf2b5bbaeac",
+      "purpose": "two-scenario smoke after embedding the exact schema for JSON Object mode",
+      "result": "2/2 semantic and structural matches, 0 schema errors, 1/2 exact construction/admission matches"
+    }
+  ],
+  "follow_up": {
+    "completed": [
+      "DeepSeek JSON Object requests now receive the exact semantic schema without fixture-derived examples.",
+      "The deterministic support-style canonicalizer now represents validate-first plus no-solutions; this was unit-tested without another paid call.",
+      "Provider failures expose only typed stage and validation-path diagnostics, never provider text."
+    ],
+    "pending": [
+      "independently authored robustness fixtures",
+      "native or professionally fluent Hindi/Hinglish review",
+      "protected repeated model comparison",
+      "reviewed token pricing for INR cost reporting"
+    ]
+  },
+  "limitations": [
+    "This is a small development smoke, not a model-quality comparison.",
+    "The development fixtures are prompt-contaminated and cannot support a protected claim.",
+    "No full or repeated paid run was attempted after the smoke exposed instability.",
+    "Memory V3 remains disabled and Task 4 runtime work remains blocked."
+  ]
+}

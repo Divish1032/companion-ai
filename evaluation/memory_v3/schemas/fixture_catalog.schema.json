@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/fixture_catalog.schema.json",
+  "title": "MemoryV3FixtureCatalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "catalog_id", "scenarios"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 3},
+    "contract_version": {"type": "string", "const": "memory_v3_eval_fixture_v1"},
+    "catalog_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 30,
+      "items": {"$ref": "#/$defs/scenario"}
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "protection",
+        "priority",
+        "tags",
+        "source",
+        "timezone",
+        "language_review",
+        "sessions",
+        "formation_expect",
+        "consolidation_expect",
+        "queries",
+        "hard_gates"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "protection": {"type": "string", "enum": ["review_candidate", "protected"]},
+        "priority": {"type": "string", "enum": ["P0", "P1", "P2"]},
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}
+        },
+        "source": {"type": "string", "const": "synthetic"},
+        "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
+        "language_review": {"$ref": "#/$defs/language_review"},
+        "sessions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {"$ref": "#/$defs/session"}
+        },
+        "formation_expect": {"$ref": "#/$defs/formation_expect"},
+        "consolidation_expect": {"$ref": "#/$defs/consolidation_expect"},
+        "queries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {"$ref": "#/$defs/query"}
+        },
+        "hard_gates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/hard_gate"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"protection": {"const": "protected"}}},
+          "then": {
+            "properties": {
+              "language_review": {
+                "properties": {"status": {"const": "approved"}}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "language_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewer_id", "reviewed_at", "notes"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "approved", "changes_requested"]},
+        "reviewer_id": {"type": ["string", "null"], "maxLength": 120},
+        "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+        "notes": {"type": "string", "maxLength": 500}
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "turns"],
+      "properties": {
+        "session_id": {"type": "string", "pattern": "^session_[a-z0-9_]+$"},
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/turn"}
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn_id",
+        "role",
+        "text",
+        "status",
+        "language",
+        "script",
+        "created_at_ms",
+        "stt_confidence",
+        "stt_provider",
+        "stt_model"
+      ],
+      "properties": {
+        "turn_id": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"},
+        "role": {"type": "string", "enum": ["user", "assistant"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1600},
+        "status": {"type": "string", "enum": ["final", "final_corrected", "safety_override"]},
+        "language": {"type": "string", "minLength": 2, "maxLength": 32},
+        "script": {"type": "string", "enum": ["latin", "devanagari", "mixed"]},
+        "created_at_ms": {"type": "integer", "minimum": 0},
+        "stt_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "stt_provider": {"type": ["string", "null"], "maxLength": 80},
+        "stt_model": {"type": ["string", "null"], "maxLength": 120}
+      }
+    },
+    "formation_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_observations", "forbidden_predicates", "expect_noop"],
+      "properties": {
+        "expected_observations": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {"$ref": "#/$defs/observation_expect"}
+        },
+        "forbidden_predicates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/predicate"}
+        },
+        "expect_noop": {"type": "boolean"}
+      }
+    },
+    "observation_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expectation_id",
+        "after_turn_id",
+        "kind",
+        "predicate",
+        "object_contains",
+        "evidence_turn_ids",
+        "source_role",
+        "temporal_status",
+        "operation",
+        "admission"
+      ],
+      "properties": {
+        "expectation_id": {"type": "string", "pattern": "^obs_[a-z0-9_]+$"},
+        "after_turn_id": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"},
+        "kind": {"$ref": "#/$defs/observation_kind"},
+        "predicate": {"$ref": "#/$defs/predicate"},
+        "object_contains": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "evidence_turn_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"}},
+        "source_role": {"type": "string", "enum": ["user", "assistant"]},
+        "subject_entity_type": {"type": "string", "enum": ["user", "person", "organization", "place", "event", "goal", "preference", "routine", "topic", "value"]},
+        "subject_contains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "target_contains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "modality": {"type": "string", "enum": ["asserted", "negated", "hypothetical", "quoted"]},
+        "explicitness": {"type": "string", "enum": ["explicit", "implied", "assistant_only"]},
+        "temporal_status": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "semantic_temporal_class": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "operation": {"type": "string", "const": "ADD"},
+        "admission": {"type": "string", "enum": ["auto_admit", "defer", "confirmation_required", "ephemeral", "reject"]}
+      }
+    },
+    "consolidation_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "historical", "episodes", "threads", "reflections", "forbidden"],
+      "properties": {
+        "current": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}},
+        "historical": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}},
+        "episodes": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}},
+        "threads": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}},
+        "reflections": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}},
+        "forbidden": {"type": "array", "items": {"$ref": "#/$defs/state_expect"}}
+      }
+    },
+    "state_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "predicate", "statement_contains", "supporting_turn_ids"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["claim", "episode", "open_thread", "reflection", "entity", "relation"]},
+        "predicate": {"$ref": "#/$defs/predicate"},
+        "statement_contains": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "supporting_turn_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"}}
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query_id",
+        "after_session_id",
+        "text",
+        "created_at_ms",
+        "language",
+        "script",
+        "response_evaluation",
+        "expect",
+        "oracle_brief",
+        "response_rubric"
+      ],
+      "properties": {
+        "query_id": {"type": "string", "pattern": "^query_[a-z0-9_]+$"},
+        "after_session_id": {"type": "string", "pattern": "^session_[a-z0-9_]+$"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1600},
+        "created_at_ms": {"type": "integer", "minimum": 0},
+        "language": {"type": "string", "minLength": 2, "maxLength": 32},
+        "script": {"type": "string", "enum": ["latin", "devanagari", "mixed"]},
+        "response_evaluation": {"type": "boolean"},
+        "recent_turn_ids": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"}},
+        "expect": {"$ref": "#/$defs/query_expect"},
+        "oracle_brief": {"$ref": "#/$defs/oracle_brief"},
+        "response_rubric": {"$ref": "#/$defs/response_rubric"}
+      }
+    },
+    "query_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_needed", "query_type", "temporal_scope", "must_include_predicates", "must_not_include_predicates", "allowed_use_modes", "max_selected"],
+      "properties": {
+        "memory_needed": {"type": "boolean"},
+        "query_type": {"type": "string", "enum": ["none", "exact_state", "semantic", "episodic", "temporal_summary", "open_thread", "emotional_continuity"]},
+        "temporal_scope": {"type": "string", "enum": ["current", "recent", "historical", "change_over_time", "future", "unspecified"]},
+        "must_include_predicates": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/predicate"}},
+        "must_not_include_predicates": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/predicate"}},
+        "allowed_use_modes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/use_mode"}},
+        "max_selected": {"type": "integer", "minimum": 0, "maximum": 8}
+      }
+    },
+    "oracle_brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_needed", "items", "response_move", "question_recommended", "instruction"],
+      "properties": {
+        "memory_needed": {"type": "boolean"},
+        "items": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/oracle_item"}},
+        "response_move": {"$ref": "#/$defs/response_move"},
+        "question_recommended": {"type": "boolean"},
+        "instruction": {"type": "string", "minLength": 1, "maxLength": 240}
+      }
+    },
+    "oracle_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "predicate", "statement", "temporal_status", "confidence", "source_turn_ids", "use_mode", "warnings"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["claim", "episode", "open_thread", "reflection", "entity", "relation"]},
+        "predicate": {"$ref": "#/$defs/predicate"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 500},
+        "temporal_status": {"type": "string", "enum": ["current", "historical", "future", "uncertain", "closed"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_turn_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"}},
+        "use_mode": {"$ref": "#/$defs/use_mode"},
+        "warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["stale", "uncertain", "sensitive", "possible_conflict", "low_stt_confidence", "do_not_proactively_mention"]}}
+      }
+    },
+    "response_rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["must_do", "must_not_do", "rating_dimensions"],
+      "properties": {
+        "must_do": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
+        "must_not_do": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
+        "rating_dimensions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["memory_faithfulness", "memory_use", "naturalness", "emotional_attunement", "helpfulness", "continuity", "repetition", "question_use", "safety", "language_naturalness"]}}
+      }
+    },
+    "observation_kind": {
+      "type": "string",
+      "enum": ["profile", "relationship", "preference", "routine", "goal", "value", "boundary", "episode", "open_thread", "assistant_commitment"]
+    },
+    "predicate": {
+      "type": "string",
+      "enum": ["preferred_name", "has_relationship", "response_language", "response_length", "support_style", "likes", "dislikes", "avoids_topic", "follows_routine", "pursues_goal", "holds_value", "experienced_event", "event_outcome", "open_thread", "assistant_commitment", "works_at", "profile_association", "relationship_association", "episode_association", "causes_stress", "recurring_pattern"]
+    },
+    "use_mode": {
+      "type": "string",
+      "enum": ["SILENT_PERSONALIZATION", "BRIEF_CALLBACK", "EXPLICIT_RECALL", "ASK_CONFIRMATION", "FOLLOW_UP_THREAD", "DO_NOT_USE"]
+    },
+    "response_move": {
+      "type": "string",
+      "enum": ["validate", "reflect", "listen", "clarify", "advise", "celebrate", "encourage", "follow_up", "gentle_challenge", "direct_answer", "quiet_presence"]
+    },
+    "hard_gate": {
+      "type": "string",
+      "enum": ["provenance", "grounding", "current_state", "sensitivity", "prompt_injection", "protocol_sequence", "deletion", "crisis_bypass", "fallback"]
+    }
+  }
+}

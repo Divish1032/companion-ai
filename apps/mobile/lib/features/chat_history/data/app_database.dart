@@ -14,6 +14,7 @@ import 'database_encryption.dart';
 import 'memory_vector_index.dart';
 
 part 'app_database.g.dart';
+part 'memory_v3_schema.dart';
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
   final database = AppDatabase();
@@ -302,6 +303,7 @@ class AppDatabase extends _$AppDatabase {
       await _ensureMemoryFtsSchema();
       await _ensureTelemetrySchema();
       await _ensureJudgeOperationsSchema();
+      await ensureMemoryV3Schema();
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -345,6 +347,7 @@ class AppDatabase extends _$AppDatabase {
       await _ensureMemoryFtsSchema();
       await _ensureTelemetrySchema();
       await _ensureJudgeOperationsSchema();
+      await ensureMemoryV3Schema();
     },
   );
 
@@ -767,7 +770,17 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> clearHistory() async {
+    await ensureMemoryV3Schema();
     await transaction(() async {
+      for (final table in memoryV3PersonalDataTablesInDeleteOrder) {
+        await customStatement('DELETE FROM $table');
+      }
+      await customStatement(
+        "UPDATE memory_projection_state_v3 SET generation = generation + 1, status = 'empty', "
+        'last_observation_admitted_at_ms = NULL, updated_at_ms = ? '
+        'WHERE singleton_id = 1',
+        [DateTime.now().millisecondsSinceEpoch],
+      );
       await delete(memoryCandidates).go();
       await delete(memoryExtractionJobs).go();
       await delete(memoryOpenThreads).go();

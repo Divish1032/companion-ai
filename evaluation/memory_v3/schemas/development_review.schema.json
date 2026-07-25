@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/development_review.schema.json",
+  "title": "MemoryV3DevelopmentReview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "review_id",
+    "catalog_id",
+    "catalog_sha256",
+    "reviewer",
+    "reviewed_at",
+    "decision",
+    "checks",
+    "limitations",
+    "scenario_reviews",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "review_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "catalog_id": {"type": "string", "const": "task1_core_scenarios"},
+    "catalog_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "native_human_qualification_claimed"],
+      "properties": {
+        "kind": {"type": "string", "const": "ai"},
+        "id": {"type": "string", "minLength": 1, "maxLength": 120},
+        "native_human_qualification_claimed": {"type": "boolean", "const": false}
+      }
+    },
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "decision": {"type": "string", "enum": ["approved_for_task2_development", "approved_for_task3_1_development"]},
+    "checks": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "spoken_naturalness",
+          "script_and_code_mix",
+          "semantic_operators",
+          "expectation_alignment",
+          "response_naturalness",
+          "p0_safety_semantics"
+        ]
+      }
+    },
+    "limitations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_human_review_completed",
+        "protected_fixture_promotion_allowed",
+        "real_user_field_test_allowed",
+        "note"
+      ],
+      "properties": {
+        "native_human_review_completed": {"type": "boolean", "const": false},
+        "protected_fixture_promotion_allowed": {"type": "boolean", "const": false},
+        "real_user_field_test_allowed": {"type": "boolean", "const": false},
+        "note": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "scenario_reviews": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenario_id", "result", "notes"],
+        "properties": {
+          "scenario_id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+          "result": {"type": "string", "enum": ["pass", "wording_changed"]},
+          "notes": {"type": "string", "minLength": 1, "maxLength": 500}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_count", "passed_without_change", "wording_changed", "blocking_findings"],
+      "properties": {
+        "scenario_count": {"type": "integer", "const": 25},
+        "passed_without_change": {"type": "integer", "minimum": 0, "maximum": 25},
+        "wording_changed": {"type": "integer", "minimum": 0, "maximum": 25},
+        "blocking_findings": {"type": "integer", "const": 0}
+      }
+    }
+  }
+}

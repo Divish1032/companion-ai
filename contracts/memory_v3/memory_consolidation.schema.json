@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/contracts/memory-v3/memory_consolidation.schema.json",
+  "title": "MemoryConsolidationAdjudicationEnvelopeV3",
+  "description": "A bounded ambiguity-adjudication envelope. It never contains database IDs or authorizes projection mutation.",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/response"}
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "message_type", "job_id", "contract_version", "now_ms", "timezone", "items", "questions"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 3},
+        "message_type": {"type": "string", "const": "request"},
+        "job_id": {"type": "string", "pattern": "^memory_consolidate_[A-Za-z0-9_-]{8,160}$"},
+        "contract_version": {"type": "string", "const": "memory_consolidation_adjudication_v3_1"},
+        "now_ms": {"type": "integer", "minimum": 0},
+        "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
+        "items": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 40,
+          "items": {"$ref": "#/$defs/item"}
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/question"}
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "message_type", "job_id", "contract_version", "decisions", "model"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 3},
+        "message_type": {"type": "string", "const": "response"},
+        "job_id": {"type": "string", "pattern": "^memory_consolidate_[A-Za-z0-9_-]{8,160}$"},
+        "contract_version": {"type": "string", "const": "memory_consolidation_adjudication_v3_1"},
+        "decisions": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/decision"}
+        },
+        "model": {"$ref": "#/$defs/model"}
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_ref", "kind", "predicate", "statement", "temporal_status", "entity_type", "normalized_alias", "source_refs"],
+      "properties": {
+        "item_ref": {"type": "string", "pattern": "^item_[A-Za-z0-9_-]{4,128}$"},
+        "kind": {"type": "string", "enum": ["observation", "claim", "episode", "open_thread", "entity_mention", "entity", "relation"]},
+        "predicate": {
+          "type": ["string", "null"],
+          "enum": ["preferred_name", "has_relationship", "response_language", "response_length", "support_style", "likes", "dislikes", "avoids_topic", "follows_routine", "pursues_goal", "holds_value", "experienced_event", "event_outcome", "open_thread", "assistant_commitment", "works_at", "profile_association", "relationship_association", "episode_association", "causes_stress", null]
+        },
+        "statement": {"type": "string", "minLength": 1, "maxLength": 500},
+        "temporal_status": {"type": "string", "enum": ["current", "historical", "past", "future", "uncertain", "open", "due", "resolved", "closed"]},
+        "entity_type": {"type": ["string", "null"], "enum": ["user", "person", "organization", "place", "event", "goal", "preference", "routine", "topic", "value", null]},
+        "normalized_alias": {"type": ["string", "null"], "minLength": 1, "maxLength": 160},
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^source_[A-Za-z0-9_-]{4,128}$"}
+        }
+      }
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question_ref", "task", "source_item_ref", "candidate_item_refs", "allowed_signals"],
+      "properties": {
+        "question_ref": {"type": "string", "pattern": "^question_[A-Za-z0-9_-]{4,128}$"},
+        "task": {"type": "string", "enum": ["semantic_equivalence", "entity_coreference", "episode_coreference", "thread_outcome_link"]},
+        "source_item_ref": {"type": "string", "pattern": "^item_[A-Za-z0-9_-]{4,128}$"},
+        "candidate_item_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^item_[A-Za-z0-9_-]{4,128}$"}
+        },
+        "allowed_signals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/signal"}
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question_ref", "decision", "selected_candidate_ref", "signals"],
+      "properties": {
+        "question_ref": {"type": "string", "pattern": "^question_[A-Za-z0-9_-]{4,128}$"},
+        "decision": {"type": "string", "enum": ["MATCH", "DISTINCT", "ABSTAIN"]},
+        "selected_candidate_ref": {
+          "type": ["string", "null"],
+          "pattern": "^item_[A-Za-z0-9_-]{4,128}$"
+        },
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/signal"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"decision": {"const": "MATCH"}}},
+          "then": {"properties": {"selected_candidate_ref": {"type": "string"}}},
+          "else": {"properties": {"selected_candidate_ref": {"type": "null"}}}
+        }
+      ]
+    },
+    "signal": {
+      "type": "string",
+      "enum": ["exact_normalized_value", "explicit_alias", "explicit_relationship", "explicit_correction", "shared_event_time", "shared_participant", "explicit_outcome_reference", "contradictory_context", "name_only_match", "insufficient_evidence"]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "prompt_version", "usage_source", "input_tokens", "output_tokens"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1, "maxLength": 80},
+        "model": {"type": "string", "minLength": 1, "maxLength": 160},
+        "prompt_version": {"type": "string", "minLength": 1, "maxLength": 80},
+        "usage_source": {"type": "string", "enum": ["provider_reported", "estimated", "unknown"]},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "estimated_micro_inr": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

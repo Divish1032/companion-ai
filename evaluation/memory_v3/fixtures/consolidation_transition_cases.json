@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "contract_version": "memory_v3_consolidation_transition_v1",
+  "development_only": true,
+  "policy_version": "consolidation_reference_v1",
+  "cases": [
+    {
+      "id": "identity_correction_timeline_v3",
+      "description": "A later explicit preferred-name correction preserves the old claim as historical.",
+      "now_ms": 1784200000000,
+      "observations": [
+        {"observation_id": "observation_name_riya", "session_id": "session_name_one", "observed_at_ms": 1784000000000, "kind": "profile", "predicate": "preferred_name", "subject_key": "user", "statement": "The user prefers the name Riya.", "normalized_value": "Riya", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.98, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_name_diya", "session_id": "session_name_two", "observed_at_ms": 1784086400000, "kind": "profile", "predicate": "preferred_name", "subject_key": "user", "statement": "The user now prefers the name Diya.", "normalized_value": "Diya", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.99, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 2, "episodes": 0, "threads": 0, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "claim", "predicate": "preferred_name", "value": "Riya", "status": "historical", "supporting_observation_ids": ["observation_name_riya"], "contradicting_observation_ids": ["observation_name_diya"]},
+          {"type": "claim", "predicate": "preferred_name", "value": "Diya", "status": "current", "supporting_observation_ids": ["observation_name_diya"], "contradicting_observation_ids": []}
+        ]
+      }
+    },
+    {
+      "id": "reinforcement_and_multivalue_v3",
+      "description": "Exact support-style repetition reinforces one claim while multiple likes remain distinct.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_listen_one", "session_id": "session_pref_one", "observed_at_ms": 1784000000000, "kind": "preference", "predicate": "support_style", "subject_key": "user", "statement": "Listen before giving advice.", "normalized_value": "listen before advice", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.96, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_listen_two", "session_id": "session_pref_two", "observed_at_ms": 1784086400000, "kind": "preference", "predicate": "support_style", "subject_key": "user", "statement": "Listen before giving advice.", "normalized_value": "listen before advice", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.97, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_likes_chai", "session_id": "session_pref_two", "observed_at_ms": 1784086401000, "kind": "preference", "predicate": "likes", "subject_key": "user", "statement": "The user likes chai.", "normalized_value": "chai", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.95, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_likes_chai_repeat", "session_id": "session_pref_two", "observed_at_ms": 1784086402000, "kind": "preference", "predicate": "likes", "subject_key": "user", "statement": "The user still likes chai.", "normalized_value": "chai", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.96, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_likes_coffee", "session_id": "session_pref_two", "observed_at_ms": 1784086403000, "kind": "preference", "predicate": "likes", "subject_key": "user", "statement": "The user likes coffee.", "normalized_value": "coffee", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.94, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 3, "episodes": 0, "threads": 0, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "claim", "predicate": "support_style", "value": "listen before advice", "status": "current", "supporting_observation_ids": ["observation_listen_one", "observation_listen_two"], "contradicting_observation_ids": []},
+          {"type": "claim", "predicate": "likes", "value": "chai", "status": "current", "supporting_observation_ids": ["observation_likes_chai", "observation_likes_chai_repeat"], "contradicting_observation_ids": []},
+          {"type": "claim", "predicate": "likes", "value": "coffee", "status": "current", "supporting_observation_ids": ["observation_likes_coffee"], "contradicting_observation_ids": []}
+        ]
+      }
+    },
+    {
+      "id": "deferred_identity_not_projected_v3",
+      "description": "A low-confidence deferred identity observation cannot become a claim.",
+      "now_ms": 1784100000000,
+      "observations": [
+        {"observation_id": "observation_uncertain_name", "session_id": "session_uncertain_name", "observed_at_ms": 1784000000000, "kind": "profile", "predicate": "preferred_name", "subject_key": "user", "statement": "The transcript may have said Nidhi.", "normalized_value": "Nidhi", "temporal_status": "uncertain", "explicitness": "explicit", "confidence": 0.41, "admission": "defer", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 0, "threads": 0, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": ["observation_uncertain_name"],
+        "assertions": []
+      }
+    },
+    {
+      "id": "same_name_entities_remain_distinct_v3",
+      "description": "A manager and cousin with the same name remain separate without coreference evidence.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_manager_neha", "session_id": "session_people_one", "observed_at_ms": 1784000000000, "kind": "relationship", "predicate": "has_relationship", "subject_key": "user", "statement": "Neha is the user's manager.", "normalized_value": "manager", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.97, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": {"entity_type": "person", "mention": "Neha", "normalized_alias": "neha", "disambiguation_hint": "manager"}},
+        {"observation_id": "observation_cousin_neha", "session_id": "session_people_two", "observed_at_ms": 1784086400000, "kind": "relationship", "predicate": "has_relationship", "subject_key": "user", "statement": "Neha is the user's cousin.", "normalized_value": "cousin", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.98, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": {"entity_type": "person", "mention": "Neha", "normalized_alias": "neha", "disambiguation_hint": "cousin"}}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 0, "threads": 0, "entities": 3, "relations": 2, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "entity_count", "normalized_alias": "neha", "count": 2},
+          {"type": "entity_distinct", "observation_ids": ["observation_manager_neha", "observation_cousin_neha"]},
+          {"type": "relation", "family": "HAS_RELATIONSHIP", "target_alias": "neha", "supporting_observation_ids": ["observation_manager_neha"]},
+          {"type": "relation", "family": "HAS_RELATIONSHIP", "target_alias": "neha", "supporting_observation_ids": ["observation_cousin_neha"]}
+        ]
+      }
+    },
+    {
+      "id": "explicit_sister_alias_links_v3",
+      "description": "An explicit relationship-backed alias can link two mentions of the same sister.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_sister_ananya", "session_id": "session_alias_one", "observed_at_ms": 1784000000000, "kind": "relationship", "predicate": "has_relationship", "subject_key": "user", "statement": "Ananya is the user's sister.", "normalized_value": "sister", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.98, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": {"entity_type": "person", "mention": "Ananya", "normalized_alias": "ananya", "disambiguation_hint": "sister"}},
+        {"observation_id": "observation_sister_didi", "session_id": "session_alias_two", "observed_at_ms": 1784086400000, "kind": "relationship", "predicate": "has_relationship", "subject_key": "user", "statement": "Didi refers to the user's sister.", "normalized_value": "sister", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.96, "admission": "auto_admit", "event_start_at_ms": null, "user_assessment": null, "affect": null, "target_entity": {"entity_type": "person", "mention": "Didi", "normalized_alias": "didi", "disambiguation_hint": "same sister"}}
+      ],
+      "accepted_links": [
+        {"link_id": "link_sister_alias", "link_type": "entity_equivalent", "source_observation_id": "observation_sister_didi", "target_observation_id": "observation_sister_ananya", "decision_source": "bounded_adjudicator", "signal": "explicit_relationship"}
+      ],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 0, "threads": 0, "entities": 2, "relations": 1, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "entity_count", "normalized_alias": "ananya", "count": 1},
+          {"type": "entity_count", "normalized_alias": "didi", "count": 1},
+          {"type": "entity_same", "observation_ids": ["observation_sister_ananya", "observation_sister_didi"]},
+          {"type": "relation", "family": "HAS_RELATIONSHIP", "target_alias": "ananya", "supporting_observation_ids": ["observation_sister_ananya", "observation_sister_didi"]}
+        ]
+      }
+    },
+    {
+      "id": "open_thread_explicit_outcome_closure_v3",
+      "description": "Only an accepted explicit outcome link resolves the matching open thread.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_scholarship_thread", "session_id": "session_scholarship_one", "observed_at_ms": 1784000000000, "kind": "open_thread", "predicate": "open_thread", "subject_key": "user", "statement": "The scholarship result is expected next week.", "normalized_value": "scholarship result", "temporal_status": "future", "explicitness": "explicit", "confidence": 0.96, "admission": "auto_admit", "event_start_at_ms": 1784086400000, "user_assessment": null, "affect": {"emotion": "hopeful", "valence": 0.5, "intensity": 0.6}, "target_entity": null},
+        {"observation_id": "observation_scholarship_outcome", "session_id": "session_scholarship_two", "observed_at_ms": 1784172800000, "kind": "episode", "predicate": "event_outcome", "subject_key": "user", "statement": "The user received the scholarship.", "normalized_value": "received scholarship", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.99, "admission": "auto_admit", "event_start_at_ms": 1784172800000, "user_assessment": "happy", "affect": {"emotion": "happy", "valence": 0.9, "intensity": 0.8}, "target_entity": null}
+      ],
+      "accepted_links": [
+        {"link_id": "link_scholarship_outcome", "link_type": "thread_outcome", "source_observation_id": "observation_scholarship_outcome", "target_observation_id": "observation_scholarship_thread", "decision_source": "bounded_adjudicator", "signal": "explicit_outcome_reference"}
+      ],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 1, "threads": 1, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "episode", "primary_observation_id": "observation_scholarship_outcome", "resolution_state": "resolved", "outcome": "received scholarship", "supporting_observation_ids": ["observation_scholarship_outcome"]},
+          {"type": "thread", "primary_observation_id": "observation_scholarship_thread", "status": "resolved", "supporting_observation_ids": ["observation_scholarship_thread", "observation_scholarship_outcome"]}
+        ]
+      }
+    },
+    {
+      "id": "single_bad_day_not_pattern_v3",
+      "description": "One stressful episode stays episode-local and cannot create a recurring pattern.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_late_meeting_one", "session_id": "session_stress_one", "observed_at_ms": 1784000000000, "kind": "episode", "predicate": "causes_stress", "subject_key": "user", "statement": "A late meeting caused stress today.", "normalized_value": "late meetings", "temporal_status": "past", "explicitness": "explicit", "confidence": 0.94, "admission": "auto_admit", "event_start_at_ms": 1783990000000, "user_assessment": "stressful", "affect": {"emotion": "stress", "valence": -0.7, "intensity": 0.7}, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 1, "threads": 0, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "episode", "primary_observation_id": "observation_late_meeting_one", "resolution_state": "resolved", "outcome": null, "supporting_observation_ids": ["observation_late_meeting_one"]},
+          {"type": "reflection_absent", "pattern_value": "late meetings"}
+        ]
+      }
+    },
+    {
+      "id": "recurring_stressor_multi_session_v3",
+      "description": "Three time-separated episodes across sessions may create only an uncertain cited pattern.",
+      "now_ms": 1784500000000,
+      "observations": [
+        {"observation_id": "observation_recurring_meeting_one", "session_id": "session_recurring_one", "observed_at_ms": 1784000000000, "kind": "episode", "predicate": "causes_stress", "subject_key": "user", "statement": "A late meeting caused stress.", "normalized_value": "late meetings", "temporal_status": "past", "explicitness": "explicit", "confidence": 0.94, "admission": "auto_admit", "event_start_at_ms": 1783990000000, "user_assessment": "stressful", "affect": {"emotion": "stress", "valence": -0.7, "intensity": 0.7}, "target_entity": null},
+        {"observation_id": "observation_recurring_meeting_two", "session_id": "session_recurring_two", "observed_at_ms": 1784172800000, "kind": "episode", "predicate": "causes_stress", "subject_key": "user", "statement": "Another late meeting caused stress.", "normalized_value": "late meetings", "temporal_status": "past", "explicitness": "explicit", "confidence": 0.92, "admission": "auto_admit", "event_start_at_ms": 1784160000000, "user_assessment": "stressful", "affect": {"emotion": "stress", "valence": -0.6, "intensity": 0.6}, "target_entity": null},
+        {"observation_id": "observation_recurring_meeting_three", "session_id": "session_recurring_two", "observed_at_ms": 1784345600000, "kind": "episode", "predicate": "causes_stress", "subject_key": "user", "statement": "A third late meeting caused stress.", "normalized_value": "late meetings", "temporal_status": "past", "explicitness": "explicit", "confidence": 0.93, "admission": "auto_admit", "event_start_at_ms": 1784330000000, "user_assessment": "stressful", "affect": {"emotion": "stress", "valence": -0.7, "intensity": 0.8}, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 3, "threads": 0, "entities": 0, "relations": 0, "reflections": 1},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "reflection", "pattern_value": "late meetings", "status": "uncertain", "supporting_observation_ids": ["observation_recurring_meeting_one", "observation_recurring_meeting_two", "observation_recurring_meeting_three"]}
+        ]
+      }
+    },
+    {
+      "id": "similar_outcome_without_link_stays_open_v3",
+      "description": "An outcome does not close a due thread when no validated link connects them.",
+      "now_ms": 1784300000000,
+      "observations": [
+        {"observation_id": "observation_exam_thread", "session_id": "session_exam_one", "observed_at_ms": 1784000000000, "kind": "open_thread", "predicate": "open_thread", "subject_key": "user", "statement": "The exam result is expected soon.", "normalized_value": "exam result", "temporal_status": "future", "explicitness": "explicit", "confidence": 0.96, "admission": "auto_admit", "event_start_at_ms": 1784086400000, "user_assessment": null, "affect": null, "target_entity": null},
+        {"observation_id": "observation_job_outcome", "session_id": "session_exam_two", "observed_at_ms": 1784172800000, "kind": "episode", "predicate": "event_outcome", "subject_key": "user", "statement": "The user received a job offer.", "normalized_value": "received job offer", "temporal_status": "current", "explicitness": "explicit", "confidence": 0.98, "admission": "auto_admit", "event_start_at_ms": 1784172800000, "user_assessment": "happy", "affect": {"emotion": "happy", "valence": 0.8, "intensity": 0.7}, "target_entity": null}
+      ],
+      "accepted_links": [],
+      "expected": {
+        "counts": {"claims": 0, "episodes": 1, "threads": 1, "entities": 0, "relations": 0, "reflections": 0},
+        "ignored_observation_ids": [],
+        "assertions": [
+          {"type": "thread", "primary_observation_id": "observation_exam_thread", "status": "due", "supporting_observation_ids": ["observation_exam_thread"]},
+          {"type": "episode", "primary_observation_id": "observation_job_outcome", "resolution_state": "resolved", "outcome": "received job offer", "supporting_observation_ids": ["observation_job_outcome"]}
+        ]
+      }
+    }
+  ]
+}

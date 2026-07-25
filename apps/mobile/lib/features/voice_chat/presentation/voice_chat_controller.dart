@@ -14,6 +14,7 @@ import '../../chat_history/data/app_database.dart';
 import '../../chat_history/data/companion_memory_store.dart';
 import '../../chat_history/data/long_term_memory_service.dart';
 import '../../chat_history/data/memory_embedding_service.dart';
+import '../../chat_history/data/memory_v3_compiler_service.dart';
 import '../../chat_history/data/objectbox_memory_vector_index.dart';
 import '../../livekit_session/data/livekit_connection_service.dart';
 import '../../livekit_session/data/session_api_client.dart';
@@ -50,6 +51,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
   VoiceChatState build() {
     final liveKitService = ref.read(liveKitConnectionServiceProvider);
     unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
+    unawaited(ref.read(memoryV3CompilerCoordinatorProvider).processPending());
     _memoryJudgeSubscription ??= ref
         .read(longTermMemoryCoordinatorProvider)
         .outcomes
@@ -249,6 +251,7 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     await _eventSubscription?.cancel();
     await ref.read(liveKitConnectionServiceProvider).disconnect();
     unawaited(ref.read(longTermMemoryCoordinatorProvider).processPending());
+    unawaited(ref.read(memoryV3CompilerCoordinatorProvider).processPending());
     await ref.read(appDatabaseProvider).consolidateLocalMemory();
     _activeDeviceId = null;
     state = state.copyWith(phase: VoiceSessionPhase.ended, isBusy: false);
@@ -713,6 +716,9 @@ class VoiceChatController extends Notifier<VoiceChatState> {
     await ref.read(memoryEmbeddingSyncProvider).syncTurnMemories(turnId);
     await ref
         .read(longTermMemoryCoordinatorProvider)
+        .enqueueCompletedTurn(sessionId: event.sessionId, turnId: turnId);
+    await ref
+        .read(memoryV3CompilerCoordinatorProvider)
         .enqueueCompletedTurn(sessionId: event.sessionId, turnId: turnId);
   }
 

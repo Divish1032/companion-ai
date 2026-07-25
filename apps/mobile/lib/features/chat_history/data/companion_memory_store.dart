@@ -88,7 +88,17 @@ extension CompanionMemoryStore on AppDatabase {
 
   Future<void> clearCompanionMemory() async {
     await ensureCompanionMemorySchema();
+    await ensureMemoryV3Schema();
     await transaction(() async {
+      for (final table in memoryV3PersonalDataTablesInDeleteOrder) {
+        await customStatement('DELETE FROM $table');
+      }
+      await customStatement(
+        "UPDATE memory_projection_state_v3 SET generation = generation + 1, status = 'empty', "
+        'last_observation_admitted_at_ms = NULL, updated_at_ms = ? '
+        'WHERE singleton_id = 1',
+        [DateTime.now().millisecondsSinceEpoch],
+      );
       await customStatement('DELETE FROM memory_entity_aliases');
       await customStatement('DELETE FROM companion_state');
       await customStatement('DELETE FROM memory_claims');
@@ -101,12 +111,22 @@ extension CompanionMemoryStore on AppDatabase {
     });
   }
 
-  /// The product's Clear History action. Keep legacy history and the V2 ledger
-  /// in one SQLite transaction so a partial clear cannot leave recoverable
-  /// personal state behind.
+  /// The product's Clear History action. Keep transcripts, V2, and every V3
+  /// authoritative or derived personal row in one SQLite transaction so a
+  /// partial clear cannot leave recoverable personal state behind.
   Future<void> clearAllHistoryAndCompanionMemory() async {
     await ensureCompanionMemorySchema();
+    await ensureMemoryV3Schema();
     await transaction(() async {
+      for (final table in memoryV3PersonalDataTablesInDeleteOrder) {
+        await customStatement('DELETE FROM $table');
+      }
+      await customStatement(
+        "UPDATE memory_projection_state_v3 SET generation = generation + 1, status = 'empty', "
+        'last_observation_admitted_at_ms = NULL, updated_at_ms = ? '
+        'WHERE singleton_id = 1',
+        [DateTime.now().millisecondsSinceEpoch],
+      );
       await customStatement('DELETE FROM memory_entity_aliases');
       await customStatement('DELETE FROM companion_state');
       await customStatement('DELETE FROM memory_claims');

@@ -12,12 +12,15 @@ flutter test \
   test/memory_vector_index_test.dart \
   test/long_term_memory_service_test.dart \
   test/app_database_migration_test.dart \
+  test/memory_v3_schema_test.dart \
+  test/memory_v3_compiler_test.dart \
   test/database_encryption_test.dart \
   test/widget_test.dart
 
 cd "$repo_root/services/api"
 uv run --no-sync pytest -q \
   tests/test_memory_extraction.py \
+  tests/test_memory_v3_compiler.py \
   tests/test_health.py \
   tests/test_model_readiness.py
 

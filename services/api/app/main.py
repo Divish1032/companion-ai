@@ -29,6 +29,14 @@ from app.memory_extraction import (
     build_judge_decision,
     filter_source_safe_candidates,
 )
+from app.memory_v3_compiler import (
+    MemoryCompileRequestV3,
+    MemoryCompileResponseV3,
+    MemoryV3Compiler,
+    MemoryV3CompilerUnavailable,
+    OpenAICompatibleMemoryV3Compiler,
+    compile_model_metadata,
+)
 from app.session_store import RateLimitExceeded, SessionStore
 from app.telemetry_store import TelemetryStore, TelemetryValidationError
 from app.voice_catalog import load_voice_catalog
@@ -53,6 +61,13 @@ memory_candidate_extractor: MemoryCandidateExtractor = OpenAICompatibleMemoryCan
     api_key=settings.memory_extraction_api_key,
     model=settings.memory_extraction_model,
     timeout_seconds=settings.memory_extraction_timeout_seconds,
+)
+memory_v3_compiler: MemoryV3Compiler = OpenAICompatibleMemoryV3Compiler(
+    base_url=settings.memory_v3_compiler_base_url,
+    api_key=settings.memory_v3_compiler_api_key,
+    model=settings.memory_v3_compiler_model,
+    timeout_seconds=settings.memory_v3_compiler_timeout_seconds,
+    request_profile=settings.memory_v3_compiler_request_profile,
 )
 telemetry_store = TelemetryStore(settings.telemetry_store_path)
 voice_catalog = load_voice_catalog(settings.voice_catalog)
@@ -82,10 +97,7 @@ async def request_validation_error(
 ) -> JSONResponse:
     """Return and log field paths only; rejected bodies may contain user text."""
 
-    fields = [
-        ".".join(str(part) for part in issue.get("loc", ()))
-        for issue in error.errors()
-    ][:16]
+    fields = [".".join(str(part) for part in issue.get("loc", ())) for issue in error.errors()][:16]
     print("api_request_validation_error", {"fields": fields}, flush=True)
     return JSONResponse(
         status_code=422,
@@ -228,6 +240,10 @@ def get_memory_candidate_extractor() -> MemoryCandidateExtractor:
     return memory_candidate_extractor
 
 
+def get_memory_v3_compiler() -> MemoryV3Compiler:
+    return memory_v3_compiler
+
+
 def get_telemetry_store() -> TelemetryStore:
     return telemetry_store
 
@@ -264,12 +280,17 @@ async def ingest_telemetry(
     store: Annotated[TelemetryStore, Depends(get_telemetry_store)],
     x_telemetry_ingest_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, bool]:
-    if settings.telemetry_ingest_token and x_telemetry_ingest_token != settings.telemetry_ingest_token:
+    if (
+        settings.telemetry_ingest_token
+        and x_telemetry_ingest_token != settings.telemetry_ingest_token
+    ):
         raise HTTPException(status_code=401, detail={"code": "telemetry_ingest_unauthorized"})
     try:
         store.ingest(request.envelope)
     except TelemetryValidationError as error:
-        raise HTTPException(status_code=422, detail={"code": "invalid_redacted_telemetry"}) from error
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_redacted_telemetry"}
+        ) from error
     return {"accepted": True}
 
 
@@ -286,9 +307,13 @@ async def purge_telemetry(
     store: Annotated[TelemetryStore, Depends(get_telemetry_store)],
     x_telemetry_ingest_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, int]:
-    if settings.telemetry_ingest_token and x_telemetry_ingest_token != settings.telemetry_ingest_token:
+    if (
+        settings.telemetry_ingest_token
+        and x_telemetry_ingest_token != settings.telemetry_ingest_token
+    ):
         raise HTTPException(status_code=401, detail={"code": "telemetry_ingest_unauthorized"})
     import time
+
     cutoff = int(time.time() * 1000) - settings.telemetry_raw_retention_days * 86_400_000
     return {"purged": store.purge_before(cutoff)}
 
@@ -423,6 +448,40 @@ async def memory_judge(
         decisions=[
             build_judge_decision(request.job_id, candidate) for candidate in safe_candidates
         ],
+    )
+
+
+@app.post(
+    "/v1/memory/compile",
+    response_model=MemoryCompileResponseV3,
+    response_model_exclude_none=True,
+)
+async def memory_compile_v3(
+    request: MemoryCompileRequestV3,
+    compiler: Annotated[MemoryV3Compiler, Depends(get_memory_v3_compiler)],
+) -> MemoryCompileResponseV3:
+    if not settings.enable_memory_v3_compiler:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "memory_v3_compiler_disabled"},
+        )
+    try:
+        result = await compiler.compile(request)
+    except MemoryV3CompilerUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "memory_v3_compiler_unavailable",
+                "stage": error.error_code,
+            },
+        ) from error
+    return MemoryCompileResponseV3(
+        schema_version=3,
+        job_id=request.job_id,
+        contract_version="memory_compile_v3_1",
+        candidates=result.candidates,
+        no_memory_reason=result.no_memory_reason,
+        model=compile_model_metadata(result),
     )
 
 

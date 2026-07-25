@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "freeze_id": "task3_1_freeze_candidate_clean_20260720",
+  "status": "candidate",
+  "created_at": "2026-07-20T00:00:00Z",
+  "runtime_enabled": false,
+  "artifacts": [
+    {"path": "services/api/app/memory_v3_compiler.py", "sha256": "d94bf1ef033ee47858ed103ea5f70f6781b1d35e66a9b23e5b5e0f9691276ca8", "role": "compiler"},
+    {"path": "contracts/memory_v3/memory_semantic_atoms.schema.json", "sha256": "4447cc30ee13d44abee659522cd5bbb0100b14403983ac8b001a07d9bb6d18f9", "role": "contract"},
+    {"path": "contracts/memory_v3/memory_observation.schema.json", "sha256": "f9fd288f6a0c6e5ed510fdc86502433e005a888e046f215115f2d4eb96319a05", "role": "contract"},
+    {"path": "contracts/memory_v3/memory_compile_request.schema.json", "sha256": "195771d0cf9ab2dd891d7173aaed7fd07786b903e65f50fdd859b32812a48f12", "role": "contract"},
+    {"path": "contracts/memory_v3/memory_compile_response.schema.json", "sha256": "441275582c8d1c57a46afa81f9426f906ca45a091a5b95749c2ddbcad34e9118", "role": "contract"},
+    {"path": "apps/mobile/lib/features/chat_history/data/memory_v3_models.dart", "sha256": "6c1ea9b5ed978907b4a3c43aa60d8efef29c90e3cc19abb7bf823e534333ca6e", "role": "constructor"},
+    {"path": "apps/mobile/lib/features/chat_history/data/memory_v3_admission.dart", "sha256": "1bb8aee21ae3acb6161d69a260cfb1cbe16926792eaa674390f031efc44c91ef", "role": "admission"},
+    {"path": "apps/mobile/tool/memory_v3_admission_bridge.dart", "sha256": "427dd085f2979b5fec80690fc279c0fa2adced6b4112ad8890b25573cd49674e", "role": "admission"},
+    {"path": "scripts/run-memory-v3-compiler-eval.py", "sha256": "82c3feb8dbf43620f69ca8450a341c596409a1abbda64c498f88dc8f04601e74", "role": "evaluation"},
+    {"path": "evaluation/memory_v3/schemas/compiler_report.schema.json", "sha256": "a33cef5d7d8ebc5fa5840cf0e58d1396965a0bfbd883c46c473e8e8b1ad8466f", "role": "evaluation"},
+    {"path": "evaluation/memory_v3/schemas/compiler_holdout_catalog.schema.json", "sha256": "2f8850ffa25255557033f5ccbfb2794feec4f9d26771ef9fb142167cca52c215", "role": "evaluation"},
+    {"path": "evaluation/memory_v3/schemas/compiler_freeze.schema.json", "sha256": "d4947e17158be14ca60dc968b9042c047e034c1f5c59596897edba67e1d7534b", "role": "evaluation"},
+    {"path": "evaluation/memory_v3/validate_compiler_holdout.py", "sha256": "6c512146681436a1dd16d3356ac21bd5612c4db3d075a65b44c11f1203e95f14", "role": "evaluation"},
+    {"path": "evaluation/memory_v3/verify_compiler_freeze.py", "sha256": "31111e17059d1b2e18df3fbc9f66517b53c38a28d06205a283d9adbd0bdf9ee7", "role": "evaluation"}
+  ],
+  "notes": [
+    "This is the sole Task 3.1 candidate freeze after removal of the failed AI-authored holdout experiment.",
+    "The freeze does not approve a model and does not enable Memory V3 runtime behavior.",
+    "No protected catalog was evaluated against the removed freeze revisions.",
+    "Any frozen artifact change requires a new freeze before a future independent evaluation."
+  ]
+}

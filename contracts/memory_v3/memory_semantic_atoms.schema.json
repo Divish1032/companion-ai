@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/contracts/memory-v3/memory_semantic_atoms.schema.json",
+  "title": "MemorySemanticEnvelopeV3",
+  "description": "Untrusted semantic atoms returned by stateless model inference before deterministic local construction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["atoms"],
+  "properties": {
+    "atoms": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {"$ref": "#/$defs/atom"}
+    },
+    "no_atom_reason": {"type": ["string", "null"], "maxLength": 240}
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "mention"],
+      "properties": {
+        "entity_type": {
+          "type": "string",
+          "enum": ["user", "person", "organization", "place", "event", "goal", "preference", "routine", "topic", "value"]
+        },
+        "mention": {"type": "string", "minLength": 1, "maxLength": 120},
+        "relationship_hint": {"type": ["string", "null"], "maxLength": 80}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_id", "quote"],
+      "properties": {
+        "turn_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "quote": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "affect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emotion", "intensity"],
+      "properties": {
+        "emotion": {
+          "type": "string",
+          "enum": ["joy", "sadness", "anger", "fear", "frustration", "loneliness", "anxiety", "shame", "relief", "pride", "excitement", "disappointment", "tiredness", "neutral", "other"]
+        },
+        "intensity": {"type": "string", "enum": ["low", "medium", "high"]},
+        "target_quote": {"type": ["string", "null"], "maxLength": 160},
+        "cause_quote": {"type": ["string", "null"], "maxLength": 240}
+      }
+    },
+    "atom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate", "subject", "object_quote", "evidence", "modality", "explicitness", "temporal_class", "sensitivity_hint"],
+      "properties": {
+        "predicate": {
+          "type": "string",
+          "enum": ["preferred_name", "has_relationship", "response_language", "response_length", "support_style", "likes", "dislikes", "avoids_topic", "follows_routine", "pursues_goal", "holds_value", "experienced_event", "event_outcome", "open_thread", "assistant_commitment", "works_at", "profile_association", "relationship_association", "episode_association", "causes_stress"]
+        },
+        "subject": {"$ref": "#/$defs/entity"},
+        "object_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+        "target_entity": {"anyOf": [{"$ref": "#/$defs/entity"}, {"type": "null"}]},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/evidence"}},
+        "modality": {"type": "string", "enum": ["asserted", "negated", "hypothetical", "quoted"]},
+        "explicitness": {"type": "string", "enum": ["explicit", "implied"]},
+        "temporal_class": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "temporal_expression_quote": {"type": ["string", "null"], "maxLength": 120},
+        "normalized_value": {"type": ["string", "number", "boolean", "null"]},
+        "assessment": {"type": ["string", "null"], "enum": ["positive", "negative", "neutral", null]},
+        "sensitivity_hint": {"type": "string", "enum": ["normal", "restricted", "forbidden"]},
+        "affect": {"anyOf": [{"$ref": "#/$defs/affect"}, {"type": "null"}]}
+      }
+    }
+  }
+}

@@ -111,6 +111,51 @@ Sprint -1 expected outputs:
 - `docs/architecture/agent_lifecycle.md`
 - `docs/privacy/dpdp_mvp_notes.md`
 
+## Active Memory V3 Rewrite
+
+For every task that creates, retrieves, injects, evaluates, or deletes companion
+memory, the Memory V3 program is the active product direction even when the
+general sprint list still describes the shipped V2 implementation.
+
+Before changing memory code:
+
+1. Read `docs/architecture/memory_v3.md`.
+2. Read `docs/architecture/memory_v3_storage.md` for storage or deletion work.
+3. Read `docs/architecture/memory_v3_consolidation.md` for consolidation,
+   temporal state, graph, or reflection work.
+4. Read `docs/evals/memory_v3_evaluation.md`.
+5. Read the relevant schemas in `contracts/memory_v3/`.
+6. Read `docs/architecture/long_term_memory.md` only when inspecting the legacy
+   V2 behavior or the retain/replace/delete map.
+
+Memory V3 rules:
+
+- Treat `docs/architecture/memory_v3.md` as the source of truth for new memory
+  behavior. The V2 long-term-memory document is historical implementation
+  evidence, not the V3 target.
+- No data migration or backward compatibility is required before release.
+- Keep durable memory and all mutation authority on the phone. Server-side LLMs
+  are stateless proposal engines and must never choose database IDs to mutate.
+- Require evidence-backed observations and deterministic local validation before
+  admission. An LLM output is an untrusted candidate, not stored truth.
+- Use one V3 query planner, candidate generator, selector, and `MemoryBrief`
+  injection path. Do not add a parallel retrieval shortcut.
+- Keep protected evaluation fixtures ahead of implementation and compare V3
+  against no-memory, V2, and oracle-memory baselines.
+- Task 1 fixtures in `evaluation/memory_v3/` remain review candidates until a
+  native or professionally fluent Hindi/Hinglish reviewer approves them. Do not
+  claim protected coverage while review is pending.
+- Task 2 V3 tables are an isolated schema only. Do not wire them into compiler,
+  retrieval, or response behavior before their later implementation gates.
+- Run `scripts/run-memory-v3-eval.sh --provider none` for the reproducible V2
+  prompt-boundary baseline. Paid response capture requires the runner's explicit
+  confirmation flags and approved credentials.
+- Do not remove the V2 runtime path until the V3 shadow and response-quality
+  gates in the evaluation document pass. Once they pass, delete V2 rather than
+  retaining dual production paths.
+- Run `python3 contracts/memory_v3/validate_schemas.py` whenever a Memory V3
+  contract changes.
+
 ## Non-Negotiables
 
 - Do not add auth unless explicitly requested.

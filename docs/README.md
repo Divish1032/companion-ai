@@ -17,9 +17,29 @@ Use this map to avoid loading the entire master PRD for every task.
 - `architecture/observability_metrics.md`: latency, quality, and cost metrics.
 - `architecture/unit_economics.md`: cost assumptions, pricing cautions, and measurement requirements.
 - `architecture/long_term_memory.md`: phone-owned memory, query-time retrieval,
-  model-serving contracts, privacy boundaries, and remaining validation.
+  model-serving contracts, privacy boundaries, and remaining validation for the
+  legacy V2 implementation.
+- `architecture/memory_v3.md`: approved source of truth for the active memory
+  rewrite, including ownership, compiler, consolidation, retrieval, prompt use,
+  feedback, privacy, observability, and the V2 retain/replace/delete map.
+- `architecture/memory_v3_storage.md`: concrete Task 2 observation ledger,
+  authoritative user controls, cited projections, rebuild, and deletion rules.
+- `architecture/memory_v3_compiler.md`: Task 3 stateless compiler, durable phone
+  jobs, authoritative local admission, failure behavior, and model-eval gate.
+- `architecture/memory_v3_consolidation.md`: Task 4 deterministic phone-owned
+  transitions, bounded ambiguity adjudication, temporal state, graph safety,
+  affect policy, and offline exit criteria.
 - `deployment/ubuntu.md`: Ubuntu deployment, model-cache, warm-up, readiness,
   and rollback runbook for public-network testing.
+
+## Evaluation References
+
+- `evals/memory_v3_evaluation.md`: protected scenarios, baselines, metrics, hard
+  gates, and rollout criteria for the Memory V3 rewrite.
+- `../contracts/memory_v3/`: versioned JSON Schemas for compiler,
+  consolidation, query-time retrieval, `MemoryBrief`, and memory-use feedback.
+- `../evaluation/memory_v3/`: executable Task 1 fixture catalog, strict report
+  schemas, V2 replay probe, and matched no-memory/V2/oracle baseline harness.
 
 ## Spike Outputs
 

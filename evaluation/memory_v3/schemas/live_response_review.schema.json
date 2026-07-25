@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/live_response_review.schema.json",
+  "title": "MemoryV3LiveResponseReview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "review_id",
+    "reviewed_at",
+    "reviewer_kind",
+    "source",
+    "gates",
+    "query_reviews",
+    "summary",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "review_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewer_kind": {"type": "string", "const": "ai_product_development_review"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_artifact",
+        "artifact_committed",
+        "sha256",
+        "run_id",
+        "fixture_sha256",
+        "provider",
+        "model",
+        "response_arm_count",
+        "provider_error_count"
+      ],
+      "properties": {
+        "local_artifact": {"type": "string", "minLength": 1, "maxLength": 300},
+        "artifact_committed": {"type": "boolean", "const": false},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 120},
+        "fixture_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "provider": {"type": "string", "const": "sarvam"},
+        "model": {"type": "string", "minLength": 1, "maxLength": 120},
+        "response_arm_count": {"type": "integer", "const": 51},
+        "provider_error_count": {"type": "integer", "const": 0}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task2_schema_implementation", "runtime_cutover", "reason"],
+      "properties": {
+        "task2_schema_implementation": {"type": "string", "const": "pass"},
+        "runtime_cutover": {"type": "string", "const": "fail"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "query_reviews": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenario_id", "query_id", "arms"],
+        "properties": {
+          "scenario_id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+          "query_id": {"type": "string", "pattern": "^query_[a-z0-9_]+$"},
+          "arms": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["no_memory", "v2", "oracle"],
+            "properties": {
+              "no_memory": {"$ref": "#/$defs/arm_review"},
+              "v2": {"$ref": "#/$defs/arm_review"},
+              "oracle": {"$ref": "#/$defs/arm_review"}
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["no_memory", "v2", "oracle", "persona_language_policy"],
+      "properties": {
+        "no_memory": {"$ref": "#/$defs/arm_summary"},
+        "v2": {"$ref": "#/$defs/arm_summary"},
+        "oracle": {"$ref": "#/$defs/arm_summary"},
+        "persona_language_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["response_count", "responses_with_devanagari", "all_roman_responses"],
+          "properties": {
+            "response_count": {"type": "integer", "const": 51},
+            "responses_with_devanagari": {"type": "integer", "minimum": 0, "maximum": 51},
+            "all_roman_responses": {"type": "integer", "minimum": 0, "maximum": 51}
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1, "maxLength": 600}
+    }
+  },
+  "$defs": {
+    "arm_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "failure_modes", "note"],
+      "properties": {
+        "result": {"type": "string", "enum": ["pass", "fail"]},
+        "failure_modes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}
+        },
+        "note": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "arm_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "total", "pass_rate"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 0, "maximum": 17},
+        "failed": {"type": "integer", "minimum": 0, "maximum": 17},
+        "total": {"type": "integer", "const": 17},
+        "pass_rate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

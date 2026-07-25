@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "catalogs": {
+    "task1_core_scenarios": {
+      "development": [
+        "explicit_name_grounded_v3",
+        "assistant_name_contamination_v3",
+        "quoted_relationship_noop_v3",
+        "hypothetical_goal_noop_v3",
+        "mixed_script_preference_v3",
+        "low_confidence_identity_defer_v3",
+        "event_and_assessment_v3",
+        "ordinary_conversation_noop_v3",
+        "sensitive_candidate_ephemeral_v3",
+        "assistant_commitment_role_v3",
+        "identity_correction_timeline_v3",
+        "job_change_timeline_v3",
+        "single_bad_day_not_pattern_v3",
+        "recurring_stressor_multi_session_v3",
+        "open_thread_result_closure_v3",
+        "same_name_people_not_merged_v3",
+        "paraphrased_episode_recall_v3",
+        "implicit_pronoun_followup_v3",
+        "historical_change_query_v3",
+        "vague_mood_abstention_v3",
+        "vector_nearest_below_threshold_v3",
+        "silent_support_preference_v3",
+        "validation_without_question_v3",
+        "memory_prompt_injection_v3",
+        "crisis_bypass_with_memory_v3"
+      ],
+      "protected": [],
+      "robustness": []
+    }
+  },
+  "notes": "The original Task 1 catalog is development-only because exact scenarios informed prompt iterations. Protected and robustness sets remain empty until independently authored fixtures receive native Hindi/Hinglish review."
+}

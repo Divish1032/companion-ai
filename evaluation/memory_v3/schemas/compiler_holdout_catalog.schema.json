@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/compiler_holdout_catalog.schema.json",
+  "title": "MemoryV3CompilerHoldoutCatalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "catalog_id", "compiler_freeze_id", "template_only", "authoring_protocol", "scenarios"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "contract_version": {"type": "string", "const": "memory_v3_compiler_holdout_v1"},
+    "catalog_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "compiler_freeze_id": {"type": "string", "pattern": "^task3_1_freeze_[a-z0-9_]+$"},
+    "template_only": {"type": "boolean"},
+    "authoring_protocol": {"$ref": "#/$defs/authoring_protocol"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 45,
+      "items": {"$ref": "#/$defs/scenario"}
+    }
+  },
+  "$defs": {
+    "authoring_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["author_id", "authored_at", "compiler_prompt_seen", "development_fixtures_seen", "synthetic_only", "notes"],
+      "properties": {
+        "author_id": {"type": "string", "minLength": 1, "maxLength": 120},
+        "authored_at": {"type": "string", "format": "date-time"},
+        "compiler_prompt_seen": {"type": "boolean", "const": false},
+        "development_fixtures_seen": {"type": "boolean", "const": false},
+        "synthetic_only": {"type": "boolean", "const": true},
+        "notes": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "split", "priority", "tags", "timezone", "language_review", "sessions", "formation_expect", "hard_gates"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+        "split": {"type": "string", "enum": ["protected", "robustness"]},
+        "priority": {"type": "string", "enum": ["P0", "P1", "P2"]},
+        "tags": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}},
+        "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
+        "language_review": {"$ref": "#/$defs/language_review"},
+        "sessions": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/session"}},
+        "formation_expect": {"$ref": "#/$defs/formation_expect"},
+        "hard_gates": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["provenance", "grounding", "privacy", "sensitivity", "assistant_contamination", "prompt_injection", "crisis_bypass", "temporal", "entity_separation"]}}
+      }
+    },
+    "language_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewer_id", "reviewed_at", "naturalness", "semantic_alignment", "notes"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "approved", "changes_requested"]},
+        "reviewer_id": {"type": ["string", "null"], "maxLength": 120},
+        "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+        "naturalness": {"type": ["string", "null"], "enum": ["natural", "minor_edit", "rewrite", null]},
+        "semantic_alignment": {"type": ["string", "null"], "enum": ["aligned", "ambiguous", "incorrect", null]},
+        "notes": {"type": "string", "maxLength": 500}
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "turns"],
+      "properties": {
+        "session_id": {"type": "string", "pattern": "^session_[a-z0-9_]+$"},
+        "turns": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/turn"}}
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_id", "role", "text", "status", "language", "script", "created_at_ms", "stt_confidence", "stt_provider", "stt_model"],
+      "properties": {
+        "turn_id": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"},
+        "role": {"type": "string", "enum": ["user", "assistant"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1600},
+        "status": {"type": "string", "enum": ["final", "final_corrected", "safety_override"]},
+        "language": {"type": "string", "minLength": 2, "maxLength": 32},
+        "script": {"type": "string", "enum": ["latin", "devanagari", "mixed"]},
+        "created_at_ms": {"type": "integer", "minimum": 0},
+        "stt_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "stt_provider": {"type": ["string", "null"], "maxLength": 80},
+        "stt_model": {"type": ["string", "null"], "maxLength": 120}
+      }
+    },
+    "formation_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_observations", "forbidden_predicates", "expect_noop"],
+      "properties": {
+        "expected_observations": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/observation_expect"}},
+        "forbidden_predicates": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/predicate"}},
+        "expect_noop": {"type": "boolean"}
+      }
+    },
+    "observation_expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectation_id", "after_turn_id", "kind", "predicate", "object_contains", "evidence_turn_ids", "source_role", "temporal_status", "operation", "admission"],
+      "properties": {
+        "expectation_id": {"type": "string", "pattern": "^obs_[a-z0-9_]+$"},
+        "after_turn_id": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"},
+        "kind": {"type": "string", "enum": ["profile", "relationship", "preference", "routine", "goal", "value", "boundary", "episode", "open_thread", "assistant_commitment"]},
+        "predicate": {"$ref": "#/$defs/predicate"},
+        "object_contains": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "evidence_turn_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^turn_[a-z0-9_]+$"}},
+        "source_role": {"type": "string", "enum": ["user", "assistant"]},
+        "subject_entity_type": {"type": "string", "enum": ["user", "person", "organization", "place", "event", "goal", "preference", "routine", "topic", "value"]},
+        "subject_contains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "target_contains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "modality": {"type": "string", "enum": ["asserted", "negated", "hypothetical", "quoted"]},
+        "explicitness": {"type": "string", "enum": ["explicit", "implied", "assistant_only"]},
+        "semantic_temporal_class": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "temporal_status": {"type": "string", "enum": ["current", "past", "future", "uncertain"]},
+        "operation": {"type": "string", "const": "ADD"},
+        "admission": {"type": "string", "enum": ["auto_admit", "defer", "confirmation_required", "reject"]}
+      }
+    },
+    "predicate": {
+      "type": "string",
+      "enum": ["preferred_name", "has_relationship", "response_language", "response_length", "support_style", "likes", "dislikes", "avoids_topic", "follows_routine", "pursues_goal", "holds_value", "experienced_event", "event_outcome", "open_thread", "assistant_commitment", "works_at", "profile_association", "relationship_association", "episode_association", "causes_stress"]
+    }
+  }
+}

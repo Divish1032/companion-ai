@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/contracts/memory-v3/memory_brief.schema.json",
+  "title": "MemoryBriefV3",
+  "description": "A bounded, phone-assembled memory brief for one response. It is context, not instructions or a transcript dump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_sequence",
+    "turn_id",
+    "semantic_resolved",
+    "fallback_reason",
+    "query_plan",
+    "response_policy",
+    "current_state",
+    "memories",
+    "response_move",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 3},
+    "contract_version": {"type": "string", "const": "memory_brief_v3"},
+    "request_sequence": {"type": "integer", "minimum": 1},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "semantic_resolved": {"type": "boolean"},
+    "fallback_reason": {
+      "type": ["string", "null"],
+      "enum": [null, "not_needed", "deadline", "phone_unavailable", "no_relevant_memory", "validation_failed", "budget_exhausted", "safety_override"]
+    },
+    "query_plan": {"$ref": "#/$defs/query_plan"},
+    "response_policy": {"$ref": "#/$defs/response_policy"},
+    "current_state": {"$ref": "#/$defs/current_state"},
+    "memories": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/memory_item"}
+    },
+    "response_move": {"$ref": "#/$defs/response_move"},
+    "diagnostics": {"$ref": "#/$defs/diagnostics"}
+  },
+  "$defs": {
+    "query_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "memory_needed", "query_type", "explicit_recall", "path", "subjects", "temporal_scope", "candidate_kinds"],
+      "properties": {
+        "plan_id": {"type": "string", "pattern": "^plan_[A-Za-z0-9_-]{8,128}$"},
+        "memory_needed": {"type": "boolean"},
+        "query_type": {"type": "string", "enum": ["none", "exact_state", "semantic", "episodic", "temporal_summary", "open_thread", "emotional_continuity"]},
+        "explicit_recall": {"type": "boolean"},
+        "path": {"type": "string", "enum": ["none", "fast", "normal", "deep"]},
+        "subjects": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 120}
+        },
+        "temporal_scope": {"type": "string", "enum": ["current", "recent", "historical", "change_over_time", "future", "unspecified"]},
+        "candidate_kinds": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["claim", "episode", "open_thread", "reflection", "entity", "relation"]}
+        }
+      }
+    },
+    "response_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "script", "length", "support_style", "follow_up_style", "proactive_memory_allowed"],
+      "properties": {
+        "language": {"type": "string", "minLength": 2, "maxLength": 32},
+        "script": {"type": "string", "enum": ["latin", "devanagari", "mixed", "unknown"]},
+        "length": {"type": "string", "enum": ["brief", "normal", "detailed"]},
+        "support_style": {"type": "string", "enum": ["listen_first", "validate_first", "gentle_advice", "direct_advice", "celebrate", "neutral"]},
+        "follow_up_style": {"type": "string", "enum": ["none", "open_question", "specific_question", "offer_choice", "gentle_check_in"]},
+        "proactive_memory_allowed": {"type": "boolean"}
+      }
+    },
+    "current_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "affect", "support_need", "unresolved_thread_refs"],
+      "properties": {
+        "topic": {"type": ["string", "null"], "maxLength": 160},
+        "affect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["emotion", "intensity", "confidence"],
+          "properties": {
+            "emotion": {"type": "string", "enum": ["joy", "sadness", "anger", "fear", "frustration", "loneliness", "anxiety", "shame", "relief", "pride", "excitement", "disappointment", "tiredness", "neutral", "unknown"]},
+            "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "support_need": {"type": "string", "enum": ["listening", "validation", "advice", "encouragement", "celebration", "information", "unknown"]},
+        "unresolved_thread_refs": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 160}
+        }
+      }
+    },
+    "memory_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_id", "kind", "statement", "temporal_status", "confidence", "relevance_reason", "use_mode", "warnings"],
+      "properties": {
+        "memory_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "kind": {"type": "string", "enum": ["claim", "episode", "open_thread", "reflection", "entity", "relation"]},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 500},
+        "temporal_status": {"type": "string", "enum": ["current", "historical", "future", "uncertain", "closed"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "relevance_reason": {"type": "string", "minLength": 1, "maxLength": 240},
+        "use_mode": {"type": "string", "enum": ["SILENT_PERSONALIZATION", "BRIEF_CALLBACK", "EXPLICIT_RECALL", "ASK_CONFIRMATION", "FOLLOW_UP_THREAD", "DO_NOT_USE"]},
+        "warnings": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["stale", "uncertain", "sensitive", "possible_conflict", "low_stt_confidence", "do_not_proactively_mention"]}
+        },
+        "event_start_at_ms": {"type": ["integer", "null"], "minimum": 0},
+        "source_role": {"type": "string", "enum": ["user", "assistant", "mixed", "derived"]}
+      }
+    },
+    "response_move": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["act", "question_recommended", "instruction"],
+      "properties": {
+        "act": {"type": "string", "enum": ["validate", "reflect", "listen", "clarify", "advise", "celebrate", "encourage", "follow_up", "gentle_challenge", "direct_answer", "quiet_presence"]},
+        "question_recommended": {"type": "boolean"},
+        "instruction": {"type": "string", "minLength": 1, "maxLength": 240}
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_count", "selected_count", "retrieval_ms", "selection_ms", "total_ms", "budget_truncated"],
+      "properties": {
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "selected_count": {"type": "integer", "minimum": 0, "maximum": 8},
+        "retrieval_ms": {"type": "integer", "minimum": 0},
+        "selection_ms": {"type": "integer", "minimum": 0},
+        "total_ms": {"type": "integer", "minimum": 0},
+        "budget_truncated": {"type": "boolean"}
+      }
+    }
+  }
+}

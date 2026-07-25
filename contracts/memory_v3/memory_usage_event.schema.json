@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/contracts/memory-v3/memory_usage_event.schema.json",
+  "title": "MemoryUsageEventV3",
+  "description": "A local, response-linked record of which memories influenced a response and the later feedback signals. It contains no transcript text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "response_id",
+    "turn_id",
+    "query_plan_id",
+    "created_at_ms",
+    "selected",
+    "response_move",
+    "explicit_feedback",
+    "implicit_signals",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 3},
+    "event_id": {"type": "string", "pattern": "^memory_usage_[A-Za-z0-9_-]{8,160}$"},
+    "response_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "query_plan_id": {"type": ["string", "null"], "pattern": "^plan_[A-Za-z0-9_-]{8,128}$"},
+    "created_at_ms": {"type": "integer", "minimum": 0},
+    "selected": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["memory_id", "use_mode", "retrieval_score"],
+        "properties": {
+          "memory_id": {"type": "string", "minLength": 1, "maxLength": 160},
+          "use_mode": {"type": "string", "enum": ["SILENT_PERSONALIZATION", "BRIEF_CALLBACK", "EXPLICIT_RECALL", "ASK_CONFIRMATION", "FOLLOW_UP_THREAD", "DO_NOT_USE"]},
+          "retrieval_score": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "response_move": {"type": "string", "enum": ["validate", "reflect", "listen", "clarify", "advise", "celebrate", "encourage", "follow_up", "gentle_challenge", "direct_answer", "quiet_presence"]},
+    "explicit_feedback": {"type": ["string", "null"], "enum": [null, "helpful", "wrong_memory", "irrelevant_memory", "too_much_advice", "too_many_questions", "repetitive", "wrong_tone"]},
+    "implicit_signals": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "enum": ["immediate_correction", "repeated_question", "barge_in", "early_exit", "forget_command", "accepted_follow_up", "topic_continuation"]}
+    },
+    "outcome": {"type": "string", "enum": ["unknown", "positive", "negative", "mixed"]}
+  }
+}

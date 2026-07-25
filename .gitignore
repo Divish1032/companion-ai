@@ -82,3 +82,4 @@ temp/
 
 # Memory Quality Lab artifacts (reports only; fixtures and schemas are committed)
 evaluation/memory/reports/
+evaluation/memory_v3/compiler_runs/

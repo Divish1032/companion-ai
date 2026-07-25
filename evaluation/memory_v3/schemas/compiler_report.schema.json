@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/evaluation/memory-v3/compiler_report.schema.json",
+  "title": "MemoryV3CompilerFormationReportV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_type", "created_at", "catalog_hash", "catalog_id", "split", "pipeline", "provider", "requested_model", "prompt_version", "request_profile", "repetitions", "language_review_override", "metrics", "runs"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 2},
+    "report_type": {"type": "string", "const": "memory_v3_compiler_formation_eval"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "catalog_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "catalog_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "split": {"type": "string", "enum": ["development", "protected", "robustness", "all"]},
+    "pipeline": {"type": "string", "enum": ["hybrid", "deterministic_only"]},
+    "provider": {"type": "string", "minLength": 1, "maxLength": 120},
+    "requested_model": {"type": "string", "minLength": 1, "maxLength": 160},
+    "prompt_version": {"type": "string", "const": "memory_semantic_atoms_v3_1"},
+    "request_profile": {"type": "string", "minLength": 1, "maxLength": 80},
+    "repetitions": {"type": "integer", "minimum": 1, "maximum": 10},
+    "language_review_override": {"type": "boolean"},
+    "compiler_freeze_id": {"type": "string", "pattern": "^task3_1_freeze_[a-z0-9_]+$"},
+    "metrics": {"$ref": "#/$defs/metrics"},
+    "runs": {"type": "array", "minItems": 1, "maxItems": 3000, "items": {"$ref": "#/$defs/run"}}
+  },
+  "$defs": {
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_count", "completed_runs", "error_runs", "error_counts_by_stage", "expected_observations", "semantic_atoms", "constructed_candidates", "semantic_matched", "construction_matched", "structural_matched", "admission_matched", "semantic_recall", "construction_recall", "structural_recall", "admission_recall", "construction_precision", "admission_precision", "hard_gate_failures", "latency_ms", "cost_source", "total_estimated_micro_inr"],
+      "properties": {
+        "run_count": {"type": "integer", "minimum": 1},
+        "completed_runs": {"type": "integer", "minimum": 0},
+        "error_runs": {"type": "integer", "minimum": 0},
+        "error_counts_by_stage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["transport", "provider_envelope", "semantic_syntax", "semantic_schema", "admission_runtime"],
+          "properties": {
+            "transport": {"type": "integer", "minimum": 0},
+            "provider_envelope": {"type": "integer", "minimum": 0},
+            "semantic_syntax": {"type": "integer", "minimum": 0},
+            "semantic_schema": {"type": "integer", "minimum": 0},
+            "admission_runtime": {"type": "integer", "minimum": 0}
+          }
+        },
+        "expected_observations": {"type": "integer", "minimum": 0},
+        "semantic_atoms": {"type": "integer", "minimum": 0},
+        "constructed_candidates": {"type": "integer", "minimum": 0},
+        "semantic_matched": {"type": "integer", "minimum": 0},
+        "construction_matched": {"type": "integer", "minimum": 0},
+        "structural_matched": {"type": "integer", "minimum": 0},
+        "admission_matched": {"type": "integer", "minimum": 0},
+        "semantic_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "construction_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "structural_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "admission_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "construction_precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "admission_precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "hard_gate_failures": {"type": "integer", "minimum": 0},
+        "latency_ms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p50", "p95", "max"],
+          "properties": {
+            "p50": {"type": ["integer", "null"], "minimum": 0},
+            "p95": {"type": ["integer", "null"], "minimum": 0},
+            "max": {"type": ["integer", "null"], "minimum": 0}
+          }
+        },
+        "cost_source": {"type": "string", "enum": ["reviewed_operator_rate", "unknown"]},
+        "total_estimated_micro_inr": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["run_id", "scenario_id", "session_id", "repetition", "status", "error_stage", "error_code", "latency_ms"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "scenario_id": {"type": "string", "pattern": "^[a-z0-9_]+_v3$"},
+        "session_id": {"type": "string", "pattern": "^session_[a-z0-9_]+$"},
+        "repetition": {"type": "integer", "minimum": 1, "maximum": 10},
+        "status": {"type": "string", "enum": ["completed", "error"]},
+        "error_stage": {"type": ["string", "null"], "enum": ["transport", "provider_envelope", "semantic_syntax", "semantic_schema", "admission_runtime", null]},
+        "error_code": {"type": ["string", "null"], "maxLength": 120},
+        "latency_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

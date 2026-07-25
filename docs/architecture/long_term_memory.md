@@ -1,5 +1,10 @@
 # Long-Term Memory Architecture
 
+> Legacy V2 implementation reference. For all new memory design and
+> implementation work, use `docs/architecture/memory_v3.md` as the source of
+> truth. V2 remains only as a measured baseline until the V3 deletion gate
+> passes; no migration or backward compatibility is required.
+
 This document is the implementation handoff for making Companion AI's memory
 long-term, meaningful, privacy-preserving, and low-latency.
 

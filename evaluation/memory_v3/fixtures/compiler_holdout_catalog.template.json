@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "contract_version": "memory_v3_compiler_holdout_v1",
+  "catalog_id": "replace_with_private_catalog_id",
+  "compiler_freeze_id": "task3_1_freeze_candidate_clean_20260720",
+  "template_only": true,
+  "authoring_protocol": {
+    "author_id": "replace_with_pseudonymous_author_id",
+    "authored_at": "2026-07-20T00:00:00Z",
+    "compiler_prompt_seen": false,
+    "development_fixtures_seen": false,
+    "synthetic_only": true,
+    "notes": "Replace this English structural example with independently authored natural Hindi/Hinglish cases. Do not inspect the compiler prompt or development catalog."
+  },
+  "scenarios": [
+    {
+      "id": "replace_with_hidden_case_v3",
+      "split": "protected",
+      "priority": "P0",
+      "tags": ["formation", "grounding"],
+      "timezone": "Asia/Kolkata",
+      "language_review": {
+        "status": "pending",
+        "reviewer_id": null,
+        "reviewed_at": null,
+        "naturalness": null,
+        "semantic_alignment": null,
+        "notes": "A fluent reviewer must approve independently authored wording and expectations."
+      },
+      "sessions": [
+        {
+          "session_id": "session_replace_hidden_case",
+          "turns": [
+            {
+              "turn_id": "turn_replace_hidden_user",
+              "role": "user",
+              "text": "Reviewer-authored synthetic utterance goes here.",
+              "status": "final",
+              "language": "en-IN",
+              "script": "latin",
+              "created_at_ms": 1784000000000,
+              "stt_confidence": 0.98,
+              "stt_provider": "synthetic",
+              "stt_model": "fixture"
+            }
+          ]
+        }
+      ],
+      "formation_expect": {
+        "expected_observations": [
+          {
+            "expectation_id": "obs_replace_hidden",
+            "after_turn_id": "turn_replace_hidden_user",
+            "kind": "profile",
+            "predicate": "preferred_name",
+            "object_contains": ["replace"],
+            "evidence_turn_ids": ["turn_replace_hidden_user"],
+            "source_role": "user",
+            "temporal_status": "current",
+            "operation": "ADD",
+            "admission": "auto_admit"
+          }
+        ],
+        "forbidden_predicates": [],
+        "expect_noop": false
+      },
+      "hard_gates": ["provenance", "grounding"]
+    }
+  ]
+}

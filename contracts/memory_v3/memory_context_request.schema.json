@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://companion-ai/contracts/memory-v3/memory_context_request.schema.json",
+  "title": "MemoryContextRequestV3",
+  "description": "A reliable, ordered request from the realtime agent to the phone-owned memory system for the latest committed user turn.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_sequence",
+    "session_id",
+    "turn_id",
+    "query_text",
+    "language",
+    "created_at_ms",
+    "transcript_status",
+    "budget"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 3},
+    "contract_version": {"type": "string", "const": "memory_context_v3"},
+    "request_sequence": {"type": "integer", "minimum": 1},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "query_text": {"type": "string", "minLength": 1, "maxLength": 1600},
+    "language": {"type": "string", "minLength": 2, "maxLength": 32},
+    "created_at_ms": {"type": "integer", "minimum": 0},
+    "transcript_status": {"type": "string", "enum": ["final", "final_corrected"]},
+    "stt_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "stt_provider": {"type": ["string", "null"], "maxLength": 80},
+    "stt_model": {"type": ["string", "null"], "maxLength": 120},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_memories", "max_chars", "deadline_ms", "allow_deep_recall"],
+      "properties": {
+        "max_memories": {"type": "integer", "minimum": 0, "maximum": 8},
+        "max_chars": {"type": "integer", "minimum": 0, "maximum": 4000},
+        "deadline_ms": {"type": "integer", "minimum": 50, "maximum": 2000},
+        "allow_deep_recall": {"type": "boolean"}
+      }
+    }
+  }
+}

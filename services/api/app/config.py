@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +39,16 @@ class Settings(BaseSettings):
     memory_extraction_api_key: str = ""
     memory_extraction_model: str = ""
     memory_extraction_timeout_seconds: float = 20.0
+    enable_memory_v3_compiler: bool = False
+    memory_v3_compiler_base_url: str = ""
+    memory_v3_compiler_api_key: str = ""
+    memory_v3_compiler_model: str = ""
+    memory_v3_compiler_timeout_seconds: float = 20.0
+    memory_v3_compiler_request_profile: Literal[
+        "openai_json_schema",
+        "deepseek_json_object",
+        "deepseek_json_object_thinking",
+    ] = "openai_json_schema"
     # Reviewed micro-INR judge token rates. Zero means "no reviewed rate":
     # the judge cost is then labelled unknown instead of silently zero.
     memory_judge_input_micro_inr_per_million_tokens: int = 0
